@@ -146,39 +146,201 @@ def dashboard_ui():
     <html lang="es">
     <head>
         <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Chat Bot de Phygital - Dashboard</title>
         <style>
-            body { background-color: #121212; color: #ffffff; font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-            .login-card { background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); width: 300px; text-align: center; }
-            input { width: 90%; padding: 10px; margin: 10px 0; border-radius: 6px; border: 1px solid #333; background: #2b2b2b; color: white; }
-            button { width: 98%; padding: 10px; background: #3700b3; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-            button:hover { background: #4f00e0; }
+            * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+            body { background-color: #121212; color: #e0e0e0; margin: 0; padding: 0; }
+            
+            /* LOGIN SCREEN */
+            #loginSection { display: flex; justify-content: center; align-items: center; height: 100vh; }
+            .login-card { background: #1e1e1e; padding: 40px; border-radius: 12px; width: 340px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
+            .login-card h2 { color: #fff; margin-bottom: 20px; }
+            input, select { width: 100%; padding: 12px; margin: 8px 0; border-radius: 6px; border: 1px solid #333; background: #2b2b2b; color: #fff; }
+            button { width: 100%; padding: 12px; background: #6200ee; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top: 10px; transition: 0.2s; }
+            button:hover { background: #3700b3; }
+
+            /* DASHBOARD MAIN */
+            #dashboardSection { display: none; padding: 30px; max-width: 1200px; margin: 0 auto; }
+            header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 15px; margin-bottom: 25px; }
+            .user-badge { background: #2b2b2b; padding: 6px 14px; border-radius: 20px; font-size: 14px; color: #00e676; border: 1px solid #00e676; }
+
+            /* GRID & CARDS */
+            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+            .card { background: #1e1e1e; border-radius: 10px; padding: 20px; border: 1px solid #2c2c2c; }
+            .card h3 { color: #bb86fc; margin-top: 0; border-bottom: 1px solid #2a2a2a; padding-bottom: 10px; }
+
+            /* STATS METRICS */
+            .stat-box { font-size: 36px; font-weight: bold; color: #00e676; text-align: center; margin: 20px 0; }
+
+            /* TABLES & LISTS */
+            ul { list-style: none; padding: 0; }
+            li { background: #2a2a2a; padding: 10px; margin-bottom: 8px; border-radius: 6px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+            .btn-danger { background: #cf6679; padding: 4px 8px; font-size: 12px; width: auto; margin: 0; }
+            .btn-danger:hover { background: #b00020; }
         </style>
     </head>
     <body>
-        <div class="login-card" id="loginBox">
-            <h2>Chat Bot Phygital</h2>
-            <input type="text" id="userInput" placeholder="Usuario">
-            <input type="password" id="passInput" placeholder="Contraseña">
-            <button onclick="login()">Iniciar Sesión</button>
-            <p id="errorMsg" style="color: #ff5252; display: none;">Credenciales incorrectas</p>
+
+        <!-- PANTALLA DE LOGIN -->
+        <div id="loginSection">
+            <div class="login-card">
+                <h2>Chat Bot Phygital</h2>
+                <input type="text" id="userInput" placeholder="Usuario">
+                <input type="password" id="passInput" placeholder="Contraseña">
+                <button onclick="login()">Iniciar Sesión</button>
+                <p id="errorMsg" style="color: #cf6679; display: none; margin-top: 10px; font-size: 14px;">Credenciales incorrectas</p>
+            </div>
+        </div>
+
+        <!-- PANEL DE CONTROL ADMIN / OPERADOR -->
+        <div id="dashboardSection">
+            <header>
+                <h2>Panel de Control - Chat Bot Phygital</h2>
+                <span class="user-badge" id="userInfo">Usuario</span>
+            </header>
+
+            <div class="grid">
+                <!-- METRICAS DE ACTIVIDAD -->
+                <div class="card">
+                    <h3>📊 Estadísticas Rápidas</h3>
+                    <p>Total de respuestas enviadas:</p>
+                    <div class="stat-box" id="statTotal">0</div>
+                    <button onclick="cargarEstadisticas()">🔄 Actualizar Métricas</button>
+                </div>
+
+                <!-- GESTIÓN DE USUARIOS (OCULTO SI NO ES ADMIN) -->
+                <div class="card" id="adminUserCard" style="display: none;">
+                    <h3>👤 Crear Nuevo Usuario</h3>
+                    <input type="text" id="newUsername" placeholder="Nombre de usuario">
+                    <input type="password" id="newPassword" placeholder="Contraseña">
+                    <input type="text" id="newTiendas" placeholder="Tiendas asignadas (ej: tienda1, tienda2)">
+                    <button onclick="crearUsuario()">Crear Usuario</button>
+                </div>
+
+                <!-- SUBIDA DE CATALOGOS Y ARCHIVOS -->
+                <div class="card">
+                    <h3>📁 Subir Archivos (Catálogos/PDFs)</h3>
+                    <input type="file" id="fileInput">
+                    <button onclick="subirArchivo()">Subir Archivo a Render</button>
+                    <p id="fileResult" style="font-size: 12px; word-break: break-all; color: #80d8ff; margin-top: 10px;"></p>
+                </div>
+
+                <!-- LIMPIEZA DE HISTORIAL E IA -->
+                <div class="card" id="adminIaCard" style="display: none;">
+                    <h3>🧠 Aprendizaje e Historial de IA</h3>
+                    <p style="font-size: 13px; color: #aaa;">Borra el registro de fallas recurrentes de un número de cliente:</p>
+                    <input type="text" id="cleanNum" placeholder="Número del cliente (ej: +521...)">
+                    <button class="btn-danger" style="width: 100%; margin-top: 10px;" onclick="limpiarHistorial()">Borrar Historial de Fallas</button>
+                </div>
+            </div>
         </div>
 
         <script>
+            let currentUser = null;
+
             async function login() {
                 const u = document.getElementById('userInput').value;
                 const p = document.getElementById('passInput').value;
-                const resp = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({username: u, password: p})
-                });
+                
+                try {
+                    const resp = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({username: u, password: p})
+                    });
+                    
+                    if(resp.ok) {
+                        currentUser = await resp.json();
+                        document.getElementById('loginSection').style.display = 'none';
+                        document.getElementById('dashboardSection').style.display = 'block';
+                        document.getElementById('userInfo').innerText = `${currentUser.username} (${currentUser.rol})`;
+
+                        // Mostrar herramientas de Admin de forma discreta
+                        if (currentUser.rol === 'admin') {
+                            document.getElementById('adminUserCard').style.display = 'block';
+                            document.getElementById('adminIaCard').style.display = 'block';
+                        }
+                        
+                        cargarEstadisticas();
+                    } else {
+                        document.getElementById('errorMsg').style.display = 'block';
+                    }
+                } catch(e) {
+                    alert('Error de conexión con el servidor');
+                }
+            }
+
+            async function cargarEstadisticas() {
+                const resp = await fetch('/api/stats');
                 if(resp.ok) {
                     const data = await resp.json();
-                    alert('Bienvenido ' + data.username + ' (' + data.rol + ')');
-                    // Aquí cargaremos el panel completo de administración
+                    document.getElementById('statTotal').innerText = data.total_respuestas || 0;
+                }
+            }
+
+            async function crearUsuario() {
+                const u = document.getElementById('newUsername').value;
+                const p = document.getElementById('newPassword').value;
+                const t = document.getElementById('newTiendas').value.split(',');
+
+                const resp = await fetch(`/api/auth/crear-usuario?admin_user=${currentUser.username}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        username: u,
+                        password: p,
+                        tiendas: t,
+                        permisos: ["ver_tiendas"]
+                    })
+                });
+
+                const data = await resp.json();
+                if(resp.ok) {
+                    alert(data.mensaje);
+                    document.getElementById('newUsername').value = '';
+                    document.getElementById('newPassword').value = '';
+                    document.getElementById('newTiendas').value = '';
                 } else {
-                    document.getElementById('errorMsg').style.display = 'block';
+                    alert(data.detail || 'Error al crear usuario');
+                }
+            }
+
+            async function subirArchivo() {
+                const fileField = document.getElementById('fileInput');
+                if(!fileField.files[0]) return alert('Selecciona un archivo');
+
+                const formData = new FormData();
+                formData.append('file', fileField.files[0]);
+
+                const resp = await fetch('/api/archivos/subir', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await resp.json();
+                if(resp.ok) {
+                    const fullUrl = window.location.origin + data.url;
+                    document.getElementById('fileResult').innerHTML = `<b>Enlace generado:</b><br><a href="${fullUrl}" target="_blank" style="color:#80d8ff;">${fullUrl}</a>`;
+                } else {
+                    alert('Error al subir archivo');
+                }
+            }
+
+            async function limpiarHistorial() {
+                const num = document.getElementById('cleanNum').value;
+                if(!num) return alert('Escribe el número');
+
+                const resp = await fetch(`/api/ia/limpiar-historial/${num}?usuario=${currentUser.username}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await resp.json();
+                if(resp.ok) {
+                    alert(data.mensaje);
+                    document.getElementById('cleanNum').value = '';
+                } else {
+                    alert(data.detail || 'Error al borrar');
                 }
             }
         </script>

@@ -136,3 +136,52 @@ def limpiar_historial(numero: str, usuario: str):
     if numero in HISTORIAL_FALLAS:
         del HISTORIAL_FALLAS[numero]
     return {"status": "ok", "mensaje": f"Historial borrado para {numero}"}
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard_ui():
+    return """
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <title>Chat Bot de Phygital - Dashboard</title>
+        <style>
+            body { background-color: #121212; color: #ffffff; font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+            .login-card { background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); width: 300px; text-align: center; }
+            input { width: 90%; padding: 10px; margin: 10px 0; border-radius: 6px; border: 1px solid #333; background: #2b2b2b; color: white; }
+            button { width: 98%; padding: 10px; background: #3700b3; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+            button:hover { background: #4f00e0; }
+        </style>
+    </head>
+    <body>
+        <div class="login-card" id="loginBox">
+            <h2>Chat Bot Phygital</h2>
+            <input type="text" id="userInput" placeholder="Usuario">
+            <input type="password" id="passInput" placeholder="Contraseña">
+            <button onclick="login()">Iniciar Sesión</button>
+            <p id="errorMsg" style="color: #ff5252; display: none;">Credenciales incorrectas</p>
+        </div>
+
+        <script>
+            async function login() {
+                const u = document.getElementById('userInput').value;
+                const p = document.getElementById('passInput').value;
+                const resp = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username: u, password: p})
+                });
+                if(resp.ok) {
+                    const data = await resp.json();
+                    alert('Bienvenido ' + data.username + ' (' + data.rol + ')');
+                    // Aquí cargaremos el panel completo de administración
+                } else {
+                    document.getElementById('errorMsg').style.display = 'block';
+                }
+            }
+        </script>
+    </body>
+    </html>
+    """

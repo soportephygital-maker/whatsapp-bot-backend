@@ -25,7 +25,29 @@ Por defecto usa SQLite para desarrollo. En Render configura `DATABASE_URL` con P
 - `WHATSAPP_APP_SECRET`
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `WHATSAPP_API_VERSION`
+- `WHATSAPP_SEND_ENABLED`
+- `WHATSAPP_ALLOWED_NUMBERS`
 - `ALLOWED_ORIGINS`
+
+## Activación segura de WhatsApp
+
+El envío está bloqueado por defecto:
+
+```text
+WHATSAPP_SEND_ENABLED=false
+WHATSAPP_ALLOWED_NUMBERS=
+```
+
+Para una prueba controlada, agrega únicamente los números autorizados en formato internacional y activa el envío:
+
+```text
+WHATSAPP_SEND_ENABLED=true
+WHATSAPP_ALLOWED_NUMBERS=5215512345678,5215587654321
+```
+
+Mientras exista una lista blanca, cualquier otro destinatario será bloqueado aunque el webhook reciba mensajes correctamente. No uses `*` en producción salvo que se haya aprobado explícitamente habilitar respuestas para todos los clientes.
+
+En producción `WHATSAPP_APP_SECRET` es obligatorio para aceptar webhooks firmados por Meta. Los mensajes entrantes con `phone_number_id` desconocido son ignorados y auditados. Los `provider_message_id` son únicos para evitar procesar dos veces un mismo mensaje.
 
 ## Rutas principales
 
@@ -39,6 +61,15 @@ Por defecto usa SQLite para desarrollo. En Render configura `DATABASE_URL` con P
 - `GET /api/stats`
 - `GET /api/conversaciones`
 - `GET|POST /webhooks/whatsapp`
+
+## Pruebas
+
+```bash
+pip install pytest
+pytest -q
+```
+
+GitHub Actions ejecuta las pruebas automáticamente en cada push a la rama de trabajo y en pull requests.
 
 ## Seguridad
 

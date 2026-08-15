@@ -28,6 +28,7 @@ class Store(Base):
     company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'))
     name: Mapped[str] = mapped_column(String(160))
     whatsapp_number: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    whatsapp_phone_number_id: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True, index=True)
     company: Mapped[Company] = relationship(back_populates='stores')
 
 class Conversation(Base):

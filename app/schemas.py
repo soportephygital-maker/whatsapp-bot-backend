@@ -14,6 +14,7 @@ class CompanyCreate(BaseModel):
     name: str
     stores: list[str] = []
     whatsapp_numbers: list[str] = []
+    phone_number_ids: list[str] = []
 
 class DecisionTreeUpdate(BaseModel):
     structure: dict

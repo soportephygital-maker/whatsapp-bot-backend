@@ -1,5 +1,5 @@
 import requests
-from .config import settings
+from ..config import settings
 
 def send_text_message(to: str, text: str) -> dict:
     if not settings.whatsapp_access_token or not settings.whatsapp_phone_number_id:

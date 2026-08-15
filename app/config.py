@@ -11,6 +11,7 @@ class Settings:
     database_url: str = os.getenv('DATABASE_URL', 'sqlite:///./phygital.db')
     whatsapp_verify_token: str = os.getenv('WHATSAPP_VERIFY_TOKEN', '')
     whatsapp_access_token: str = os.getenv('WHATSAPP_ACCESS_TOKEN', '')
+    whatsapp_app_secret: str = os.getenv('WHATSAPP_APP_SECRET', '')
     whatsapp_phone_number_id: str = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
     whatsapp_api_version: str = os.getenv('WHATSAPP_API_VERSION', 'v23.0')
     allowed_origins: tuple[str, ...] = tuple(

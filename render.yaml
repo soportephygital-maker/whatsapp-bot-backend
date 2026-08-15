@@ -24,5 +24,9 @@ services:
         sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
         sync: false
+      - key: WHATSAPP_SEND_ENABLED
+        value: "false"
+      - key: WHATSAPP_ALLOWED_NUMBERS
+        sync: false
       - key: ALLOWED_ORIGINS
         value: "*"

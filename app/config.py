@@ -1,6 +1,18 @@
 import os
 from dataclasses import dataclass
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _env_csv(name: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in os.getenv(name, '').split(',') if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv('APP_NAME', 'Phygital WhatsApp Bot Backend')
@@ -14,8 +26,11 @@ class Settings:
     whatsapp_app_secret: str = os.getenv('WHATSAPP_APP_SECRET', '')
     whatsapp_phone_number_id: str = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
     whatsapp_api_version: str = os.getenv('WHATSAPP_API_VERSION', 'v23.0')
+    whatsapp_send_enabled: bool = _env_bool('WHATSAPP_SEND_ENABLED', False)
+    whatsapp_allowed_numbers: tuple[str, ...] = _env_csv('WHATSAPP_ALLOWED_NUMBERS')
     allowed_origins: tuple[str, ...] = tuple(
         x.strip() for x in os.getenv('ALLOWED_ORIGINS', '*').split(',') if x.strip()
     ) or ('*',)
+
 
 settings = Settings()

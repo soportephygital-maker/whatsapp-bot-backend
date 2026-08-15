@@ -3,6 +3,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Tex
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
+
 class User(Base):
     __tablename__ = 'users'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -11,6 +12,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(30), default='operador')
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 
 class Company(Base):
     __tablename__ = 'companies'
@@ -22,6 +24,7 @@ class Company(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     stores: Mapped[list['Store']] = relationship(back_populates='company', cascade='all, delete-orphan')
 
+
 class Store(Base):
     __tablename__ = 'stores'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -30,6 +33,7 @@ class Store(Base):
     whatsapp_number: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     whatsapp_phone_number_id: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True, index=True)
     company: Mapped[Company] = relationship(back_populates='stores')
+
 
 class Conversation(Base):
     __tablename__ = 'conversations'
@@ -40,6 +44,7 @@ class Conversation(Base):
     status: Mapped[str] = mapped_column(String(30), default='open')
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
 class Message(Base):
     __tablename__ = 'messages'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -47,9 +52,10 @@ class Message(Base):
     direction: Mapped[str] = mapped_column(String(20))
     sender: Mapped[str | None] = mapped_column(String(80), nullable=True)
     body: Mapped[str] = mapped_column(Text, default='')
-    provider_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True, index=True)
     raw_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 
 class AuditLog(Base):
     __tablename__ = 'audit_logs'

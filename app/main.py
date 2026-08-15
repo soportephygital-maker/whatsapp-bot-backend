@@ -4,7 +4,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, User
 from .auth import hash_password
-from .routers import auth, companies, dashboard, whatsapp
+from .routers import auth, companies, contacts, dashboard, dashboard_ui, whatsapp
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -16,8 +16,11 @@ app.add_middleware(
 )
 app.include_router(auth.router)
 app.include_router(companies.router)
+app.include_router(contacts.router)
 app.include_router(dashboard.router)
+app.include_router(dashboard_ui.router)
 app.include_router(whatsapp.router)
+
 
 @app.on_event('startup')
 def startup():
@@ -49,9 +52,11 @@ def startup():
     finally:
         db.close()
 
+
 @app.get('/health')
 def health():
     return {'status': 'ok', 'environment': settings.environment}
+
 
 @app.get('/')
 def root():
@@ -59,6 +64,7 @@ def root():
         'name': settings.app_name,
         'status': 'running',
         'health': '/health',
+        'dashboard': '/dashboard',
         'docs': '/docs',
         'whatsapp_webhook': '/webhooks/whatsapp',
     }

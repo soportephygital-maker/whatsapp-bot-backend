@@ -29,6 +29,11 @@ class ConversationReply(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class TestRecipientCreate(BaseModel):
+    phone: str = Field(min_length=6, max_length=40)
+    name: str | None = Field(default=None, max_length=160)
+
+
 class CompanyCreate(BaseModel):
     company_key: str
     name: str

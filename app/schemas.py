@@ -18,6 +18,13 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=8)
 
 
+class UIAuditEvent(BaseModel):
+    action: str = Field(min_length=1, max_length=80)
+    element_id: str | None = Field(default=None, max_length=120)
+    label: str | None = Field(default=None, max_length=160)
+    path: str | None = Field(default=None, max_length=300)
+
+
 class CompanyCreate(BaseModel):
     company_key: str
     name: str

@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from ..auth import get_current_user
+from ..auth import get_current_user, require_admin
 from ..database import get_db
-from ..models import Company, Contact, Conversation, HelpRequest, Message, User
-from ..schemas import HelpRequestStatus
+from ..models import AuditLog, Company, Contact, Conversation, HelpRequest, Message, User
+from ..schemas import HelpRequestStatus, UIAuditEvent
 
 router = APIRouter(prefix='/api', tags=['dashboard'])
 
@@ -72,10 +72,52 @@ def help_requests(
 
 
 @router.patch('/help-requests/{request_id}')
-def update_help_request(request_id: int, data: HelpRequestStatus, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_help_request(request_id: int, data: HelpRequestStatus, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.get(HelpRequest, request_id)
     if not row:
         raise HTTPException(status_code=404, detail='Solicitud no encontrada')
+    previous = row.status
     row.status = data.status
+    db.add(AuditLog(
+        username=user.username,
+        action='actualizar_solicitud_ayuda',
+        entity='help_request',
+        entity_id=str(row.id),
+        details={'status_before': previous, 'status_after': row.status, 'wa_user_id': row.wa_user_id},
+    ))
     db.commit()
     return {'status': 'ok', 'id': row.id, 'request_status': row.status}
+
+
+@router.post('/audit/ui-events')
+def audit_ui_event(event: UIAuditEvent, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    details = {
+        'element_id': event.element_id,
+        'label': event.label,
+        'path': event.path,
+    }
+    db.add(AuditLog(username=user.username, action=event.action, entity='ui', details=details))
+    db.commit()
+    return {'status': 'ok'}
+
+
+@router.get('/audit/activity')
+def audit_activity(
+    username: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    query = db.query(AuditLog)
+    if username:
+        query = query.filter(AuditLog.username == username)
+    rows = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
+    return [{
+        'id': row.id,
+        'username': row.username,
+        'action': row.action,
+        'entity': row.entity,
+        'entity_id': row.entity_id,
+        'details': row.details or {},
+        'created_at': row.created_at,
+    } for row in rows]

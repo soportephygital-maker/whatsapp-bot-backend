@@ -11,15 +11,19 @@ from .models import User
 pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/api/auth/login')
 
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
+
 
 def verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
 
+
 def create_access_token(username: str) -> str:
     exp = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_minutes)
     return jwt.encode({'sub': username, 'exp': exp}, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Token inválido o vencido')
@@ -34,6 +38,13 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if not user:
         raise credentials_exception
     return user
+
+
+def require_operator(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role not in ('admin', 'operador'):
+        raise HTTPException(status_code=403, detail='El rol lector no puede responder ni modificar conversaciones')
+    return current_user
+
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != 'admin':

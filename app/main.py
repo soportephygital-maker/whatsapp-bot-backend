@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, User
-from .auth import hash_password
+from .auth import hash_password, verify_password
 from .routers import auth, companies, contacts, dashboard, dashboard_ui, whatsapp
 
 app = FastAPI(title=settings.app_name)
@@ -27,12 +27,34 @@ def startup():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        if not db.query(User).first():
-            username = __import__('os').getenv('BOOTSTRAP_ADMIN_USERNAME')
-            password = __import__('os').getenv('BOOTSTRAP_ADMIN_PASSWORD')
-            if username and password:
-                db.add(User(username=username, password_hash=hash_password(password), role='admin'))
+        username = __import__('os').getenv('BOOTSTRAP_ADMIN_USERNAME')
+        password = __import__('os').getenv('BOOTSTRAP_ADMIN_PASSWORD')
+
+        if username and password:
+            admin = db.query(User).filter(User.username == username).first()
+            if not admin:
+                admin = User(
+                    username=username,
+                    password_hash=hash_password(password),
+                    role='admin',
+                    is_active=True,
+                )
+                db.add(admin)
                 db.commit()
+            else:
+                changed = False
+                if not verify_password(password, admin.password_hash):
+                    admin.password_hash = hash_password(password)
+                    changed = True
+                if admin.role != 'admin':
+                    admin.role = 'admin'
+                    changed = True
+                if not admin.is_active:
+                    admin.is_active = True
+                    changed = True
+                if changed:
+                    db.commit()
+
         if not db.query(Company).first():
             db.add(Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={
                 'nodo_raiz': 'inicio',

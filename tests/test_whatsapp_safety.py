@@ -39,7 +39,7 @@ def test_allowlist_blocks_unknown_number(monkeypatch):
 
 
 def test_allowlist_normalizes_number_and_sends(monkeypatch):
-    monkeypatch.setattr(whatsapp_service, 'settings', settings(whatsapp_send_enabled=True, whatsapp_allowed_numbers=('+52 55 1234 5678',)))
+    monkeypatch.setattr(whatsapp_service, 'settings', settings(whatsapp_send_enabled=True, whatsapp_allowed_numbers=('+52 1 55 1234 5678',)))
     captured = {}
     class Response:
         def raise_for_status(self): return None

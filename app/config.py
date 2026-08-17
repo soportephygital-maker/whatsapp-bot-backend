@@ -27,6 +27,7 @@ class Settings:
     whatsapp_phone_number_id: str = os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
     whatsapp_api_version: str = os.getenv('WHATSAPP_API_VERSION', 'v23.0')
     whatsapp_send_enabled: bool = _env_bool('WHATSAPP_SEND_ENABLED', False)
+    whatsapp_test_mode: bool = _env_bool('WHATSAPP_TEST_MODE', True)
     whatsapp_allowed_numbers: tuple[str, ...] = _env_csv('WHATSAPP_ALLOWED_NUMBERS')
     allowed_origins: tuple[str, ...] = tuple(
         x.strip() for x in os.getenv('ALLOWED_ORIGINS', '*').split(',') if x.strip()

@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - agent/backend-v2-hardening
+      - agent/company-tree-files-escalation
 
 jobs:
   test:

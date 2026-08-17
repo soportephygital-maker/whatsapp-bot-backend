@@ -6,7 +6,7 @@ from ..config import settings
 from ..database import get_db
 from ..models import AuditLog, Company, Conversation, HelpRequest, Message, Store
 from ..services.classifier import classify_incoming
-from ..services.decision_tree import resolve_response
+from ..services.decision_tree import match_response
 from ..services.whatsapp import extract_messages, send_text_message
 
 router = APIRouter(prefix='/webhooks/whatsapp', tags=['whatsapp'])
@@ -83,33 +83,91 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
             raw_payload={'provider': incoming.get('raw'), 'classification': classification},
         ))
 
-        if not classification['is_known_contact']:
-            if classification['help_requested']:
-                conversation.status = 'help_pending'
+        # Registered/authorized contacts are intentionally excluded from the bot.
+        # They remain visible in the dashboard for human attention.
+        if classification['is_known_contact']:
+            db.add(AuditLog(
+                action='registered_contact_bot_skipped',
+                entity='conversation',
+                entity_id=str(conversation.id),
+                details={'from': wa_user_id, 'company': company.company_key},
+            ))
+            continue
+
+        # The bot is only eligible for unregistered numbers whose message
+        # explicitly matches an option in the configured decision tree.
+        matched, response_text, next_state = match_response(
+            company.decision_tree or {},
+            conversation.state,
+            incoming.get('text') or '',
+        )
+
+        if matched:
+            conversation.state = next_state
+            try:
+                send_result = send_text_message(
+                    wa_user_id,
+                    response_text,
+                    phone_number_id=phone_number_id,
+                    db=db,
+                )
+            except Exception as exc:
+                send_result = {'sent': False, 'error': str(exc)}
+
+            db.add(Message(
+                conversation_id=conversation.id,
+                direction='outbound',
+                sender='bot',
+                body=response_text,
+                raw_payload=send_result if isinstance(send_result, dict) else None,
+            ))
+            db.add(AuditLog(
+                action='decision_tree_bot_match',
+                entity='conversation',
+                entity_id=str(conversation.id),
+                details={'from': wa_user_id, 'state': conversation.state, 'sent': bool(send_result.get('sent')) if isinstance(send_result, dict) else False},
+            ))
+            if isinstance(send_result, dict) and not send_result.get('sent'):
+                db.add(AuditLog(
+                    action='whatsapp_send_blocked',
+                    entity='conversation',
+                    entity_id=str(conversation.id),
+                    details={'to': wa_user_id, 'reason': send_result.get('reason') or send_result.get('error')},
+                ))
+            continue
+
+        # Unknown numbers that do not match the tree never receive a bot reply.
+        # If they are asking for help, create a human-support request.
+        if classification['help_requested']:
+            conversation.status = 'help_pending'
+            existing_help = db.query(HelpRequest).filter(
+                HelpRequest.conversation_id == conversation.id,
+                HelpRequest.status.in_(['new', 'reviewing']),
+            ).first()
+            if not existing_help:
                 db.add(HelpRequest(
                     company_id=company.id,
                     conversation_id=conversation.id,
                     wa_user_id=wa_user_id,
                     body=incoming.get('text') or '',
-                    reason='unknown_contact_help',
+                    reason='unknown_contact_help_no_tree_match',
                     status='new',
                     is_known_contact=False,
                     is_group=False,
                 ))
-                db.add(AuditLog(action='unknown_contact_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id}))
-            else:
-                db.add(AuditLog(action='unknown_contact_filtered', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'reason': 'not_help_request'}))
-            continue
-
-        response_text, next_state = resolve_response(company.decision_tree or {}, conversation.state, incoming.get('text') or '')
-        conversation.state = next_state
-        try:
-            send_result = send_text_message(wa_user_id, response_text)
-        except Exception as exc:
-            send_result = {'sent': False, 'error': str(exc)}
-        db.add(Message(conversation_id=conversation.id, direction='outbound', sender='bot', body=response_text, raw_payload=send_result if isinstance(send_result, dict) else None))
-        if isinstance(send_result, dict) and not send_result.get('sent'):
-            db.add(AuditLog(action='whatsapp_send_blocked', entity='conversation', entity_id=str(conversation.id), details={'to': wa_user_id, 'reason': send_result.get('reason') or send_result.get('error')}))
+            db.add(AuditLog(
+                action='unknown_contact_help_request',
+                entity='conversation',
+                entity_id=str(conversation.id),
+                details={'from': wa_user_id, 'reason': 'no_decision_tree_match'},
+            ))
+        else:
+            db.add(AuditLog(
+                action='unknown_contact_no_tree_match',
+                entity='conversation',
+                entity_id=str(conversation.id),
+                details={'from': wa_user_id},
+            ))
 
     db.commit()
     return {'status': 'ok'}

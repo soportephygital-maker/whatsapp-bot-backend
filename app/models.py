@@ -47,6 +47,16 @@ class Contact(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class WhatsAppTestRecipient(Base):
+    __tablename__ = 'whatsapp_test_recipients'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    phone: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    added_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Conversation(Base):
     __tablename__ = 'conversations'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

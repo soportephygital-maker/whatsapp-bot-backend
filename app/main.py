@@ -4,7 +4,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, User
 from .auth import hash_password, verify_password
-from .routers import auth, companies, contacts, dashboard, dashboard_ui, whatsapp
+from .routers import auth, companies, company_resources, contacts, dashboard, dashboard_ui, whatsapp
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -16,6 +16,7 @@ app.add_middleware(
 )
 app.include_router(auth.router)
 app.include_router(companies.router)
+app.include_router(company_resources.router)
 app.include_router(contacts.router)
 app.include_router(dashboard.router)
 app.include_router(dashboard_ui.router)

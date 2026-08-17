@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
@@ -23,6 +23,8 @@ class Company(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     stores: Mapped[list['Store']] = relationship(back_populates='company', cascade='all, delete-orphan')
+    files: Mapped[list['CompanyFile']] = relationship(back_populates='company', cascade='all, delete-orphan')
+    support_contacts: Mapped[list['SupportContact']] = relationship(back_populates='company', cascade='all, delete-orphan')
 
 
 class Store(Base):
@@ -79,6 +81,35 @@ class HelpRequest(Base):
     is_known_contact: Mapped[bool] = mapped_column(Boolean, default=False)
     is_group: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CompanyFile(Base):
+    __tablename__ = 'company_files'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120), default='application/octet-stream')
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    uploaded_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    company: Mapped[Company] = relationship(back_populates='files')
+
+
+class SupportContact(Base):
+    __tablename__ = 'support_contacts'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), index=True)
+    contact_id: Mapped[int | None] = mapped_column(ForeignKey('contacts.id'), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    phone: Mapped[str] = mapped_column(String(40), index=True)
+    role: Mapped[str] = mapped_column(String(20), default='primary', index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=1)
+    escalation_after_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    company: Mapped[Company] = relationship(back_populates='support_contacts')
 
 
 class AuditLog(Base):

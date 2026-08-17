@@ -1,6 +1,43 @@
+databases:
+  - name: phygital-bot-db
+    plan: free
+
 services:
   - type: web
-    name: whatsapp-bot-backend
-    env: python
+    name: whatsapp-bot-backend-v2
+    runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: phygital-bot-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: BOOTSTRAP_ADMIN_USERNAME
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+        sync: false
+      - key: WHATSAPP_SEND_ENABLED
+        value: "false"
+      - key: WHATSAPP_ALLOWED_NUMBERS
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "*"

@@ -1,6 +1,10 @@
-fastapi
-uvicorn
-pydantic
-python-multipart
-requests
-openai
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+pydantic==2.11.7
+python-multipart==0.0.20
+requests==2.32.4
+SQLAlchemy==2.0.43
+psycopg[binary]==3.2.9
+PyJWT==2.10.1
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1

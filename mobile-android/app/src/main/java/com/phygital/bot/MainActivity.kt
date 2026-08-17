@@ -2,6 +2,7 @@ package com.phygital.bot
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.provider.ContactsContract
@@ -26,6 +27,8 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private var tokenInjected = false
 
+    data class PhoneContact(val name: String, val phone: String)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -41,7 +44,7 @@ class MainActivity : Activity() {
             inputType = 0x00000081
         }
         val login = Button(this).apply { text = "Entrar" }
-        status = TextView(this).apply { text = "Inicia sesión para sincronizar contactos." }
+        status = TextView(this).apply { text = "Inicia sesión para administrar contactos." }
         loginPanel.addView(username)
         loginPanel.addView(password)
         loginPanel.addView(login)
@@ -51,7 +54,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             visibility = View.GONE
         }
-        val sync = Button(this).apply { text = "Sincronizar contactos" }
+        val sync = Button(this).apply { text = "Elegir contactos" }
         val dashboard = Button(this).apply { text = "Dashboard" }
         actionsPanel.addView(sync, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         actionsPanel.addView(dashboard, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -88,7 +91,7 @@ class MainActivity : Activity() {
             }
         }
 
-        sync.setOnClickListener { ensureContactsPermissionAndSync() }
+        sync.setOnClickListener { ensureContactsPermissionAndChoose() }
         dashboard.setOnClickListener {
             tokenInjected = false
             webView.visibility = View.VISIBLE
@@ -104,10 +107,9 @@ class MainActivity : Activity() {
                 val json = JSONObject(response)
                 token = json.getString("access_token")
                 runOnUiThread {
-                    status.text = "Sesión iniciada."
+                    status.text = "Sesión iniciada. Elige qué contactos autorizas."
                     loginPanel.visibility = View.GONE
                     actionsPanel.visibility = View.VISIBLE
-                    ensureContactsPermissionAndSync()
                 }
             } catch (e: Exception) {
                 runOnUiThread { status.text = "No se pudo iniciar sesión: ${e.message}" }
@@ -115,9 +117,9 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun ensureContactsPermissionAndSync() {
+    private fun ensureContactsPermissionAndChoose() {
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
-            syncContacts()
+            chooseContacts()
         } else {
             requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 1001)
         }
@@ -126,41 +128,77 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 1001 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            syncContacts()
+            chooseContacts()
         } else if (requestCode == 1001) {
-            status.text = "Permiso de contactos rechazado. Puedes usar el dashboard, pero no se podrá clasificar la agenda."
+            status.text = "Permiso de contactos rechazado. Puedes usar el dashboard sin sincronizar agenda."
         }
     }
 
-    private fun syncContacts() {
+    private fun chooseContacts() {
+        status.text = "Cargando contactos..."
+        Thread {
+            try {
+                val contacts = readPhoneContacts()
+                runOnUiThread {
+                    if (contacts.isEmpty()) {
+                        status.text = "No se encontraron contactos."
+                        return@runOnUiThread
+                    }
+                    val labels = contacts.map { if (it.name.isBlank()) it.phone else "${it.name} — ${it.phone}" }.toTypedArray()
+                    val checked = BooleanArray(contacts.size)
+                    AlertDialog.Builder(this)
+                        .setTitle("Selecciona contactos autorizados")
+                        .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+                        .setNegativeButton("Cancelar", null)
+                        .setPositiveButton("Sincronizar") { _, _ ->
+                            val selected = contacts.filterIndexed { index, _ -> checked[index] }
+                            syncSelectedContacts(selected)
+                        }
+                        .show()
+                    status.text = "Selecciona únicamente los contactos que podrá usar el sistema."
+                }
+            } catch (e: Exception) {
+                runOnUiThread { status.text = "No se pudo leer la agenda: ${e.message}" }
+            }
+        }.start()
+    }
+
+    private fun readPhoneContacts(): List<PhoneContact> {
+        val result = linkedMapOf<String, PhoneContact>()
+        val projection = arrayOf(
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            ContactsContract.CommonDataKinds.Phone.NUMBER
+        )
+        contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            projection,
+            null,
+            null,
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+        )?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val phoneIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            while (cursor.moveToNext()) {
+                val name = if (nameIndex >= 0) cursor.getString(nameIndex) ?: "" else ""
+                val phone = if (phoneIndex >= 0) cursor.getString(phoneIndex) ?: "" else ""
+                val normalized = phone.filter { it.isDigit() || it == '+' }
+                if (normalized.isNotBlank()) result[normalized] = PhoneContact(name, phone)
+            }
+        }
+        return result.values.toList()
+    }
+
+    private fun syncSelectedContacts(selected: List<PhoneContact>) {
         val auth = token ?: return
-        status.text = "Sincronizando agenda..."
+        status.text = "Sincronizando ${selected.size} contactos seleccionados..."
         Thread {
             try {
                 val contacts = JSONArray()
-                val projection = arrayOf(
-                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                    ContactsContract.CommonDataKinds.Phone.NUMBER
-                )
-                contentResolver.query(
-                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                    projection,
-                    null,
-                    null,
-                    null
-                )?.use { cursor ->
-                    val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-                    val phoneIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-                    while (cursor.moveToNext()) {
-                        val name = if (nameIndex >= 0) cursor.getString(nameIndex) ?: "" else ""
-                        val phone = if (phoneIndex >= 0) cursor.getString(phoneIndex) ?: "" else ""
-                        if (phone.isNotBlank()) contacts.put(JSONObject().put("name", name).put("phone", phone))
-                    }
-                }
+                selected.forEach { contacts.put(JSONObject().put("name", it.name).put("phone", it.phone)) }
                 val body = JSONObject().put("contacts", contacts).toString()
                 val response = JSONObject(request("POST", "/api/contacts/sync", body, auth))
                 runOnUiThread {
-                    status.text = "Agenda sincronizada: ${response.optInt("synced")} contactos."
+                    status.text = "Contactos autorizados sincronizados: ${response.optInt("synced")}"
                 }
             } catch (e: Exception) {
                 runOnUiThread { status.text = "Error sincronizando contactos: ${e.message}" }

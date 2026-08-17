@@ -15,7 +15,7 @@ router = APIRouter(prefix='/api', tags=['dashboard'])
 def stats(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return {
         'empresas': db.query(func.count(Company.id)).filter(Company.is_active.is_(True)).scalar() or 0,
-        'contactos': db.query(func.count(Contact.id)).filter(Contact.is_active.is_(True)).scalar() or 0,
+        'contactos_soporte_autorizados': db.query(func.count(Contact.id)).filter(Contact.is_active.is_(True)).scalar() or 0,
         'conversaciones': db.query(func.count(Conversation.id)).scalar() or 0,
         'mensajes': db.query(func.count(Message.id)).scalar() or 0,
         'solicitudes_ayuda_nuevas': db.query(func.count(HelpRequest.id)).filter(HelpRequest.status == 'new').scalar() or 0,
@@ -32,14 +32,15 @@ def conversations(
     if company_id is not None:
         query = query.filter(Conversation.company_id == company_id)
     rows = query.order_by(Conversation.updated_at.desc()).limit(200).all()
-    contact_phones = {c.phone for c in db.query(Contact).filter(Contact.is_active.is_(True)).all()}
+    support_phones = {c.phone for c in db.query(Contact).filter(Contact.is_active.is_(True)).all()}
     companies = {c.id: c.name for c in db.query(Company).all()}
     return [{
         'id': c.id,
         'company_id': c.company_id,
         'company_name': companies.get(c.company_id, 'Sin empresa'),
         'wa_user_id': c.wa_user_id,
-        'known_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in contact_phones,
+        'authorized_support_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in support_phones,
+        'known_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in support_phones,
         'state': c.state,
         'status': c.status,
         'updated_at': c.updated_at,
@@ -87,7 +88,7 @@ def reply_conversation(
     sender_id = sender_store.whatsapp_phone_number_id if sender_store else None
 
     try:
-        result = send_text_message(conversation.wa_user_id, data.text.strip(), phone_number_id=sender_id)
+        result = send_text_message(conversation.wa_user_id, data.text.strip(), phone_number_id=sender_id, db=db)
     except Exception as exc:
         db.add(AuditLog(
             username=user.username,
@@ -159,6 +160,7 @@ def help_requests(
         'wa_user_id': r.wa_user_id,
         'body': r.body,
         'status': r.status,
+        'authorized_support_contact': r.is_known_contact,
         'known_contact': r.is_known_contact,
         'is_group': r.is_group,
         'created_at': r.created_at,

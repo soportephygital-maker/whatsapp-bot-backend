@@ -56,6 +56,12 @@ def startup():
                 if changed:
                     db.commit()
 
+            other_admins = db.query(User).filter(User.username != username, User.role == 'admin').all()
+            if other_admins:
+                for row in other_admins:
+                    row.role = 'operador'
+                db.commit()
+
         if not db.query(Company).first():
             db.add(Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={
                 'nodo_raiz': 'inicio',

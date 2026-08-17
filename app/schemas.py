@@ -9,7 +9,13 @@ class LoginRequest(BaseModel):
 class UserCreate(BaseModel):
     username: str
     password: str = Field(min_length=8)
-    role: str = 'operador'
+    role: str = Field(default='operador', pattern='^(operador|lector)$')
+
+
+class UserUpdate(BaseModel):
+    role: str | None = Field(default=None, pattern='^(operador|lector)$')
+    is_active: bool | None = None
+    password: str | None = Field(default=None, min_length=8)
 
 
 class CompanyCreate(BaseModel):

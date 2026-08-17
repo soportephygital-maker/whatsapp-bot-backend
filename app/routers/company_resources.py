@@ -89,10 +89,12 @@ def add_support(company_key: str, data: SupportContactCreate, admin: User = Depe
     if not phone:
         raise HTTPException(status_code=422, detail='Teléfono inválido')
     contact = db.query(Contact).filter(Contact.phone == phone, Contact.is_active.is_(True)).first()
+    if not contact:
+        raise HTTPException(status_code=400, detail='Este número no está en Contactos autorizados. Primero agrégalo desde la app del administrador.')
     row = SupportContact(
         company_id=company.id,
-        contact_id=contact.id if contact else None,
-        name=data.name.strip(),
+        contact_id=contact.id,
+        name=data.name.strip() or contact.display_name or phone,
         phone=phone,
         role=data.role,
         priority=data.priority,
@@ -100,9 +102,9 @@ def add_support(company_key: str, data: SupportContactCreate, admin: User = Depe
     )
     db.add(row)
     db.flush()
-    db.add(AuditLog(username=admin.username, action='agregar_soporte', entity='support_contact', entity_id=str(row.id), details={'company': company_key, 'role': row.role, 'phone': phone}))
+    db.add(AuditLog(username=admin.username, action='agregar_soporte', entity='support_contact', entity_id=str(row.id), details={'company': company_key, 'role': row.role, 'phone': phone, 'authorized_contact_id': contact.id}))
     db.commit()
-    return {'status': 'ok', 'id': row.id, 'matched_phone_contact': bool(contact)}
+    return {'status': 'ok', 'id': row.id, 'authorized_contact': True}
 
 
 @router.delete('/{company_key}/soporte/{support_id}')

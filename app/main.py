@@ -1,3 +1,5 @@
+import threading
+import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
@@ -5,6 +7,7 @@ from .database import Base, SessionLocal, engine
 from .models import Company, User
 from .auth import hash_password, verify_password
 from .routers import auth, companies, company_resources, contacts, dashboard, dashboard_ui, whatsapp
+from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -22,9 +25,24 @@ app.include_router(dashboard.router)
 app.include_router(dashboard_ui.router)
 app.include_router(whatsapp.router)
 
+_escalation_thread_started = False
+
+
+def _escalation_loop():
+    while True:
+        time.sleep(60)
+        db = SessionLocal()
+        try:
+            process_help_escalations(db)
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+
 
 @app.on_event('startup')
 def startup():
+    global _escalation_thread_started
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
@@ -80,6 +98,10 @@ def startup():
             db.commit()
     finally:
         db.close()
+
+    if settings.environment.lower() == 'production' and not _escalation_thread_started:
+        _escalation_thread_started = True
+        threading.Thread(target=_escalation_loop, name='support-escalations', daemon=True).start()
 
 
 @app.get('/health')

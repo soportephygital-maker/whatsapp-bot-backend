@@ -30,16 +30,24 @@ def is_group_message(incoming: dict) -> bool:
     return bool(incoming.get('is_group') or raw.get('group_id') or sender.endswith('@g.us'))
 
 
-def is_known_contact(db: Session, phone: str | None) -> bool:
+def is_authorized_support_contact(db: Session, phone: str | None) -> bool:
     normalized = normalize_phone(phone)
     if not normalized:
         return False
     return db.query(Contact).filter(Contact.phone == normalized, Contact.is_active.is_(True)).first() is not None
 
 
+def is_known_contact(db: Session, phone: str | None) -> bool:
+    # Backward-compatible alias. Contact rows now represent only the
+    # administrator-managed authorized support pool, not customers.
+    return is_authorized_support_contact(db, phone)
+
+
 def classify_incoming(db: Session, incoming: dict) -> dict:
+    support_contact = is_authorized_support_contact(db, incoming.get('from'))
     return {
         'is_group': is_group_message(incoming),
-        'is_known_contact': is_known_contact(db, incoming.get('from')),
+        'is_authorized_support_contact': support_contact,
+        'is_known_contact': support_contact,
         'help_requested': is_help_request(incoming.get('text')),
     }

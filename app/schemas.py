@@ -25,6 +25,10 @@ class UIAuditEvent(BaseModel):
     path: str | None = Field(default=None, max_length=300)
 
 
+class ConversationReply(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
 class CompanyCreate(BaseModel):
     company_key: str
     name: str

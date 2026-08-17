@@ -16,14 +16,15 @@ def is_recipient_allowed(to: str) -> bool:
     return bool(normalized_to) and normalized_to in allowed
 
 
-def send_text_message(to: str, text: str) -> dict:
+def send_text_message(to: str, text: str, phone_number_id: str | None = None) -> dict:
     if not settings.whatsapp_send_enabled:
         return {'sent': False, 'blocked': True, 'reason': 'WHATSAPP_SEND_ENABLED=false'}
     if not is_recipient_allowed(to):
         return {'sent': False, 'blocked': True, 'reason': 'recipient_not_allowed'}
-    if not settings.whatsapp_access_token or not settings.whatsapp_phone_number_id:
+    sender_id = phone_number_id or settings.whatsapp_phone_number_id
+    if not settings.whatsapp_access_token or not sender_id:
         return {'sent': False, 'blocked': True, 'reason': 'WhatsApp no configurado'}
-    url = f'https://graph.facebook.com/{settings.whatsapp_api_version}/{settings.whatsapp_phone_number_id}/messages'
+    url = f'https://graph.facebook.com/{settings.whatsapp_api_version}/{sender_id}/messages'
     headers = {'Authorization': f'Bearer {settings.whatsapp_access_token}', 'Content-Type': 'application/json'}
     payload = {
         'messaging_product': 'whatsapp',
@@ -33,7 +34,7 @@ def send_text_message(to: str, text: str) -> dict:
     }
     response = requests.post(url, headers=headers, json=payload, timeout=20)
     response.raise_for_status()
-    return {'sent': True, 'provider': response.json()}
+    return {'sent': True, 'provider': response.json(), 'phone_number_id': sender_id}
 
 
 def extract_messages(payload: dict) -> list[dict]:

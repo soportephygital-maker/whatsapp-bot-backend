@@ -1,7 +1,7 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from ..auth import get_current_user
+from ..auth import require_admin
 from ..database import get_db
 from ..models import AuditLog, Contact, User
 from ..schemas import ContactSync
@@ -11,7 +11,8 @@ router = APIRouter(prefix='/api/contacts', tags=['contacts'])
 
 
 @router.post('/sync')
-def sync_contacts(data: ContactSync, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def sync_contacts(data: ContactSync, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Replace the administrator-managed pool of authorized support contacts."""
     now = datetime.utcnow()
     db.query(Contact).update({Contact.is_active: False})
     synced = 0
@@ -26,11 +27,16 @@ def sync_contacts(data: ContactSync, user: User = Depends(get_current_user), db:
             contact = Contact(phone=phone)
             db.add(contact)
         contact.display_name = (item.name or '').strip() or None
-        contact.source = 'mobile'
+        contact.source = 'admin_mobile_support_pool'
         contact.is_active = True
         contact.synced_at = now
         synced += 1
-    db.add(AuditLog(username=user.username, action='sync_contacts', entity='contacts', details={'synced': synced, 'skipped': skipped}))
+    db.add(AuditLog(
+        username=admin.username,
+        action='sync_authorized_support_contacts',
+        entity='contacts',
+        details={'synced': synced, 'skipped': skipped},
+    ))
     db.commit()
     return {'status': 'ok', 'synced': synced, 'skipped': skipped}
 
@@ -38,13 +44,18 @@ def sync_contacts(data: ContactSync, user: User = Depends(get_current_user), db:
 @router.get('')
 def list_contacts(
     search: str | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    _ = user
     query = db.query(Contact).filter(Contact.is_active.is_(True))
     if search:
         term = f'%{search.strip()}%'
         query = query.filter((Contact.phone.ilike(term)) | (Contact.display_name.ilike(term)))
     rows = query.order_by(Contact.display_name.asc().nullslast(), Contact.phone.asc()).limit(500).all()
-    return [{'id': c.id, 'phone': c.phone, 'name': c.display_name, 'synced_at': c.synced_at} for c in rows]
+    return [{
+        'id': c.id,
+        'phone': c.phone,
+        'name': c.display_name,
+        'synced_at': c.synced_at,
+        'purpose': 'authorized_support',
+    } for c in rows]

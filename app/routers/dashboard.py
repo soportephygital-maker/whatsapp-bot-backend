@@ -12,7 +12,7 @@ router = APIRouter(prefix='/api', tags=['dashboard'])
 @router.get('/stats')
 def stats(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return {
-        'empresas': db.query(func.count(Company.id)).scalar() or 0,
+        'empresas': db.query(func.count(Company.id)).filter(Company.is_active.is_(True)).scalar() or 0,
         'contactos': db.query(func.count(Contact.id)).filter(Contact.is_active.is_(True)).scalar() or 0,
         'conversaciones': db.query(func.count(Conversation.id)).scalar() or 0,
         'mensajes': db.query(func.count(Message.id)).scalar() or 0,
@@ -21,19 +21,54 @@ def stats(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
 
 
 @router.get('/conversaciones')
-def conversations(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    rows = db.query(Conversation).order_by(Conversation.updated_at.desc()).limit(100).all()
+def conversations(
+    company_id: int | None = Query(default=None),
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Conversation)
+    if company_id is not None:
+        query = query.filter(Conversation.company_id == company_id)
+    rows = query.order_by(Conversation.updated_at.desc()).limit(200).all()
     contact_phones = {c.phone for c in db.query(Contact).filter(Contact.is_active.is_(True)).all()}
-    return [{'id': c.id, 'wa_user_id': c.wa_user_id, 'known_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in contact_phones, 'state': c.state, 'status': c.status, 'updated_at': c.updated_at} for c in rows]
+    companies = {c.id: c.name for c in db.query(Company).all()}
+    return [{
+        'id': c.id,
+        'company_id': c.company_id,
+        'company_name': companies.get(c.company_id, 'Sin empresa'),
+        'wa_user_id': c.wa_user_id,
+        'known_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in contact_phones,
+        'state': c.state,
+        'status': c.status,
+        'updated_at': c.updated_at,
+    } for c in rows]
 
 
 @router.get('/help-requests')
-def help_requests(status: str | None = Query(default=None), _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def help_requests(
+    status: str | None = Query(default=None),
+    company_id: int | None = Query(default=None),
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     query = db.query(HelpRequest)
     if status:
         query = query.filter(HelpRequest.status == status)
+    if company_id is not None:
+        query = query.filter(HelpRequest.company_id == company_id)
     rows = query.order_by(HelpRequest.created_at.desc()).limit(200).all()
-    return [{'id': r.id, 'wa_user_id': r.wa_user_id, 'body': r.body, 'status': r.status, 'known_contact': r.is_known_contact, 'is_group': r.is_group, 'created_at': r.created_at} for r in rows]
+    companies = {c.id: c.name for c in db.query(Company).all()}
+    return [{
+        'id': r.id,
+        'company_id': r.company_id,
+        'company_name': companies.get(r.company_id, 'Sin empresa'),
+        'wa_user_id': r.wa_user_id,
+        'body': r.body,
+        'status': r.status,
+        'known_contact': r.is_known_contact,
+        'is_group': r.is_group,
+        'created_at': r.created_at,
+    } for r in rows]
 
 
 @router.patch('/help-requests/{request_id}')

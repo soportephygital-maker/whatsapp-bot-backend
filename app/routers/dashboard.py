@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from ..auth import get_current_user, require_admin
+from ..auth import get_current_user, require_admin, require_operator
 from ..database import get_db
-from ..models import AuditLog, Company, Contact, Conversation, HelpRequest, Message, User
-from ..schemas import HelpRequestStatus, UIAuditEvent
+from ..models import AuditLog, Company, Contact, Conversation, HelpRequest, Message, Store, User
+from ..schemas import ConversationReply, HelpRequestStatus, UIAuditEvent
+from ..services.escalation import process_help_escalations
+from ..services.whatsapp import send_text_message
 
 router = APIRouter(prefix='/api', tags=['dashboard'])
 
@@ -44,6 +46,97 @@ def conversations(
     } for c in rows]
 
 
+@router.get('/conversaciones/{conversation_id}/mensajes')
+def conversation_messages(
+    conversation_id: int,
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail='Conversación no encontrada')
+    rows = db.query(Message).filter(Message.conversation_id == conversation_id).order_by(Message.created_at.asc()).all()
+    return [{
+        'id': row.id,
+        'direction': row.direction,
+        'sender': row.sender,
+        'body': row.body,
+        'created_at': row.created_at,
+        'delivery': row.raw_payload or {},
+    } for row in rows]
+
+
+@router.post('/conversaciones/{conversation_id}/responder')
+def reply_conversation(
+    conversation_id: int,
+    data: ConversationReply,
+    user: User = Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail='Conversación no encontrada')
+    company = db.get(Company, conversation.company_id) if conversation.company_id else None
+    if not company:
+        raise HTTPException(status_code=409, detail='La conversación no tiene una empresa válida')
+
+    sender_store = db.query(Store).filter(
+        Store.company_id == company.id,
+        Store.whatsapp_phone_number_id.isnot(None),
+    ).order_by(Store.id.asc()).first()
+    sender_id = sender_store.whatsapp_phone_number_id if sender_store else None
+
+    try:
+        result = send_text_message(conversation.wa_user_id, data.text.strip(), phone_number_id=sender_id)
+    except Exception as exc:
+        db.add(AuditLog(
+            username=user.username,
+            action='manual_reply_error',
+            entity='conversation',
+            entity_id=str(conversation.id),
+            details={'to': conversation.wa_user_id, 'error': str(exc)},
+        ))
+        db.commit()
+        raise HTTPException(status_code=502, detail=f'No se pudo enviar: {exc}') from exc
+
+    if not result.get('sent'):
+        db.add(AuditLog(
+            username=user.username,
+            action='manual_reply_blocked',
+            entity='conversation',
+            entity_id=str(conversation.id),
+            details={'to': conversation.wa_user_id, 'reason': result.get('reason') or result.get('error')},
+        ))
+        db.commit()
+        raise HTTPException(status_code=409, detail=f"Envío bloqueado: {result.get('reason') or result.get('error') or 'configuración de seguridad'}")
+
+    message = Message(
+        conversation_id=conversation.id,
+        direction='outbound',
+        sender=user.username,
+        body=data.text.strip(),
+        raw_payload={'manual': True, 'result': result},
+    )
+    db.add(message)
+    conversation.status = 'open'
+    pending = db.query(HelpRequest).filter(
+        HelpRequest.conversation_id == conversation.id,
+        HelpRequest.status == 'new',
+    ).all()
+    for request in pending:
+        request.status = 'reviewing'
+    db.add(AuditLog(
+        username=user.username,
+        action='manual_reply_sent',
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={'to': conversation.wa_user_id, 'company': company.company_key},
+    ))
+    db.commit()
+    db.refresh(message)
+    return {'status': 'ok', 'sent': True, 'message_id': message.id, 'provider': result}
+
+
 @router.get('/help-requests')
 def help_requests(
     status: str | None = Query(default=None),
@@ -62,6 +155,7 @@ def help_requests(
         'id': r.id,
         'company_id': r.company_id,
         'company_name': companies.get(r.company_id, 'Sin empresa'),
+        'conversation_id': r.conversation_id,
         'wa_user_id': r.wa_user_id,
         'body': r.body,
         'status': r.status,
@@ -72,7 +166,7 @@ def help_requests(
 
 
 @router.patch('/help-requests/{request_id}')
-def update_help_request(request_id: int, data: HelpRequestStatus, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_help_request(request_id: int, data: HelpRequestStatus, user: User = Depends(require_operator), db: Session = Depends(get_db)):
     row = db.get(HelpRequest, request_id)
     if not row:
         raise HTTPException(status_code=404, detail='Solicitud no encontrada')
@@ -87,6 +181,11 @@ def update_help_request(request_id: int, data: HelpRequestStatus, user: User = D
     ))
     db.commit()
     return {'status': 'ok', 'id': row.id, 'request_status': row.status}
+
+
+@router.post('/support/escalations/run')
+def run_escalations(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return process_help_escalations(db)
 
 
 @router.post('/audit/ui-events')

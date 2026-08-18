@@ -30,6 +30,7 @@ import java.net.URL
 class MainActivity : Activity() {
     private val baseUrl = "https://whatsapp-bot-backend-v2.onrender.com"
     private val notificationChannelId = "phygital_support_alerts"
+    private val sessionPrefsName = "phygital_session"
     private var token: String? = null
     private var role: String? = null
     private var username: String? = null
@@ -117,6 +118,7 @@ class MainActivity : Activity() {
         }
         logout.setOnClickListener { logout() }
 
+        restoreSavedSession()
         checkForUpdate(false)
     }
 
@@ -127,6 +129,60 @@ class MainActivity : Activity() {
             pendingUpdateFile = null
             installApk(file)
         }
+    }
+
+    private fun saveSession() {
+        val currentToken = token ?: return
+        getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit()
+            .putString("token", currentToken)
+            .putString("role", role ?: "")
+            .putString("username", username ?: "")
+            .apply()
+    }
+
+    private fun clearSavedSession() {
+        getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit().clear().apply()
+    }
+
+    private fun restoreSavedSession() {
+        val prefs = getSharedPreferences(sessionPrefsName, MODE_PRIVATE)
+        val savedToken = prefs.getString("token", null) ?: return
+        token = savedToken
+        role = prefs.getString("role", null)
+        username = prefs.getString("username", null)
+        showAuthenticatedUi("Sesión guardada. Verificando acceso...")
+        Thread {
+            try {
+                request("GET", "/api/stats", null, savedToken)
+                runOnUiThread {
+                    showAuthenticatedUi("Sesión restaurada como ${role ?: "usuario"}. Alertas activas. Versión ${BuildConfig.VERSION_NAME}.")
+                }
+                startNotificationPolling()
+            } catch (e: Exception) {
+                if ((e.message ?: "").contains("HTTP 401")) {
+                    token = null
+                    role = null
+                    username = null
+                    clearSavedSession()
+                    runOnUiThread {
+                        notificationPolling = false
+                        actionsPanel.visibility = View.GONE
+                        loginPanel.visibility = View.VISIBLE
+                        status.text = "La sesión guardada venció. Inicia sesión nuevamente."
+                    }
+                } else {
+                    runOnUiThread { showAuthenticatedUi("Sesión guardada. No se pudo verificar la conexión todavía.") }
+                    startNotificationPolling()
+                }
+            }
+        }.start()
+    }
+
+    private fun showAuthenticatedUi(message: String) {
+        loginPanel.visibility = View.GONE
+        actionsPanel.visibility = View.VISIBLE
+        syncButton.visibility = if (role == "admin") View.VISIBLE else View.GONE
+        status.text = message
     }
 
     private fun checkForUpdate(showIfCurrent: Boolean) {
@@ -236,11 +292,9 @@ class MainActivity : Activity() {
                 token = json.getString("access_token")
                 role = json.optString("rol", "")
                 username = json.optString("username", userName)
+                saveSession()
                 runOnUiThread {
-                    loginPanel.visibility = View.GONE
-                    actionsPanel.visibility = View.VISIBLE
-                    syncButton.visibility = if (role == "admin") View.VISIBLE else View.GONE
-                    status.text = "Sesión ${role ?: "usuario"}. Alertas activas. Versión ${BuildConfig.VERSION_NAME}."
+                    showAuthenticatedUi("Sesión ${role ?: "usuario"}. Alertas activas. Versión ${BuildConfig.VERSION_NAME}.")
                 }
                 startNotificationPolling()
                 checkForUpdate(false)
@@ -311,7 +365,9 @@ class MainActivity : Activity() {
         token = null
         role = null
         username = null
+        clearSavedSession()
         tokenInjected = false
+        webView.evaluateJavascript("localStorage.removeItem('phygital_token'); localStorage.removeItem('phygital_role');", null)
         webView.loadUrl("about:blank")
         webView.visibility = View.GONE
         actionsPanel.visibility = View.GONE

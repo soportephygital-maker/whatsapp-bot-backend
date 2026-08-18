@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_ui import HTML, JS
 
 router = APIRouter(tags=['dashboard-ui-v2'])
-UI_VERSION = '2026.08.17-7'
+UI_VERSION = '2026.08.17-8'
 
 
 def _html() -> str:
@@ -32,12 +32,12 @@ def _js() -> str:
         "document.querySelectorAll('.help-review,.help-resolve,.help-ignore').forEach(b=>b.onclick=async()=>{const row=b.closest('[data-help]'),status=b.classList.contains('help-resolve')?'resolved':(b.classList.contains('help-ignore')?'ignored':'reviewing');",
     )
     js = js.replace(
-        "[support,files,tree]=await Promise.all([api('/api/empresas/'+encodeURIComponent(key)+'/soporte'),api('/api/empresas/'+encodeURIComponent(key)+'/archivos'),api('/api/empresas/'+encodeURIComponent(key)+'/arbol')]);",
-        "[support,files,tree,authorized]=await Promise.all([api('/api/empresas/'+encodeURIComponent(key)+'/soporte'),api('/api/empresas/'+encodeURIComponent(key)+'/archivos'),api('/api/empresas/'+encodeURIComponent(key)+'/arbol'),api('/api/contacts')]);",
+        "[support,files,tree]=await Promise.all([api('/api/empresas/'+encodeURIComponent(key)+'/soporte'),api('/api/empresas/'+encodeURIComponent(key)+'/archivos'),api('/api/empresas/'+encodeURIComponent(key)+'/arbol')]);treeDraft=normalizeTree(tree);",
+        "[support,files,tree,authorized]=await Promise.all([api('/api/empresas/'+encodeURIComponent(key)+'/soporte'),api('/api/empresas/'+encodeURIComponent(key)+'/archivos'),api('/api/empresas/'+encodeURIComponent(key)+'/arbol'),api('/api/contacts')]);treeDraft=normalizeTree(tree);const authorizedOptions=authorized.map(a=>'<option value=\"'+a.id+'\">'+esc(a.name||a.phone)+' · '+esc(a.phone)+'</option>').join('');",
     )
     js = js.replace(
         "<input id=\"supportName\" placeholder=\"Nombre\"><input id=\"supportPhone\" placeholder=\"Teléfono\"><select id=\"supportRole\"><option value=\"primary\">Primario</option><option value=\"secondary\">Secundario</option></select><input id=\"supportMinutes\" type=\"number\" value=\"15\"><button id=\"addSupport\">Agregar apoyo</button>",
-        "<label>Contacto autorizado</label><select id=\"supportContact\"><option value=\"\">Selecciona contacto</option>${authorized.map(a=>`<option value=\"${a.id}\">${esc(a.name||a.phone)} · ${esc(a.phone)}</option>`).join('')}</select><select id=\"supportRole\"><option value=\"primary\">Primario</option><option value=\"secondary\">Secundario</option></select><label>Minutos antes del siguiente escalón</label><input id=\"supportMinutes\" type=\"number\" min=\"1\" value=\"5\"><button id=\"addSupport\">Asignar apoyo</button>",
+        "<label>Contacto autorizado</label><select id=\"supportContact\"><option value=\"\">Selecciona contacto</option>'+authorizedOptions+'</select><select id=\"supportRole\"><option value=\"primary\">Primario</option><option value=\"secondary\">Secundario</option></select><label>Minutos antes del siguiente escalón</label><input id=\"supportMinutes\" type=\"number\" min=\"1\" value=\"5\"><button id=\"addSupport\">Asignar apoyo</button>",
     )
     js = js.replace(
         "body:JSON.stringify({name:$('supportName').value,phone:$('supportPhone').value,role:$('supportRole').value,priority:1,escalation_after_minutes:Number($('supportMinutes').value||15)})",

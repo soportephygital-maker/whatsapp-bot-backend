@@ -6,6 +6,7 @@ from ..config import settings
 from ..database import get_db
 from ..models import AuditLog, Company, Conversation, ConversationChannel, HelpRequest, Message, Store
 from ..services.classifier import classify_incoming
+from ..services.company_routing import detect_company
 from ..services.decision_tree import match_response
 from ..services.notifications import emit_notification
 from ..services.whatsapp import extract_messages, send_text_message
@@ -54,10 +55,15 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
 
         phone_number_id = incoming.get('phone_number_id')
         store = db.query(Store).filter(Store.whatsapp_phone_number_id == phone_number_id).first() if phone_number_id else None
-        company = db.get(Company, store.company_id) if store else None
-        if not company:
+        fallback_company = db.get(Company, store.company_id) if store else None
+        if not fallback_company:
             db.add(AuditLog(action='whatsapp_message_ignored', entity='whatsapp', entity_id=incoming.get('id'), details={'reason': 'unknown_phone_number_id', 'phone_number_id': phone_number_id, 'from': wa_user_id}))
             continue
+
+        message_text = incoming.get('text') or ''
+        company, routing = detect_company(db, message_text, fallback=fallback_company)
+        if not company:
+            company = fallback_company
 
         duplicate = db.query(Message).filter(Message.provider_message_id == incoming.get('id')).first() if incoming.get('id') else None
         if duplicate:
@@ -86,16 +92,28 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
             conversation_id=conversation.id,
             direction='inbound',
             sender=wa_user_id,
-            body=incoming.get('text') or '',
+            body=message_text,
             provider_message_id=incoming.get('id'),
-            raw_payload={'provider': incoming.get('raw'), 'classification': classification, 'phone_number_id': phone_number_id, 'store_id': store.id},
+            raw_payload={
+                'provider': incoming.get('raw'),
+                'classification': classification,
+                'phone_number_id': phone_number_id,
+                'store_id': store.id,
+                'company_routing': routing,
+            },
+        ))
+        db.add(AuditLog(
+            action='company_routing',
+            entity='conversation',
+            entity_id=str(conversation.id),
+            details={'company': company.company_key, 'store': store.name, **routing},
         ))
 
         if classification['is_known_contact']:
             db.add(AuditLog(action='authorized_support_bot_skipped', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'company': company.company_key, 'store': store.name}))
             continue
 
-        matched, response_text, next_state = match_response(company.decision_tree or {}, conversation.state, incoming.get('text') or '')
+        matched, response_text, next_state = match_response(company.decision_tree or {}, conversation.state, message_text)
         if matched:
             conversation.state = next_state
             try:
@@ -103,7 +121,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
             except Exception as exc:
                 send_result = {'sent': False, 'error': str(exc)}
             db.add(Message(conversation_id=conversation.id, direction='outbound', sender='bot', body=response_text, raw_payload=send_result if isinstance(send_result, dict) else None))
-            db.add(AuditLog(action='decision_tree_bot_match', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'state': conversation.state, 'sent': bool(send_result.get('sent')) if isinstance(send_result, dict) else False, 'store': store.name}))
+            db.add(AuditLog(action='decision_tree_bot_match', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'state': conversation.state, 'sent': bool(send_result.get('sent')) if isinstance(send_result, dict) else False, 'store': store.name, 'company': company.company_key}))
             if isinstance(send_result, dict) and not send_result.get('sent'):
                 db.add(AuditLog(action='whatsapp_send_blocked', entity='conversation', entity_id=str(conversation.id), details={'to': wa_user_id, 'reason': send_result.get('reason') or send_result.get('error')}))
             continue
@@ -119,7 +137,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                     company_id=company.id,
                     conversation_id=conversation.id,
                     wa_user_id=wa_user_id,
-                    body=incoming.get('text') or '',
+                    body=message_text,
                     reason='human_help_requested',
                     status='new',
                     is_known_contact=False,
@@ -138,7 +156,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                 )
             db.add(AuditLog(action='human_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'company': company.company_key, 'store': store.name}))
         else:
-            db.add(AuditLog(action='unknown_contact_no_tree_match', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'store': store.name}))
+            db.add(AuditLog(action='unknown_contact_no_tree_match', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'store': store.name, 'company': company.company_key}))
 
     db.commit()
     return {'status': 'ok'}

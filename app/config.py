@@ -19,7 +19,9 @@ class Settings:
     environment: str = os.getenv('ENVIRONMENT', 'development')
     jwt_secret: str = os.getenv('JWT_SECRET', 'change-me-in-production')
     jwt_algorithm: str = 'HS256'
-    access_token_minutes: int = int(os.getenv('ACCESS_TOKEN_MINUTES', '720'))
+    # Default to 30 days so the Android companion can keep a signed-in session.
+    # Production can override this with ACCESS_TOKEN_MINUTES.
+    access_token_minutes: int = int(os.getenv('ACCESS_TOKEN_MINUTES', '43200'))
     database_url: str = os.getenv('DATABASE_URL', 'sqlite:///./phygital.db')
     whatsapp_verify_token: str = os.getenv('WHATSAPP_VERIFY_TOKEN', '')
     whatsapp_access_token: str = os.getenv('WHATSAPP_ACCESS_TOKEN', '')

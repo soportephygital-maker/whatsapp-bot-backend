@@ -6,7 +6,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, User
 from .auth import hash_password, verify_password
-from .routers import auth, companies, company_resources, contacts, dashboard, dashboard_patch, dashboard_ui, whatsapp
+from .routers import auth, companies, company_resources, contacts, dashboard, dashboard_patch, dashboard_ui, mobile_update, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -24,6 +24,7 @@ app.include_router(contacts.router)
 app.include_router(dashboard.router)
 app.include_router(dashboard_patch.router)
 app.include_router(dashboard_ui.router)
+app.include_router(mobile_update.router)
 app.include_router(whatsapp.router)
 
 _escalation_thread_started = False
@@ -114,4 +115,5 @@ def root():
         'dashboard': '/dashboard',
         'docs': '/docs',
         'whatsapp_webhook': '/webhooks/whatsapp',
+        'mobile_update': '/api/mobile/update',
     }

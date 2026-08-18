@@ -32,4 +32,4 @@ def audience_for_role(role: str) -> tuple[str, ...]:
         return ('admin', 'all')
     if role == 'operador':
         return ('operator', 'all')
-    return ('reader', 'all')
+    return ('reader',)

@@ -52,11 +52,10 @@ class DecisionTreeUpdate(BaseModel):
 
 
 class SupportContactCreate(BaseModel):
-    name: str
-    phone: str
+    contact_id: int
     role: str = Field(default='primary', pattern='^(primary|secondary)$')
     priority: int = Field(default=1, ge=1, le=20)
-    escalation_after_minutes: int = Field(default=15, ge=1, le=1440)
+    escalation_after_minutes: int = Field(default=5, ge=1, le=1440)
 
 
 class OutboundMessage(BaseModel):

@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-apk-publish
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -36,6 +40,7 @@ jobs:
           cp mobile-android/app/build/outputs/apk/debug/app-debug.apk phygital-bot-latest.apk
           gh release delete android-latest -y --cleanup-tag >/dev/null 2>&1 || true
           gh release create android-latest phygital-bot-latest.apk \
+            --target "$GITHUB_SHA" \
             --title "Phygital Bot Android ${VERSION_NAME}" \
             --notes "version_code=${VERSION_CODE}
           version_name=${VERSION_NAME}

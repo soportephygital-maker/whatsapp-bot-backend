@@ -6,6 +6,9 @@ on:
       - agent/android-dashboard-app
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,3 +27,17 @@ jobs:
         with:
           name: phygital-bot-debug-apk
           path: mobile-android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish in-app update APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' mobile-android/app/build.gradle.kts | head -1)
+          VERSION_NAME=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' mobile-android/app/build.gradle.kts | head -1)
+          cp mobile-android/app/build/outputs/apk/debug/app-debug.apk phygital-bot-latest.apk
+          gh release delete android-latest -y --cleanup-tag >/dev/null 2>&1 || true
+          gh release create android-latest phygital-bot-latest.apk \
+            --title "Phygital Bot Android ${VERSION_NAME}" \
+            --notes "version_code=${VERSION_CODE}
+          version_name=${VERSION_NAME}
+          message=Nueva versión disponible. Pulsa Instalar actualización desde Phygital Bot." \
+            --latest=false

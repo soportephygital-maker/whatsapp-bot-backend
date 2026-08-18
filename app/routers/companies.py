@@ -1,8 +1,21 @@
+from copy import deepcopy
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ..auth import get_current_user, require_admin
 from ..database import get_db
-from ..models import AuditLog, Company, Store, User
+from ..models import (
+    AppNotification,
+    AuditLog,
+    Company,
+    CompanyFile,
+    Conversation,
+    ConversationChannel,
+    HelpRequest,
+    Message,
+    Store,
+    SupportContact,
+    User,
+)
 from ..schemas import CompanyCreate, CompanyIdentificationUpdate, CompanyUpdate, DecisionTreeUpdate
 from ..services.company_routing import base_decision_tree, identification_profile
 
@@ -14,6 +27,46 @@ def _company(company_key: str, db: Session) -> Company:
     if not company:
         raise HTTPException(status_code=404, detail='Empresa no encontrada')
     return company
+
+
+def _merge_base_template(current: dict) -> tuple[dict, int, int]:
+    base = base_decision_tree()
+    merged = deepcopy(current or {})
+    if 'identificacion' not in merged:
+        merged['identificacion'] = deepcopy(base.get('identificacion') or {})
+    if not merged.get('nodo_raiz'):
+        merged['nodo_raiz'] = base.get('nodo_raiz') or 'inicio'
+
+    nodes = deepcopy(merged.get('nodos') or {})
+    added_nodes = 0
+    added_options = 0
+    for node_key, base_node in (base.get('nodos') or {}).items():
+        if node_key not in nodes:
+            nodes[node_key] = deepcopy(base_node)
+            added_nodes += 1
+            added_options += len(base_node.get('opciones') or [])
+            continue
+
+        node = deepcopy(nodes[node_key] or {})
+        if not str(node.get('mensaje') or '').strip():
+            node['mensaje'] = base_node.get('mensaje') or ''
+        options = list(node.get('opciones') or [])
+        existing_commands = {
+            str(option.get('comando') or '').strip().lower()
+            for option in options
+            if str(option.get('comando') or '').strip()
+        }
+        for option in base_node.get('opciones') or []:
+            command = str(option.get('comando') or '').strip().lower()
+            if command and command not in existing_commands:
+                options.append(deepcopy(option))
+                existing_commands.add(command)
+                added_options += 1
+        node['opciones'] = options
+        nodes[node_key] = node
+
+    merged['nodos'] = nodes
+    return merged, added_nodes, added_options
 
 
 @router.get('/listar')
@@ -60,6 +113,46 @@ def update_company(company_key: str, data: CompanyUpdate, admin: User = Depends(
     return {'status': 'ok', 'empresa_id': company.company_key, 'nombre': company.name, 'activa': company.is_active}
 
 
+@router.delete('/{company_key}')
+def delete_company(company_key: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    company = _company(company_key, db)
+    company_id = company.id
+    company_name = company.name
+
+    conversations = db.query(Conversation).filter(Conversation.company_id == company_id).all()
+    conversation_ids = [row.id for row in conversations]
+    help_rows = db.query(HelpRequest).filter(HelpRequest.company_id == company_id).all()
+    help_ids = [row.id for row in help_rows]
+
+    if conversation_ids:
+        db.query(Message).filter(Message.conversation_id.in_(conversation_ids)).delete(synchronize_session=False)
+        db.query(ConversationChannel).filter(ConversationChannel.conversation_id.in_(conversation_ids)).delete(synchronize_session=False)
+        db.query(HelpRequest).filter(HelpRequest.conversation_id.in_(conversation_ids)).delete(synchronize_session=False)
+        db.query(Conversation).filter(Conversation.id.in_(conversation_ids)).delete(synchronize_session=False)
+    db.query(HelpRequest).filter(HelpRequest.company_id == company_id).delete(synchronize_session=False)
+    db.query(SupportContact).filter(SupportContact.company_id == company_id).delete(synchronize_session=False)
+    db.query(CompanyFile).filter(CompanyFile.company_id == company_id).delete(synchronize_session=False)
+    db.query(Store).filter(Store.company_id == company_id).delete(synchronize_session=False)
+
+    # App notifications do not have a foreign key, so remove only notifications
+    # that can be tied to this company's help requests/name.
+    for notification in db.query(AppNotification).all():
+        details = notification.details or {}
+        if details.get('help_request_id') in help_ids or details.get('company') == company_name:
+            db.delete(notification)
+
+    db.delete(company)
+    db.add(AuditLog(
+        username=admin.username,
+        action='eliminar_empresa',
+        entity='company',
+        entity_id=company_key,
+        details={'company_name': company_name, 'conversations_deleted': len(conversation_ids), 'help_requests_deleted': len(help_ids)},
+    ))
+    db.commit()
+    return {'status': 'ok', 'deleted_company': company_key}
+
+
 @router.get('/{company_key}/identificacion')
 def get_identification(company_key: str, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return identification_profile(_company(company_key, db))
@@ -84,16 +177,17 @@ def update_identification(company_key: str, data: CompanyIdentificationUpdate, a
 @router.post('/{company_key}/plantilla-base')
 def apply_base_template(company_key: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     company = _company(company_key, db)
-    current = company.decision_tree or {}
-    if current.get('nodos'):
-        raise HTTPException(status_code=409, detail='La empresa ya tiene un árbol configurado. La plantilla no lo sobrescribe.')
-    profile = identification_profile(company)
-    tree = base_decision_tree()
-    tree['identificacion'] = profile
-    company.decision_tree = tree
-    db.add(AuditLog(username=admin.username, action='aplicar_plantilla_base', entity='company', entity_id=company_key))
+    merged, added_nodes, added_options = _merge_base_template(company.decision_tree or {})
+    company.decision_tree = merged
+    db.add(AuditLog(
+        username=admin.username,
+        action='combinar_plantilla_base',
+        entity='company',
+        entity_id=company_key,
+        details={'added_nodes': added_nodes, 'added_options': added_options},
+    ))
     db.commit()
-    return {'status': 'ok', 'structure': tree}
+    return {'status': 'ok', 'structure': merged, 'added_nodes': added_nodes, 'added_options': added_options}
 
 
 @router.get('/{company_key}/arbol')

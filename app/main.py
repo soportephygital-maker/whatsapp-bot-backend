@@ -6,7 +6,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, User
 from .auth import hash_password, verify_password
-from .routers import auth, companies, company_resources, contacts, dashboard, dashboard_patch, dashboard_ui, mobile_update, whatsapp
+from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, mobile_update, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -21,6 +21,7 @@ app.include_router(auth.router)
 app.include_router(companies.router)
 app.include_router(company_resources.router)
 app.include_router(contacts.router)
+app.include_router(conversation_admin.router)
 app.include_router(dashboard.router)
 app.include_router(dashboard_patch.router)
 app.include_router(dashboard_ui.router)
@@ -77,6 +78,9 @@ def startup():
                     row.role = 'operador'
                 db.commit()
 
+        # Existing company configuration lives in PostgreSQL and is never
+        # overwritten on application updates. A demo company is created only
+        # for a completely empty database.
         if not db.query(Company).first():
             db.add(Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={
                 'nodo_raiz': 'inicio',

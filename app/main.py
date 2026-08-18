@@ -2,6 +2,7 @@ import threading
 import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, User
@@ -29,6 +30,50 @@ app.include_router(mobile_update.router)
 app.include_router(whatsapp.router)
 
 _escalation_thread_started = False
+
+
+def _public_page(title: str, body: str) -> HTMLResponse:
+    return HTMLResponse(f'''<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} - Phygital Bot</title>
+<style>body{{font-family:system-ui,-apple-system,sans-serif;max-width:850px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1f2937}}h1,h2{{color:#111827}}a{{color:#2563eb}}</style></head>
+<body><h1>{title}</h1>{body}<p><small>Última actualización: 18 de agosto de 2026.</small></p></body></html>''')
+
+
+@app.get('/privacy', response_class=HTMLResponse)
+def privacy_policy():
+    return _public_page('Política de privacidad', '''
+<p>Phygital Bot es una herramienta de atención y soporte operada para Grupoedm. Esta política explica el tratamiento de información cuando una persona interactúa con el servicio mediante WhatsApp, el panel web o la aplicación móvil asociada.</p>
+<h2>Información que podemos tratar</h2>
+<p>Podemos tratar el número de WhatsApp del remitente, el contenido de los mensajes enviados al bot, identificadores técnicos de WhatsApp, la empresa o tienda asociada a la conversación, solicitudes de soporte y datos necesarios para dar seguimiento al caso. Para usuarios internos también podemos tratar identificadores de sesión, rol y registros de actividad administrativa.</p>
+<h2>Finalidades</h2>
+<p>Usamos la información para recibir y enrutar solicitudes, responder consultas, escalar casos a personal de soporte, mantener historial operativo, proteger el servicio y mejorar su funcionamiento.</p>
+<h2>Proveedores y transferencias</h2>
+<p>El servicio utiliza proveedores tecnológicos necesarios para su operación, incluyendo la plataforma WhatsApp de Meta y servicios de alojamiento e infraestructura. No vendemos datos personales.</p>
+<h2>Conservación y seguridad</h2>
+<p>La información se conserva únicamente durante el tiempo necesario para fines operativos, de soporte, seguridad y cumplimiento aplicable. Aplicamos controles de acceso y medidas técnicas razonables para protegerla.</p>
+<h2>Derechos y contacto</h2>
+<p>Para solicitar acceso, corrección o eliminación de información relacionada con Phygital Bot, escribe a <a href="mailto:bernabe.lopez@grupoedm.com.mx">bernabe.lopez@grupoedm.com.mx</a>.</p>
+''')
+
+
+@app.get('/terms', response_class=HTMLResponse)
+def terms_of_service():
+    return _public_page('Condiciones del servicio', '''
+<p>Phygital Bot proporciona funciones de atención, clasificación y seguimiento de solicitudes relacionadas con servicios y operaciones de Grupoedm y sus proyectos autorizados.</p>
+<p>El usuario debe utilizar el servicio de forma legítima y proporcionar información suficiente para atender su solicitud. Las respuestas automatizadas pueden requerir validación o intervención de personal humano.</p>
+<p>El servicio puede modificarse, suspenderse temporalmente por mantenimiento o depender de plataformas de terceros como WhatsApp. El uso del servicio está sujeto también a las condiciones aplicables de dichas plataformas.</p>
+<p>Para consultas sobre estas condiciones, escribe a <a href="mailto:bernabe.lopez@grupoedm.com.mx">bernabe.lopez@grupoedm.com.mx</a>.</p>
+''')
+
+
+@app.get('/data-deletion', response_class=HTMLResponse)
+def data_deletion():
+    return _public_page('Eliminación de datos', '''
+<p>Si deseas solicitar la eliminación de datos asociados a una interacción con Phygital Bot, envía un correo a <a href="mailto:bernabe.lopez@grupoedm.com.mx">bernabe.lopez@grupoedm.com.mx</a> con el asunto <strong>Solicitud de eliminación de datos - Phygital Bot</strong>.</p>
+<p>Incluye el número de WhatsApp o identificador de cuenta relacionado con la solicitud y una descripción breve de los datos que deseas eliminar. Podemos solicitar una verificación razonable de identidad antes de ejecutar la eliminación para evitar solicitudes fraudulentas.</p>
+<p>Una vez verificada la solicitud, eliminaremos o anonimizaremos los datos que correspondan, salvo aquellos que deban conservarse por obligaciones legales, seguridad o prevención de fraude.</p>
+''')
 
 
 def _escalation_loop():
@@ -120,4 +165,7 @@ def root():
         'docs': '/docs',
         'whatsapp_webhook': '/webhooks/whatsapp',
         'mobile_update': '/api/mobile/update',
+        'privacy': '/privacy',
+        'terms': '/terms',
+        'data_deletion': '/data-deletion',
     }

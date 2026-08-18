@@ -47,6 +47,12 @@ class CompanyUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class CompanyIdentificationUpdate(BaseModel):
+    aliases: list[str] = []
+    keywords: list[str] = []
+    tags: list[str] = []
+
+
 class DecisionTreeUpdate(BaseModel):
     structure: dict
 

@@ -5,7 +5,6 @@ from ..auth import get_current_user, require_admin
 from ..database import get_db
 from ..models import AuditLog, Company, CompanyFile, Contact, SupportContact, User
 from ..schemas import SupportContactCreate
-from ..services.classifier import normalize_phone
 
 router = APIRouter(prefix='/api/empresas', tags=['company-resources'])
 MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -79,30 +78,40 @@ def delete_file(company_key: str, file_id: int, admin: User = Depends(require_ad
 def list_support(company_key: str, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
     company = _company(company_key, db)
     rows = db.query(SupportContact).filter(SupportContact.company_id == company.id, SupportContact.is_active.is_(True)).order_by(SupportContact.role.asc(), SupportContact.priority.asc()).all()
-    return [{'id': r.id, 'name': r.name, 'phone': r.phone, 'role': r.role, 'priority': r.priority, 'escalation_after_minutes': r.escalation_after_minutes} for r in rows]
+    return [{'id': r.id, 'contact_id': r.contact_id, 'name': r.name, 'phone': r.phone, 'role': r.role, 'priority': r.priority, 'escalation_after_minutes': r.escalation_after_minutes} for r in rows]
 
 
 @router.post('/{company_key}/soporte')
 def add_support(company_key: str, data: SupportContactCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     company = _company(company_key, db)
-    phone = normalize_phone(data.phone)
-    if not phone:
-        raise HTTPException(status_code=422, detail='Teléfono inválido')
-    contact = db.query(Contact).filter(Contact.phone == phone, Contact.is_active.is_(True)).first()
+    contact = db.query(Contact).filter(Contact.id == data.contact_id, Contact.is_active.is_(True)).first()
     if not contact:
-        raise HTTPException(status_code=400, detail='Este número no está en Contactos autorizados. Primero agrégalo desde la app del administrador.')
-    row = SupportContact(
-        company_id=company.id,
-        contact_id=contact.id,
-        name=data.name.strip() or contact.display_name or phone,
-        phone=phone,
-        role=data.role,
-        priority=data.priority,
-        escalation_after_minutes=data.escalation_after_minutes,
-    )
-    db.add(row)
-    db.flush()
-    db.add(AuditLog(username=admin.username, action='agregar_soporte', entity='support_contact', entity_id=str(row.id), details={'company': company_key, 'role': row.role, 'phone': phone, 'authorized_contact_id': contact.id}))
+        raise HTTPException(status_code=400, detail='Selecciona un contacto autorizado vigente.')
+    existing = db.query(SupportContact).filter(
+        SupportContact.company_id == company.id,
+        SupportContact.contact_id == contact.id,
+        SupportContact.role == data.role,
+        SupportContact.is_active.is_(True),
+    ).first()
+    if existing:
+        existing.priority = data.priority
+        existing.escalation_after_minutes = data.escalation_after_minutes
+        row = existing
+        action = 'actualizar_soporte'
+    else:
+        row = SupportContact(
+            company_id=company.id,
+            contact_id=contact.id,
+            name=contact.display_name or contact.phone,
+            phone=contact.phone,
+            role=data.role,
+            priority=data.priority,
+            escalation_after_minutes=data.escalation_after_minutes,
+        )
+        db.add(row)
+        db.flush()
+        action = 'agregar_soporte'
+    db.add(AuditLog(username=admin.username, action=action, entity='support_contact', entity_id=str(row.id), details={'company': company_key, 'role': row.role, 'phone': row.phone, 'authorized_contact_id': contact.id}))
     db.commit()
     return {'status': 'ok', 'id': row.id, 'authorized_contact': True}
 

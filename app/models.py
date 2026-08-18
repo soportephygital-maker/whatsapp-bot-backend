@@ -67,6 +67,17 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ConversationChannel(Base):
+    __tablename__ = 'conversation_channels'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey('conversations.id', ondelete='CASCADE'), unique=True, index=True)
+    company_id: Mapped[int | None] = mapped_column(ForeignKey('companies.id'), nullable=True, index=True)
+    store_id: Mapped[int | None] = mapped_column(ForeignKey('stores.id'), nullable=True, index=True)
+    phone_number_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Message(Base):
     __tablename__ = 'messages'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -116,10 +127,22 @@ class SupportContact(Base):
     phone: Mapped[str] = mapped_column(String(40), index=True)
     role: Mapped[str] = mapped_column(String(20), default='primary', index=True)
     priority: Mapped[int] = mapped_column(Integer, default=1)
-    escalation_after_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    escalation_after_minutes: Mapped[int] = mapped_column(Integer, default=5)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     company: Mapped[Company] = relationship(back_populates='support_contacts')
+
+
+class AppNotification(Base):
+    __tablename__ = 'app_notifications'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    audience: Mapped[str] = mapped_column(String(20), index=True)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text, default='')
+    event_key: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 class AuditLog(Base):

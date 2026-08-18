@@ -6,7 +6,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, User
 from .auth import hash_password, verify_password
-from .routers import auth, companies, company_resources, contacts, dashboard, dashboard_ui, whatsapp
+from .routers import auth, companies, company_resources, contacts, dashboard, dashboard_patch, dashboard_ui, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -22,6 +22,7 @@ app.include_router(companies.router)
 app.include_router(company_resources.router)
 app.include_router(contacts.router)
 app.include_router(dashboard.router)
+app.include_router(dashboard_patch.router)
 app.include_router(dashboard_ui.router)
 app.include_router(whatsapp.router)
 
@@ -52,12 +53,7 @@ def startup():
         if username and password:
             admin = db.query(User).filter(User.username == username).first()
             if not admin:
-                admin = User(
-                    username=username,
-                    password_hash=hash_password(password),
-                    role='admin',
-                    is_active=True,
-                )
+                admin = User(username=username, password_hash=hash_password(password), role='admin', is_active=True)
                 db.add(admin)
                 db.commit()
             else:

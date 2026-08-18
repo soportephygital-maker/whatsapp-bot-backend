@@ -8,9 +8,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.ContactsContract
+import android.provider.Settings
 import android.view.View
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -18,8 +20,10 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -30,12 +34,15 @@ class MainActivity : Activity() {
     private var role: String? = null
     private var username: String? = null
     @Volatile private var notificationPolling = false
+    private var tokenInjected = false
+    private var updatePromptVisible = false
+    private var pendingUpdateFile: File? = null
+
     private lateinit var status: TextView
     private lateinit var loginPanel: LinearLayout
     private lateinit var actionsPanel: LinearLayout
     private lateinit var syncButton: Button
     private lateinit var webView: WebView
-    private var tokenInjected = false
 
     data class PhoneContact(val name: String, val phone: String)
 
@@ -77,7 +84,10 @@ class MainActivity : Activity() {
                         tokenInjected = true
                         val quotedToken = JSONObject.quote(currentToken)
                         val quotedRole = JSONObject.quote(currentRole ?: "")
-                        view.evaluateJavascript("localStorage.setItem('phygital_token', $quotedToken); localStorage.setItem('phygital_role', $quotedRole); location.reload();", null)
+                        view.evaluateJavascript(
+                            "localStorage.setItem('phygital_token', $quotedToken); localStorage.setItem('phygital_role', $quotedRole); location.reload();",
+                            null
+                        )
                     }
                 }
             }
@@ -99,8 +109,108 @@ class MainActivity : Activity() {
             if (role == "admin") ensureContactsPermissionAndChoose()
             else status.text = "Solo el administrador puede cambiar el personal de soporte autorizado."
         }
-        dashboard.setOnClickListener { tokenInjected = false; webView.visibility = View.VISIBLE; webView.loadUrl("$baseUrl/dashboard") }
+        dashboard.setOnClickListener {
+            checkForUpdate(false)
+            tokenInjected = false
+            webView.visibility = View.VISIBLE
+            webView.loadUrl("$baseUrl/dashboard")
+        }
         logout.setOnClickListener { logout() }
+
+        checkForUpdate(false)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val file = pendingUpdateFile
+        if (file != null && Build.VERSION.SDK_INT >= 26 && packageManager.canRequestPackageInstalls()) {
+            pendingUpdateFile = null
+            installApk(file)
+        }
+    }
+
+    private fun checkForUpdate(showIfCurrent: Boolean) {
+        Thread {
+            try {
+                val json = JSONObject(request("GET", "/api/mobile/update", null, null))
+                val published = json.optBoolean("published", false)
+                val latestCode = json.optInt("version_code", 0)
+                val latestName = json.optString("version_name", "")
+                val apkUrl = json.optString("apk_url", "")
+                val message = json.optString("message", "Hay una actualización disponible.")
+                if (published && latestCode > BuildConfig.VERSION_CODE && apkUrl.isNotBlank()) {
+                    runOnUiThread { showUpdatePrompt(latestName, message, apkUrl) }
+                } else if (showIfCurrent) {
+                    runOnUiThread { status.text = "La app está actualizada (${BuildConfig.VERSION_NAME})." }
+                }
+            } catch (_: Exception) {
+                if (showIfCurrent) runOnUiThread { status.text = "No se pudo consultar actualizaciones en este momento." }
+            }
+        }.start()
+    }
+
+    private fun showUpdatePrompt(versionName: String, message: String, apkUrl: String) {
+        if (updatePromptVisible || isFinishing) return
+        updatePromptVisible = true
+        AlertDialog.Builder(this)
+            .setTitle("Actualización disponible${if (versionName.isNotBlank()) " · $versionName" else ""}")
+            .setMessage(message)
+            .setNegativeButton("Después") { _, _ -> updatePromptVisible = false }
+            .setPositiveButton("Instalar actualización") { _, _ ->
+                updatePromptVisible = false
+                downloadAndInstallUpdate(apkUrl)
+            }
+            .setOnCancelListener { updatePromptVisible = false }
+            .show()
+    }
+
+    private fun downloadAndInstallUpdate(apkUrl: String) {
+        status.text = "Descargando actualización..."
+        Thread {
+            try {
+                val dir = File(cacheDir, "updates").apply { mkdirs() }
+                val apk = File(dir, "phygital-bot-update.apk")
+                val connection = (URL(apkUrl).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20000
+                    readTimeout = 60000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Phygital-Bot-Android")
+                }
+                connection.inputStream.use { input -> apk.outputStream().use { output -> input.copyTo(output) } }
+                connection.disconnect()
+                runOnUiThread {
+                    status.text = "Actualización descargada. Confirma la instalación en Android."
+                    requestInstallOrOpen(apk)
+                }
+            } catch (e: Exception) {
+                runOnUiThread { status.text = "No se pudo descargar la actualización: ${e.message}" }
+            }
+        }.start()
+    }
+
+    private fun requestInstallOrOpen(apk: File) {
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            pendingUpdateFile = apk
+            AlertDialog.Builder(this)
+                .setTitle("Permitir actualizaciones")
+                .setMessage("Android necesita autorizar a Phygital Bot para instalar sus propias actualizaciones. Activa 'Permitir de esta fuente' y regresa a la app.")
+                .setPositiveButton("Abrir configuración") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
+            return
+        }
+        installApk(apk)
+    }
+
+    private fun installApk(apk: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     private fun createNotificationChannel() {
@@ -130,9 +240,10 @@ class MainActivity : Activity() {
                     loginPanel.visibility = View.GONE
                     actionsPanel.visibility = View.VISIBLE
                     syncButton.visibility = if (role == "admin") View.VISIBLE else View.GONE
-                    status.text = "Sesión ${role ?: "usuario"}. Alertas de soporte activas mientras la sesión permanezca activa."
+                    status.text = "Sesión ${role ?: "usuario"}. Alertas activas. Versión ${BuildConfig.VERSION_NAME}."
                 }
                 startNotificationPolling()
+                checkForUpdate(false)
             } catch (e: Exception) {
                 runOnUiThread { status.text = "No se pudo iniciar sesión: ${e.message}" }
             }
@@ -158,6 +269,7 @@ class MainActivity : Activity() {
                 }
             } catch (_: Exception) {}
 
+            var updateCounter = 0
             while (notificationPolling && token != null) {
                 try {
                     val events = JSONArray(request("GET", "/api/notifications?after_id=$lastId", null, token))
@@ -169,6 +281,11 @@ class MainActivity : Activity() {
                     }
                     prefs.edit().putInt(prefKey, lastId).apply()
                 } catch (_: Exception) {}
+                updateCounter++
+                if (updateCounter >= 20) {
+                    updateCounter = 0
+                    checkForUpdate(false)
+                }
                 try { Thread.sleep(30000) } catch (_: InterruptedException) { break }
             }
         }.start()

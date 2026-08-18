@@ -179,22 +179,26 @@ class MainActivity : Activity() {
                 val contacts = readPhoneContacts()
                 runOnUiThread {
                     if (contacts.isEmpty()) {
-                        status.text = "No se encontraron contactos."
+                        status.text = "No se encontraron contactos. Revisa que la app tenga permiso para leer contactos."
                         return@runOnUiThread
                     }
-                    val labels = contacts.map { if (it.name.isBlank()) it.phone else "${it.name} — ${it.phone}" }.toTypedArray()
+                    val labels = contacts.map {
+                        if (it.name.isBlank()) it.phone else "${it.name} — ${it.phone}"
+                    }.toTypedArray()
                     val checked = BooleanArray(contacts.size)
+
+                    status.text = "Selecciona únicamente personal interno que pueda ser soporte primario o secundario."
                     AlertDialog.Builder(this)
-                        .setTitle("Personal de soporte autorizado")
-                        .setMessage("Selecciona únicamente personas que podrán ser asignadas como soporte primario o secundario. No selecciones clientes.")
-                        .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+                        .setTitle("Selecciona personal de soporte")
+                        .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                            checked[which] = isChecked
+                        }
                         .setNegativeButton("Cancelar", null)
                         .setPositiveButton("Guardar") { _, _ ->
                             val selected = contacts.filterIndexed { index, _ -> checked[index] }
                             syncSelectedContacts(selected)
                         }
                         .show()
-                    status.text = "Selecciona personal interno/autorizado de soporte."
                 }
             } catch (e: Exception) {
                 runOnUiThread { status.text = "No se pudo leer la agenda: ${e.message}" }

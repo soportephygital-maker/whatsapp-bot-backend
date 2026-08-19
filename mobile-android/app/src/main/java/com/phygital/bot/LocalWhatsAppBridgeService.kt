@@ -1,0 +1,146 @@
+package com.phygital.bot
+
+import android.app.Notification
+import android.app.RemoteInput
+import android.content.Intent
+import android.provider.Settings
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+class LocalWhatsAppBridgeService : NotificationListenerService() {
+    private val baseUrl = "https://whatsapp-bot-backend-v2.onrender.com"
+    private val allowedPackages = setOf("com.whatsapp", "com.whatsapp.w4b")
+    private val sessionPrefsName = "phygital_session"
+    private val bridgePrefsName = "phygital_local_bridge"
+
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        if (!allowedPackages.contains(sbn.packageName)) return
+        val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        if (!prefs.getBoolean("enabled", false)) return
+        val storeId = prefs.getInt("store_id", -1)
+        if (storeId <= 0) return
+        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null) ?: return
+
+        val notification = sbn.notification ?: return
+        if ((notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+
+        val extras = notification.extras
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        val text = extractText(notification).trim()
+        if (text.isBlank()) return
+
+        val replyAction = findReplyAction(notification)
+        val senderKey = extras.getString(Notification.EXTRA_CONVERSATION_TITLE)
+            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
+            ?: title
+        val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "android-device"
+
+        Thread {
+            var outboundMessageId = 0
+            try {
+                val payload = JSONObject()
+                    .put("package_name", sbn.packageName)
+                    .put("device_id", deviceId)
+                    .put("notification_key", sbn.key)
+                    .put("post_time", sbn.postTime)
+                    .put("sender", if (title.isBlank()) "Contacto" else title)
+                    .put("sender_key", senderKey)
+                    .put("text", text)
+                    .put("store_id", storeId)
+                    .put("is_group", looksLikeGroup(notification, title))
+                    .put("can_reply", replyAction != null)
+                    .put("metadata", JSONObject().put("category", notification.category ?: ""))
+
+                val response = JSONObject(request("POST", "/api/local-bridge/inbound", payload.toString(), token))
+                val shouldReply = response.optBoolean("should_reply", false)
+                val replyText = response.optString("reply_text", "")
+                outboundMessageId = response.optInt("outbound_message_id", 0)
+                if (shouldReply && replyText.isNotBlank() && replyAction != null && outboundMessageId > 0) {
+                    val sent = sendInlineReply(replyAction, replyText)
+                    reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else "Android no pudo ejecutar RemoteInput")
+                }
+            } catch (e: Exception) {
+                if (outboundMessageId > 0) {
+                    try { reportDelivery(token, outboundMessageId, false, sbn.key, e.message ?: "Error local") } catch (_: Exception) {}
+                }
+            }
+        }.start()
+    }
+
+    private fun extractText(notification: Notification): String {
+        val extras = notification.extras
+        val messaging = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        if (!messaging.isNullOrEmpty()) {
+            val latest = messaging.lastOrNull()
+            if (latest is android.os.Bundle) {
+                val messageText = latest.getCharSequence("text")?.toString()
+                if (!messageText.isNullOrBlank()) return messageText
+            }
+        }
+        return extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+            ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            ?: ""
+    }
+
+    private fun looksLikeGroup(notification: Notification, title: String): Boolean {
+        val extras = notification.extras
+        val conversationTitle = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty()
+        if (conversationTitle.isNotBlank() && conversationTitle != title) return true
+        val info = extras.getCharSequence(Notification.EXTRA_INFO_TEXT)?.toString().orEmpty()
+        return info.contains("messages from", ignoreCase = true) || info.contains("mensajes de", ignoreCase = true)
+    }
+
+    private fun findReplyAction(notification: Notification): Notification.Action? {
+        return notification.actions?.firstOrNull { action ->
+            !action.remoteInputs.isNullOrEmpty()
+        }
+    }
+
+    private fun sendInlineReply(action: Notification.Action, replyText: String): Boolean {
+        val remoteInputs = action.remoteInputs ?: return false
+        if (remoteInputs.isEmpty()) return false
+        val intent = Intent()
+        val results = android.os.Bundle()
+        remoteInputs.forEach { input -> results.putCharSequence(input.resultKey, replyText) }
+        RemoteInput.addResultsToIntent(remoteInputs, intent, results)
+        return try {
+            action.actionIntent.send(this, 0, intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun reportDelivery(token: String, messageId: Int, sent: Boolean, key: String, error: String?) {
+        val body = JSONObject()
+            .put("message_id", messageId)
+            .put("sent", sent)
+            .put("notification_key", key)
+        if (error != null) body.put("error", error)
+        request("POST", "/api/local-bridge/delivery", body.toString(), token)
+    }
+
+    private fun request(method: String, path: String, body: String?, bearer: String): String {
+        val connection = (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 20000
+            readTimeout = 20000
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Authorization", "Bearer $bearer")
+            if (body != null) {
+                doOutput = true
+                outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            }
+        }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        connection.disconnect()
+        if (code !in 200..299) throw IllegalStateException("HTTP $code $text")
+        return text
+    }
+}

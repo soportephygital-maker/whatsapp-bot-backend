@@ -7,7 +7,7 @@ from ..database import get_db
 from ..models import AuditLog, Company, Conversation, ConversationChannel, HelpRequest, Message, Store
 from ..services.classifier import classify_incoming
 from ..services.company_routing import detect_company
-from ..services.decision_tree import match_response
+from ..services.decision_tree import match_response_with_action
 from ..services.notifications import emit_notification
 from ..services.whatsapp import extract_messages, send_text_message
 
@@ -15,11 +15,7 @@ router = APIRouter(prefix='/webhooks/whatsapp', tags=['whatsapp'])
 
 
 @router.get('')
-def verify_webhook(
-    hub_mode: str | None = Query(default=None, alias='hub.mode'),
-    hub_verify_token: str | None = Query(default=None, alias='hub.verify_token'),
-    hub_challenge: str | None = Query(default=None, alias='hub.challenge'),
-):
+def verify_webhook(hub_mode: str | None = Query(default=None, alias='hub.mode'), hub_verify_token: str | None = Query(default=None, alias='hub.verify_token'), hub_challenge: str | None = Query(default=None, alias='hub.challenge')):
     if hub_mode == 'subscribe' and settings.whatsapp_verify_token and hub_verify_token == settings.whatsapp_verify_token:
         return Response(content=hub_challenge or '', media_type='text/plain')
     raise HTTPException(status_code=403, detail='Verificación de webhook inválida')
@@ -36,6 +32,17 @@ def verify_signature(raw_body: bytes, signature_header: str | None) -> None:
     received = signature_header.split('=', 1)[1]
     if not hmac.compare_digest(expected, received):
         raise HTTPException(status_code=401, detail='Firma de webhook inválida')
+
+
+def _ensure_help(db: Session, conversation: Conversation, company: Company, store: Store, wa_user_id: str, body: str, reason: str) -> None:
+    conversation.status = 'help_pending'
+    help_request = db.query(HelpRequest).filter(HelpRequest.conversation_id == conversation.id, HelpRequest.status.in_(['new', 'reviewing'])).first()
+    if not help_request:
+        help_request = HelpRequest(company_id=company.id, conversation_id=conversation.id, wa_user_id=wa_user_id, body=body, reason=reason, status='new', is_known_contact=False, is_group=False)
+        db.add(help_request)
+        db.flush()
+        emit_notification(db, audience='admin', event_type='help_request_new', title=f'Nueva solicitud de ayuda - {store.name}', body=f'{company.name}: {wa_user_id} solicita atención humana.', event_key=f'help:{help_request.id}:admin:new', details={'help_request_id': help_request.id, 'company': company.name, 'store': store.name, 'wa_user_id': wa_user_id})
+    db.add(AuditLog(action='human_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'company': company.company_key, 'store': store.name}))
 
 
 @router.post('')
@@ -62,21 +69,14 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
 
         message_text = incoming.get('text') or ''
         company, routing = detect_company(db, message_text, fallback=fallback_company)
-        if not company:
-            company = fallback_company
-
+        company = company or fallback_company
         duplicate = db.query(Message).filter(Message.provider_message_id == incoming.get('id')).first() if incoming.get('id') else None
         if duplicate:
             continue
 
-        conversation = db.query(Conversation).filter(
-            Conversation.wa_user_id == wa_user_id,
-            Conversation.company_id == company.id,
-            Conversation.status.in_(['open', 'help_pending']),
-        ).order_by(Conversation.id.desc()).first()
+        conversation = db.query(Conversation).filter(Conversation.wa_user_id == wa_user_id, Conversation.company_id == company.id, Conversation.status.in_(['open', 'help_pending'])).order_by(Conversation.id.desc()).first()
         if not conversation:
-            initial_state = (company.decision_tree or {}).get('nodo_raiz') or 'inicio'
-            conversation = Conversation(company_id=company.id, wa_user_id=wa_user_id, state=initial_state)
+            conversation = Conversation(company_id=company.id, wa_user_id=wa_user_id, state=(company.decision_tree or {}).get('nodo_raiz') or 'inicio')
             db.add(conversation)
             db.flush()
 
@@ -88,73 +88,30 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
         channel.store_id = store.id
         channel.phone_number_id = phone_number_id
 
-        db.add(Message(
-            conversation_id=conversation.id,
-            direction='inbound',
-            sender=wa_user_id,
-            body=message_text,
-            provider_message_id=incoming.get('id'),
-            raw_payload={
-                'provider': incoming.get('raw'),
-                'classification': classification,
-                'phone_number_id': phone_number_id,
-                'store_id': store.id,
-                'company_routing': routing,
-            },
-        ))
-        db.add(AuditLog(
-            action='company_routing',
-            entity='conversation',
-            entity_id=str(conversation.id),
-            details={'company': company.company_key, 'store': store.name, **routing},
-        ))
+        db.add(Message(conversation_id=conversation.id, direction='inbound', sender=wa_user_id, body=message_text, provider_message_id=incoming.get('id'), raw_payload={'provider': incoming.get('raw'), 'classification': classification, 'phone_number_id': phone_number_id, 'store_id': store.id, 'company_routing': routing}))
+        db.add(AuditLog(action='company_routing', entity='conversation', entity_id=str(conversation.id), details={'company': company.company_key, 'store': store.name, **routing}))
 
         if classification['is_known_contact']:
             db.add(AuditLog(action='authorized_support_bot_skipped', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'company': company.company_key, 'store': store.name}))
             continue
 
-        matched, response_text, next_state = match_response(company.decision_tree or {}, conversation.state, message_text)
+        matched, response_text, next_state, action = match_response_with_action(company.decision_tree or {}, conversation.state, message_text)
         if matched:
             conversation.state = next_state
+            if action == 'human_help':
+                _ensure_help(db, conversation, company, store, wa_user_id, message_text, 'decision_tree_human_help')
             try:
                 send_result = send_text_message(wa_user_id, response_text, phone_number_id=phone_number_id, db=db)
             except Exception as exc:
                 send_result = {'sent': False, 'error': str(exc)}
             db.add(Message(conversation_id=conversation.id, direction='outbound', sender='bot', body=response_text, raw_payload=send_result if isinstance(send_result, dict) else None))
-            db.add(AuditLog(action='decision_tree_bot_match', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'state': conversation.state, 'sent': bool(send_result.get('sent')) if isinstance(send_result, dict) else False, 'store': store.name, 'company': company.company_key}))
+            db.add(AuditLog(action='decision_tree_bot_match', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'state': conversation.state, 'action': action, 'sent': bool(send_result.get('sent')) if isinstance(send_result, dict) else False, 'store': store.name, 'company': company.company_key}))
             if isinstance(send_result, dict) and not send_result.get('sent'):
                 db.add(AuditLog(action='whatsapp_send_blocked', entity='conversation', entity_id=str(conversation.id), details={'to': wa_user_id, 'reason': send_result.get('reason') or send_result.get('error')}))
             continue
 
         if classification['help_requested']:
-            conversation.status = 'help_pending'
-            help_request = db.query(HelpRequest).filter(
-                HelpRequest.conversation_id == conversation.id,
-                HelpRequest.status.in_(['new', 'reviewing']),
-            ).first()
-            if not help_request:
-                help_request = HelpRequest(
-                    company_id=company.id,
-                    conversation_id=conversation.id,
-                    wa_user_id=wa_user_id,
-                    body=message_text,
-                    reason='human_help_requested',
-                    status='new',
-                    is_known_contact=False,
-                    is_group=False,
-                )
-                db.add(help_request)
-                db.flush()
-                emit_notification(
-                    db,
-                    audience='admin',
-                    event_type='help_request_new',
-                    title=f'Nueva solicitud de ayuda - {store.name}',
-                    body=f'{company.name}: {wa_user_id} solicita atención humana.',
-                    event_key=f'help:{help_request.id}:admin:new',
-                    details={'help_request_id': help_request.id, 'company': company.name, 'store': store.name, 'wa_user_id': wa_user_id},
-                )
-            db.add(AuditLog(action='human_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'company': company.company_key, 'store': store.name}))
+            _ensure_help(db, conversation, company, store, wa_user_id, message_text, 'human_help_requested')
         else:
             db.add(AuditLog(action='unknown_contact_no_tree_match', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'store': store.name, 'company': company.company_key}))
 

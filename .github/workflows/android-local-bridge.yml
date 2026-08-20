@@ -36,11 +36,11 @@ jobs:
       - name: Build APK
         run: gradle -p mobile-android assembleDebug
       - name: Prepare APK
-        run: cp mobile-android/app/build/outputs/apk/debug/app-debug.apk phygital-bot-local-bridge.apk
+        run: cp mobile-android/app/build/outputs/apk/debug/app-debug.apk phygital-bot-latest.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: phygital-bot-local-${{ env.VERSION_NAME }}
-          path: phygital-bot-local-bridge.apk
+          name: phygital-bot-${{ env.VERSION_NAME }}
+          path: phygital-bot-latest.apk
       - name: Publish Android release
         uses: softprops/action-gh-release@v2
         with:
@@ -50,6 +50,6 @@ jobs:
             version_code=${{ env.VERSION_CODE }}
             version_name=${{ env.VERSION_NAME }}
             transport=android_notification
-            message=Versión de prueba sin Meta API. Requiere conceder Acceso a notificaciones en Android.
-          files: phygital-bot-local-bridge.apk
-          make_latest: false
+            message=Actualización Phygital Bot sin Meta API. Requiere conceder Acceso a notificaciones en Android.
+          files: phygital-bot-latest.apk
+          make_latest: true

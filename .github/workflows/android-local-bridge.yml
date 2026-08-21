@@ -18,7 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/phygital-release.jks
-      ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,18 +41,31 @@ jobs:
 
       - name: Verify signing secrets
         shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64_RAW: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_SIGNING_PASSWORD_RAW: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
         run: |
-          test -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" || (echo "Missing ANDROID_KEYSTORE_BASE64" && exit 1)
-          test -n "${{ secrets.ANDROID_SIGNING_PASSWORD }}" || (echo "Missing ANDROID_SIGNING_PASSWORD" && exit 1)
+          test -n "$ANDROID_KEYSTORE_BASE64_RAW" || (echo "Missing ANDROID_KEYSTORE_BASE64" && exit 1)
+          test -n "$ANDROID_SIGNING_PASSWORD_RAW" || (echo "Missing ANDROID_SIGNING_PASSWORD" && exit 1)
 
-      - name: Restore signing keystore
+      - name: Restore and normalize signing credentials
         shell: bash
-        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+        env:
+          ANDROID_KEYSTORE_BASE64_RAW: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_SIGNING_PASSWORD_RAW: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64_RAW" | tr -d '\r\n\t ' | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          CLEAN_PASSWORD=$(printf '%s' "$ANDROID_SIGNING_PASSWORD_RAW" | tr -d '\r\n')
+          test -n "$CLEAN_PASSWORD"
+          echo "::add-mask::$CLEAN_PASSWORD"
+          printf 'ANDROID_SIGNING_PASSWORD=%s\n' "$CLEAN_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Verify keystore
         shell: bash
         run: |
           test -s "$ANDROID_KEYSTORE_PATH"
+          test "$(wc -c < "$ANDROID_KEYSTORE_PATH")" = "4460" || (echo "Keystore size mismatch" && exit 1)
+          test "$(sha256sum "$ANDROID_KEYSTORE_PATH" | cut -d' ' -f1)" = "018985093e7ccd63f3dc6b5854aca2c3bb87893b5c3b4ca7848e248ee8890f4f" || (echo "Keystore content mismatch" && exit 1)
           keytool -list -keystore "$ANDROID_KEYSTORE_PATH" -storepass "$ANDROID_SIGNING_PASSWORD" -alias phygital-release >/dev/null
 
       - name: Read app version

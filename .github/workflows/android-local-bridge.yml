@@ -64,3 +64,5 @@ jobs:
             message=Actualización firmada de Phygital Bot sin Meta API. Requiere conceder Acceso a notificaciones en Android.
           files: phygital-bot-latest.apk
           make_latest: true
+
+# Signing secrets configured; this commit intentionally triggers a fresh signed build.

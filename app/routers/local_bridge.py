@@ -1,4 +1,6 @@
 import hashlib
+import re
+import unicodedata
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +18,8 @@ from ..services.notifications import emit_notification
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge'])
 
 ALLOWED_PACKAGES = {'com.whatsapp', 'com.whatsapp.w4b'}
+DEFAULT_NO_MATCH_FIRST = 'No pude identificar una opción válida. Por favor describe nuevamente lo que necesitas o usa alguna de las opciones disponibles.'
+DEFAULT_NO_MATCH_REPEAT = 'Sigo sin poder identificar tu solicitud. Revisa las opciones disponibles o escribe humano si necesitas atención de una persona.'
 
 
 class LocalInbound(BaseModel):
@@ -57,6 +61,39 @@ def _root_message(tree: dict) -> str:
     root = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
     node = nodes.get(root) or nodes.get('inicio') or {}
     return str(node.get('mensaje') or '').strip()
+
+
+def _no_match_message(tree: dict, repeated: bool) -> str:
+    key = 'respuesta_sin_sentido_2' if repeated else 'respuesta_sin_sentido_1'
+    fallback = DEFAULT_NO_MATCH_REPEAT if repeated else DEFAULT_NO_MATCH_FIRST
+    return str(tree.get(key) or fallback).strip()
+
+
+def _normalize_text(value: str) -> str:
+    text = unicodedata.normalize('NFKD', str(value or ''))
+    text = ''.join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9]+', ' ', text)).strip()
+
+
+def _explicit_human_request(value: str) -> bool:
+    text = f" {_normalize_text(value)} "
+    phrases = (
+        ' humano ', ' una persona ', ' hablar con una persona ', ' hablar con alguien ',
+        ' asesor ', ' asesora ', ' agente humano ', ' atencion humana ',
+    )
+    return any(phrase in text for phrase in phrases)
+
+
+def _previous_message_was_unmatched(db: Session, conversation_id: int, current_message_id: int) -> bool:
+    rows = db.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.direction == 'inbound',
+        Message.id < current_message_id,
+    ).order_by(Message.id.desc()).limit(1).all()
+    if not rows:
+        return False
+    payload = rows[0].raw_payload or {}
+    return bool(payload.get('tree_unmatched'))
 
 
 def _selected_stores(data: LocalInbound, db: Session) -> list[Store]:
@@ -126,7 +163,6 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
     store = next((row for row in selected_stores if row.company_id == company.id), fallback_store)
 
     conversation = db.query(Conversation).filter(Conversation.wa_user_id == local_user_id, Conversation.company_id == company.id, Conversation.status.in_(['open', 'help_pending'])).order_by(Conversation.id.desc()).first()
-    is_new = conversation is None
     if not conversation:
         initial_state = (company.decision_tree or {}).get('nodo_raiz') or 'inicio'
         conversation = Conversation(company_id=company.id, wa_user_id=local_user_id, state=initial_state)
@@ -141,7 +177,10 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
     channel.store_id = store.id
     channel.phone_number_id = f'android:{data.device_id}'[:80]
 
-    db.add(Message(conversation_id=conversation.id, direction='inbound', sender=local_user_id, body=data.text, provider_message_id=provider_message_id, raw_payload={'provider': 'android_notification', 'package_name': data.package_name, 'device_id': data.device_id, 'notification_key': data.notification_key, 'post_time': data.post_time, 'sender_display': data.sender, 'sender_key': data.sender_key, 'reply_capable': data.can_reply, 'store_id': store.id, 'selected_store_ids': [s.id for s in selected_stores], 'classification': classification, 'company_routing': routing, 'metadata': data.metadata}))
+    inbound_payload = {'provider': 'android_notification', 'package_name': data.package_name, 'device_id': data.device_id, 'notification_key': data.notification_key, 'post_time': data.post_time, 'sender_display': data.sender, 'sender_key': data.sender_key, 'reply_capable': data.can_reply, 'store_id': store.id, 'selected_store_ids': [s.id for s in selected_stores], 'classification': classification, 'company_routing': routing, 'metadata': data.metadata}
+    inbound_message = Message(conversation_id=conversation.id, direction='inbound', sender=local_user_id, body=data.text, provider_message_id=provider_message_id, raw_payload=inbound_payload)
+    db.add(inbound_message)
+    db.flush()
     db.add(AuditLog(username=operator.username, action='local_bridge_inbound', entity='conversation', entity_id=str(conversation.id), details={'company': company.company_key, 'store': store.name, 'sender': data.sender, 'package': data.package_name, 'routing': routing, 'selected_store_ids': [s.id for s in selected_stores]}))
 
     if classification['is_known_contact']:
@@ -153,16 +192,23 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
     matched, response_text, next_state, action = match_response_with_action(tree, conversation.state, data.text)
     if matched:
         conversation.state = next_state
+        inbound_payload['tree_unmatched'] = False
+        inbound_message.raw_payload = dict(inbound_payload)
         if action == 'human_help':
             _ensure_help_request(db, conversation=conversation, company=company, store=store, local_user_id=local_user_id, body=data.text, reason='decision_tree_human_help')
-    elif classification['help_requested']:
-        _ensure_help_request(db, conversation=conversation, company=company, store=store, local_user_id=local_user_id, body=data.text, reason='human_help_keyword')
+    elif _explicit_human_request(data.text):
+        inbound_payload['tree_unmatched'] = False
+        inbound_message.raw_payload = dict(inbound_payload)
+        _ensure_help_request(db, conversation=conversation, company=company, store=store, local_user_id=local_user_id, body=data.text, reason='explicit_human_request')
         response_text = 'Tu solicitud de atención humana fue registrada. El equipo de soporte dará seguimiento.'
         action = 'human_help'
-    elif is_new:
-        response_text = _root_message(tree)
     else:
-        response_text = ''
+        repeated = _previous_message_was_unmatched(db, conversation.id, inbound_message.id)
+        inbound_payload['tree_unmatched'] = True
+        inbound_payload['tree_unmatched_repeated'] = repeated
+        inbound_message.raw_payload = dict(inbound_payload)
+        response_text = _no_match_message(tree, repeated)
+        action = 'no_match_repeat' if repeated else 'no_match_first'
 
     response_text = (response_text or '').strip()
     should_reply = bool(response_text and data.can_reply)

@@ -130,6 +130,42 @@ def bridge_stores(_: User = Depends(get_current_user), db: Session = Depends(get
     return [{'id': row.id, 'name': row.name, 'company_id': row.company_id, 'company_key': row.company.company_key, 'company_name': row.company.name} for row in rows]
 
 
+@router.get('/manual-pending')
+def manual_pending(device_id: str, operator: User = Depends(require_operator), db: Session = Depends(get_db)):
+    channel_rows = db.query(ConversationChannel).filter(ConversationChannel.phone_number_id == f'android:{device_id}').all()
+    conversation_ids = [row.conversation_id for row in channel_rows]
+    if not conversation_ids:
+        return []
+    rows = db.query(Message).filter(
+        Message.conversation_id.in_(conversation_ids),
+        Message.direction == 'outbound',
+    ).order_by(Message.id.asc()).limit(100).all()
+    result = []
+    for row in rows:
+        payload = row.raw_payload or {}
+        if payload.get('transport') != 'android_notification':
+            continue
+        if not payload.get('manual_dashboard'):
+            continue
+        if payload.get('device_id') != device_id:
+            continue
+        if payload.get('delivery_status') != 'requested':
+            continue
+        result.append({
+            'message_id': row.id,
+            'conversation_id': row.conversation_id,
+            'text': row.body,
+            'notification_key': payload.get('notification_key'),
+            'package_name': payload.get('package_name'),
+            'sender_display': payload.get('sender_display'),
+            'operator': payload.get('operator'),
+        })
+    if result:
+        db.add(AuditLog(username=operator.username, action='local_bridge_manual_poll', entity='local_bridge', entity_id=device_id, details={'pending': len(result)}))
+        db.commit()
+    return result
+
+
 @router.post('/inbound')
 def local_inbound(data: LocalInbound, operator: User = Depends(require_operator), db: Session = Depends(get_db)):
     if data.package_name not in ALLOWED_PACKAGES:
@@ -187,8 +223,6 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         db.commit()
         return {'status': 'known_support_skipped', 'should_reply': False, 'conversation_id': conversation.id}
 
-    # Once a person has taken over the conversation, keep recording incoming
-    # messages but never execute the chatbot until the help case is closed.
     if conversation.status == 'human_active':
         inbound_payload['chatbot_paused'] = True
         inbound_message.raw_payload = dict(inbound_payload)
@@ -256,6 +290,6 @@ def local_delivery(data: DeliveryUpdate, operator: User = Depends(require_operat
     if data.error:
         payload['delivery_error'] = data.error[:1000]
     message.raw_payload = payload
-    db.add(AuditLog(username=operator.username, action='local_bridge_reply_sent' if data.sent else 'local_bridge_reply_failed', entity='message', entity_id=str(message.id), details={'conversation_id': message.conversation_id, 'error': data.error}))
+    db.add(AuditLog(username=operator.username, action='local_bridge_reply_sent' if data.sent else 'local_bridge_reply_failed', entity='message', entity_id=str(message.id), details={'conversation_id': message.conversation_id, 'error': data.error, 'manual_dashboard': bool(payload.get('manual_dashboard'))}))
     db.commit()
     return {'status': 'ok', 'message_id': message.id, 'sent': data.sent}

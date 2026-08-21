@@ -28,6 +28,8 @@ class MainActivity : Activity() {
     private val baseUrl = "https://whatsapp-bot-backend-v2.onrender.com"
     private val sessionPrefsName = "phygital_session"
     private val bridgePrefsName = "phygital_local_bridge"
+    private val whatsappPackage = "com.whatsapp"
+    private val whatsappBusinessPackage = "com.whatsapp.w4b"
     private var token: String? = null
     private var role: String? = null
     private var username: String? = null
@@ -35,6 +37,7 @@ class MainActivity : Activity() {
     private var dashboardMode = false
     private var updatePromptVisible = false
     private var pendingUpdateFile: File? = null
+    private var pendingBridgeConfiguration = false
 
     private lateinit var status: TextView
     private lateinit var loginPanel: LinearLayout
@@ -109,7 +112,7 @@ class MainActivity : Activity() {
             if (user.isBlank() || password.isBlank()) status.text = "Escribe usuario y contraseña."
             else login(user, password)
         }
-        bridgeButton.setOnClickListener { configureBridge() }
+        bridgeButton.setOnClickListener { ensureContactsPermissionAndConfigureBridge() }
         dashboardButton.setOnClickListener { openDashboard() }
         updateButton.setOnClickListener { checkForUpdate(true) }
         logoutButton.setOnClickListener { logout() }
@@ -291,6 +294,30 @@ class MainActivity : Activity() {
         startActivity(intent)
     }
 
+    private fun ensureContactsPermissionAndConfigureBridge() {
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+            configureBridge()
+            return
+        }
+        pendingBridgeConfiguration = true
+        AlertDialog.Builder(this)
+            .setTitle("Filtrar contactos guardados")
+            .setMessage("Para que el bot ignore a todas las personas que ya tienes agregadas, Android debe permitir a Phygital Bot leer la agenda. Sin este permiso el puente permanecerá bloqueado por seguridad.")
+            .setPositiveButton("Permitir") { _, _ -> requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 3001) }
+            .setNegativeButton("Cancelar") { _, _ -> pendingBridgeConfiguration = false }
+            .show()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 3001) {
+            val allowed = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+            if (allowed && pendingBridgeConfiguration) configureBridge()
+            else status.text = "El puente no se activará hasta permitir acceso a Contactos; así evitamos responder a personas ya guardadas."
+            pendingBridgeConfiguration = false
+        }
+    }
+
     private fun configureBridge() {
         val auth = token ?: return
         status.text = "Cargando tiendas..."
@@ -301,31 +328,64 @@ class MainActivity : Activity() {
                     runOnUiThread { status.text = "No hay tiendas configuradas. Abre Dashboard > Empresas y agrega una tienda." }
                     return@Thread
                 }
-                val labels = Array(stores.length()) { i ->
-                    val row = stores.getJSONObject(i)
-                    "${row.optString("company_name")} · ${row.optString("name")}"
-                }
-                runOnUiThread {
-                    AlertDialog.Builder(this)
-                        .setTitle("Selecciona la tienda de este teléfono")
-                        .setSingleChoiceItems(labels, -1) { dialog, which ->
-                            val row = stores.getJSONObject(which)
-                            getSharedPreferences(bridgePrefsName, MODE_PRIVATE).edit()
-                                .putInt("store_id", row.getInt("id"))
-                                .putString("store_name", labels[which])
-                                .putBoolean("enabled", true)
-                                .apply()
-                            dialog.dismiss()
-                            requestNotificationListenerAccess()
-                        }
-                        .setNegativeButton("Cancelar", null)
-                        .show()
-                }
+                runOnUiThread { chooseWhatsAppApplication(stores) }
             } catch (e: Exception) {
                 runOnUiThread { status.text = "No se pudieron cargar las tiendas: ${e.message}" }
             }
         }.start()
     }
+
+    private fun chooseWhatsAppApplication(stores: JSONArray) {
+        val options = arrayOf("WhatsApp", "WhatsApp Business")
+        AlertDialog.Builder(this)
+            .setTitle("¿Qué aplicación quieres configurar?")
+            .setItems(options) { _, which ->
+                val packageName = if (which == 0) whatsappPackage else whatsappBusinessPackage
+                val label = options[which]
+                chooseStoreForApplication(stores, packageName, label)
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun chooseStoreForApplication(stores: JSONArray, packageName: String, appLabel: String) {
+        val labels = Array(stores.length()) { i ->
+            val row = stores.getJSONObject(i)
+            "${row.optString("company_name")} · ${row.optString("name")}"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Tienda para $appLabel")
+            .setSingleChoiceItems(labels, -1) { dialog, which ->
+                val row = stores.getJSONObject(which)
+                val suffix = packageSuffix(packageName)
+                getSharedPreferences(bridgePrefsName, MODE_PRIVATE).edit()
+                    .putInt("store_id_$suffix", row.getInt("id"))
+                    .putString("store_name_$suffix", labels[which])
+                    .putBoolean("enabled_$suffix", true)
+                    .apply()
+                dialog.dismiss()
+                refreshBridgeStatus()
+                requestNotificationListenerAccess()
+                AlertDialog.Builder(this)
+                    .setTitle("Configuración guardada")
+                    .setMessage("$appLabel quedó asignado a ${labels[which]}. Puedes volver a Configurar WhatsApp local para asignar otra tienda a la otra aplicación.")
+                    .setPositiveButton("Aceptar", null)
+                    .show()
+            }
+            .setNeutralButton("Desactivar $appLabel") { _, _ ->
+                val suffix = packageSuffix(packageName)
+                getSharedPreferences(bridgePrefsName, MODE_PRIVATE).edit()
+                    .putBoolean("enabled_$suffix", false)
+                    .remove("store_id_$suffix")
+                    .remove("store_name_$suffix")
+                    .apply()
+                refreshBridgeStatus()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun packageSuffix(packageName: String): String = packageName.replace('.', '_')
 
     private fun requestNotificationListenerAccess() {
         if (hasNotificationListenerAccess()) {
@@ -334,7 +394,7 @@ class MainActivity : Activity() {
         }
         AlertDialog.Builder(this)
             .setTitle("Permitir lectura y respuesta")
-            .setMessage("Android abrirá Acceso a notificaciones. Activa Phygital Bot. La app solo procesa notificaciones de WhatsApp y WhatsApp Business cuando el puente está habilitado.")
+            .setMessage("Android abrirá Acceso a notificaciones. Activa Phygital Bot. El puente ignorará chats grupales y contactos guardados, y procesará solo la aplicación que hayas asignado a una tienda.")
             .setPositiveButton("Abrir configuración") { _, _ ->
                 startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             }
@@ -350,15 +410,20 @@ class MainActivity : Activity() {
 
     private fun refreshBridgeStatus() {
         val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
-        val enabled = prefs.getBoolean("enabled", false)
-        val storeName = prefs.getString("store_name", null)
         val listener = hasNotificationListenerAccess()
+        val waEnabled = prefs.getBoolean("enabled_${packageSuffix(whatsappPackage)}", false)
+        val wbEnabled = prefs.getBoolean("enabled_${packageSuffix(whatsappBusinessPackage)}", false)
+        val waStore = prefs.getString("store_name_${packageSuffix(whatsappPackage)}", null)
+        val wbStore = prefs.getString("store_name_${packageSuffix(whatsappBusinessPackage)}", null)
+        val configured = mutableListOf<String>()
+        if (waEnabled && !waStore.isNullOrBlank()) configured.add("WhatsApp → $waStore")
+        if (wbEnabled && !wbStore.isNullOrBlank()) configured.add("Business → $wbStore")
         status.text = when {
-            enabled && listener && !storeName.isNullOrBlank() -> "Puente local activo · $storeName · versión ${BuildConfig.VERSION_NAME}."
-            enabled && !listener -> "Tienda configurada. Falta conceder Acceso a notificaciones a Phygital Bot."
-            else -> "Sesión activa. Configura este teléfono para recibir y responder WhatsApp sin Meta API."
+            configured.isNotEmpty() && listener -> "Puente activo · ${configured.joinToString(" | ")} · versión ${BuildConfig.VERSION_NAME}."
+            configured.isNotEmpty() -> "${configured.joinToString(" | ")}. Falta conceder Acceso a notificaciones."
+            else -> "Sesión activa. Configura WhatsApp y/o WhatsApp Business por tienda. Grupos y contactos guardados serán ignorados."
         }
-        bridgeButton.text = if (enabled && listener) "Cambiar tienda / permisos" else "Configurar WhatsApp local"
+        bridgeButton.text = if (configured.isNotEmpty()) "Cambiar tiendas / aplicaciones" else "Configurar WhatsApp local"
     }
 
     private fun logout() {

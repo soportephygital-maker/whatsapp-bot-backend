@@ -29,6 +29,7 @@ class MainActivity : Activity() {
     private var role: String? = null
     private var username: String? = null
     private var tokenInjected = false
+    private var dashboardMode = false
 
     private lateinit var status: TextView
     private lateinit var loginPanel: LinearLayout
@@ -71,6 +72,8 @@ class MainActivity : Activity() {
             visibility = View.GONE
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            settings.builtInZoomControls = false
+            settings.displayZoomControls = false
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) {
                     val currentToken = token ?: return
@@ -100,11 +103,7 @@ class MainActivity : Activity() {
             else login(user, password)
         }
         bridgeButton.setOnClickListener { configureBridge() }
-        dashboardButton.setOnClickListener {
-            tokenInjected = false
-            webView.visibility = View.VISIBLE
-            webView.loadUrl("$baseUrl/dashboard")
-        }
+        dashboardButton.setOnClickListener { openDashboard() }
         logoutButton.setOnClickListener { logout() }
 
         restoreSavedSession()
@@ -112,7 +111,34 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (token != null) refreshBridgeStatus()
+        if (token != null && !dashboardMode) refreshBridgeStatus()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (dashboardMode) {
+            if (webView.canGoBack()) webView.goBack() else closeDashboard()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
+    private fun openDashboard() {
+        dashboardMode = true
+        tokenInjected = false
+        status.visibility = View.GONE
+        actionsPanel.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+        webView.loadUrl("$baseUrl/dashboard")
+    }
+
+    private fun closeDashboard() {
+        dashboardMode = false
+        webView.loadUrl("about:blank")
+        webView.visibility = View.GONE
+        status.visibility = View.VISIBLE
+        actionsPanel.visibility = View.VISIBLE
+        refreshBridgeStatus()
     }
 
     private fun login(userName: String, password: String) {
@@ -159,6 +185,7 @@ class MainActivity : Activity() {
 
     private fun showAuthenticatedUi() {
         loginPanel.visibility = View.GONE
+        status.visibility = View.VISIBLE
         actionsPanel.visibility = View.VISIBLE
         refreshBridgeStatus()
     }
@@ -170,7 +197,7 @@ class MainActivity : Activity() {
             try {
                 val stores = JSONArray(request("GET", "/api/local-bridge/stores", null, auth))
                 if (stores.length() == 0) {
-                    runOnUiThread { status.text = "No hay tiendas activas configuradas en el dashboard." }
+                    runOnUiThread { status.text = "No hay tiendas configuradas. Abre Dashboard > Empresas y agrega una tienda." }
                     return@Thread
                 }
                 val labels = Array(stores.length()) { i ->
@@ -234,6 +261,7 @@ class MainActivity : Activity() {
     }
 
     private fun logout() {
+        dashboardMode = false
         token = null
         role = null
         username = null
@@ -242,6 +270,7 @@ class MainActivity : Activity() {
         webView.loadUrl("about:blank")
         webView.visibility = View.GONE
         actionsPanel.visibility = View.GONE
+        status.visibility = View.VISIBLE
         loginPanel.visibility = View.VISIBLE
         status.text = "Sesión cerrada. El puente deja de enviar mensajes al backend hasta iniciar sesión nuevamente."
     }

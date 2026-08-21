@@ -10,12 +10,12 @@ android {
         applicationId = "com.phygital.bot"
         minSdk = 26
         targetSdk = 37
-        versionCode = 10
-        versionName = "0.5.2"
+        versionCode = 11
+        versionName = "0.5.3"
     }
 
     signingConfigs {
-        create("release") {
+        create("stable") {
             val keyStorePath = System.getenv("ANDROID_KEYSTORE_PATH")
             if (!keyStorePath.isNullOrBlank()) {
                 storeFile = file(keyStorePath)
@@ -27,8 +27,11 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("stable")
+        }
         getByName("release") {
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.getByName("stable")
             isMinifyEnabled = false
         }
     }

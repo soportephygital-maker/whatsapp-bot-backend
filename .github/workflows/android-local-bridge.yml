@@ -36,6 +36,9 @@ jobs:
       - name: Restore signing keystore
         shell: bash
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+      - name: Verify keystore
+        shell: bash
+        run: keytool -list -keystore "$ANDROID_KEYSTORE_PATH" -storepass "$ANDROID_SIGNING_PASSWORD" -alias phygital-release >/dev/null
       - name: Read app version
         shell: bash
         run: |
@@ -44,10 +47,10 @@ jobs:
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=android-v$VERSION_CODE" >> "$GITHUB_ENV"
-      - name: Build signed release APK
-        run: gradle -p mobile-android assembleRelease
+      - name: Build stable signed APK
+        run: gradle -p mobile-android assembleDebug --stacktrace
       - name: Prepare APK
-        run: cp mobile-android/app/build/outputs/apk/release/app-release.apk phygital-bot-latest.apk
+        run: cp mobile-android/app/build/outputs/apk/debug/app-debug.apk phygital-bot-latest.apk
       - uses: actions/upload-artifact@v4
         with:
           name: phygital-bot-${{ env.VERSION_NAME }}
@@ -64,5 +67,3 @@ jobs:
             message=Actualización firmada de Phygital Bot sin Meta API. Requiere conceder Acceso a notificaciones en Android.
           files: phygital-bot-latest.apk
           make_latest: true
-
-# Signing secrets configured; this commit intentionally triggers a fresh signed build.

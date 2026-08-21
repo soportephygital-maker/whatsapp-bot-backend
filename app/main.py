@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
-from .models import Company, User
+from .models import Company, Store, User
 from .auth import hash_password, verify_password
 from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, local_bridge, mobile_update, whatsapp
 from .services.escalation import process_help_escalations
@@ -28,7 +28,6 @@ app.include_router(dashboard_patch.router)
 app.include_router(dashboard_ui.router)
 app.include_router(local_bridge.router)
 app.include_router(mobile_update.router)
-# Legacy Meta webhook remains mounted only for backward compatibility during migration.
 app.include_router(whatsapp.router)
 
 _escalation_thread_started = False
@@ -39,7 +38,7 @@ def _public_page(title: str, body: str) -> HTMLResponse:
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title} - Phygital Bot</title>
 <style>body{{font-family:system-ui,-apple-system,sans-serif;max-width:850px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1f2937}}h1,h2{{color:#111827}}a{{color:#2563eb}}</style></head>
-<body><h1>{title}</h1>{body}<p><small>Última actualización: 19 de agosto de 2026.</small></p></body></html>''')
+<body><h1>{title}</h1>{body}<p><small>Última actualización: 21 de agosto de 2026.</small></p></body></html>''')
 
 
 @app.get('/privacy', response_class=HTMLResponse)
@@ -122,7 +121,7 @@ def startup():
                 db.commit()
 
         if not db.query(Company).first():
-            db.add(Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={
+            company = Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={
                 'nodo_raiz': 'inicio',
                 'nodos': {
                     'inicio': {
@@ -135,7 +134,20 @@ def startup():
                     'soporte': {'mensaje': 'Describe el problema y un operador podrá darle seguimiento.', 'opciones': []},
                     'informacion': {'mensaje': 'Escribe tu consulta.', 'opciones': []},
                 },
-            }))
+            })
+            db.add(company)
+            db.flush()
+            db.add(Store(company_id=company.id, name='Principal'))
+            db.commit()
+
+        # Existing companies created before the local Android bridge may have no stores.
+        # Create one neutral default store so the phone can be assigned immediately.
+        changed = False
+        for company in db.query(Company).all():
+            if not company.stores:
+                db.add(Store(company_id=company.id, name='Principal'))
+                changed = True
+        if changed:
             db.commit()
     finally:
         db.close()

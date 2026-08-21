@@ -4,12 +4,12 @@ plugins {
 
 android {
     namespace = "com.phygital.bot"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.phygital.bot"
         minSdk = 26
-        targetSdk = 37
+        targetSdk = 36
         versionCode = 11
         versionName = "0.5.3"
     }

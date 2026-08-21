@@ -103,15 +103,18 @@ def reply_conversation(conversation_id: int, data: ConversationReply, user: User
 
     message = Message(conversation_id=conversation.id, direction='outbound', sender=user.username, body=data.text.strip(), raw_payload={'manual': True, 'result': result})
     db.add(message)
-    conversation.status = 'open'
+
+    # Human takeover: once an operator replies manually, the bot must remain silent
+    # on this conversation until the associated help request is explicitly closed.
+    conversation.status = 'human_active'
     pending = db.query(HelpRequest).filter(HelpRequest.conversation_id == conversation.id, HelpRequest.status.in_(['new', 'reviewing'])).all()
     for request in pending:
         request.status = 'reviewing'
         db.add(AuditLog(username=user.username, action='human_response_sent', entity='help_request', entity_id=str(request.id), details={'conversation_id': conversation.id, 'to': conversation.wa_user_id}))
-    db.add(AuditLog(username=user.username, action='manual_reply_sent', entity='conversation', entity_id=str(conversation.id), details={'to': conversation.wa_user_id, 'company': company.company_key, 'phone_number_id': sender_id}))
+    db.add(AuditLog(username=user.username, action='manual_reply_sent', entity='conversation', entity_id=str(conversation.id), details={'to': conversation.wa_user_id, 'company': company.company_key, 'phone_number_id': sender_id, 'chatbot_paused': True}))
     db.commit()
     db.refresh(message)
-    return {'status': 'ok', 'sent': True, 'message_id': message.id, 'provider': result}
+    return {'status': 'ok', 'sent': True, 'message_id': message.id, 'provider': result, 'chatbot_paused': True}
 
 
 @router.get('/help-requests')
@@ -151,8 +154,17 @@ def update_help_request(request_id: int, data: HelpRequestStatus, user: User = D
     company = db.get(Company, row.company_id) if row.company_id else None
     channel = db.query(ConversationChannel).filter(ConversationChannel.conversation_id == row.conversation_id).first() if row.conversation_id else None
     store = db.get(Store, channel.store_id) if channel and channel.store_id else None
+    conversation = db.get(Conversation, row.conversation_id) if row.conversation_id else None
     db.add(AuditLog(username=user.username, action='actualizar_solicitud_ayuda', entity='help_request', entity_id=str(row.id), details={'status_before': previous, 'status_after': row.status, 'wa_user_id': row.wa_user_id}))
     if data.status in ('resolved', 'ignored') and previous not in ('resolved', 'ignored'):
+        # Closing the human case hands control back to the chatbot and restarts
+        # the company's decision tree for the next incoming message.
+        if conversation:
+            tree = company.decision_tree or {} if company else {}
+            conversation.status = 'open'
+            conversation.state = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
+            db.add(AuditLog(username=user.username, action='chatbot_resumed', entity='conversation', entity_id=str(conversation.id), details={'help_request_id': row.id, 'status': data.status}))
+
         success = data.status == 'resolved'
         store_name = store.name if store else 'Tienda sin identificar'
         company_name = company.name if company else 'Empresa sin identificar'
@@ -168,7 +180,7 @@ def update_help_request(request_id: int, data: HelpRequestStatus, user: User = D
                 details={'help_request_id': row.id, 'company': company_name, 'store': store_name, 'success': success, 'status': data.status},
             )
     db.commit()
-    return {'status': 'ok', 'id': row.id, 'request_status': row.status}
+    return {'status': 'ok', 'id': row.id, 'request_status': row.status, 'chatbot_resumed': data.status in ('resolved', 'ignored')}
 
 
 @router.post('/support/escalations/run')

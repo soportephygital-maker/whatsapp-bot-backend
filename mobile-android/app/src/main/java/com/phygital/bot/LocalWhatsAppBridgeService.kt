@@ -13,6 +13,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.text.Normalizer
 
 class LocalWhatsAppBridgeService : NotificationListenerService() {
@@ -21,6 +22,22 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     private val sessionPrefsName = "phygital_session"
     private val bridgePrefsName = "phygital_local_bridge"
     private val loopGuardPrefsName = "phygital_loop_guard"
+    @Volatile private var manualPollRunning = false
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        startManualReplyPolling()
+    }
+
+    override fun onListenerDisconnected() {
+        manualPollRunning = false
+        super.onListenerDisconnected()
+    }
+
+    override fun onDestroy() {
+        manualPollRunning = false
+        super.onDestroy()
+    }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!allowedPackages.contains(sbn.packageName)) return
@@ -44,12 +61,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         if (looksLikeGroup(notification, title)) return
         if (isSavedContact(title)) return
 
-        // WhatsApp can repost a notification after an inline reply. Never feed the bot's own
-        // recently-sent answer back into the bridge, otherwise it can answer itself forever.
         if (isRecentBotReply(sbn.packageName, text)) return
-
-        // A single incoming WhatsApp message may trigger several notification updates with
-        // different notification keys. Collapse identical sender/text events for a short window.
         if (isRapidDuplicate(sbn.packageName, title, text)) return
 
         val replyAction = findReplyAction(notification)
@@ -84,8 +96,6 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                 val replyText = response.optString("reply_text", "")
                 outboundMessageId = response.optInt("outbound_message_id", 0)
                 if (shouldReply && replyText.isNotBlank() && replyAction != null && outboundMessageId > 0) {
-                    // Register before RemoteInput because WhatsApp may repost the conversation
-                    // notification immediately after sendInlineReply returns.
                     rememberBotReply(sbn.packageName, replyText)
                     val sent = sendInlineReply(replyAction, replyText)
                     if (!sent) clearRememberedBotReply(sbn.packageName, replyText)
@@ -97,6 +107,55 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                 }
             }
         }.start()
+    }
+
+    private fun startManualReplyPolling() {
+        if (manualPollRunning) return
+        manualPollRunning = true
+        Thread {
+            while (manualPollRunning) {
+                try {
+                    pollManualReplies()
+                } catch (_: Exception) {
+                    // A temporary network/server error must not stop notification listening.
+                }
+                try { Thread.sleep(2500) } catch (_: InterruptedException) {}
+            }
+        }.start()
+    }
+
+    private fun pollManualReplies() {
+        val bridgePrefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        val anyEnabled = allowedPackages.any { bridgePrefs.getBoolean("app_enabled_${packageSuffix(it)}", false) }
+        if (!anyEnabled) return
+        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null) ?: return
+        val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return
+        val encodedDevice = URLEncoder.encode(deviceId, "UTF-8")
+        val response = request("GET", "/api/local-bridge/manual-pending?device_id=$encodedDevice", null, token)
+        val rows = JSONArray(response)
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            val messageId = row.optInt("message_id", 0)
+            val notificationKey = row.optString("notification_key", "")
+            val packageName = row.optString("package_name", "")
+            val text = row.optString("text", "").trim()
+            if (messageId <= 0 || notificationKey.isBlank() || text.isBlank() || !allowedPackages.contains(packageName)) continue
+
+            val active = try { activeNotifications?.firstOrNull { it.key == notificationKey && it.packageName == packageName } } catch (_: Exception) { null }
+            // If WhatsApp removed the notification, keep the item pending. A future inbound
+            // notification from that conversation refreshes the context and the operator can retry.
+            if (active == null) continue
+            val action = findReplyAction(active.notification ?: continue)
+            if (action == null) {
+                reportDelivery(token, messageId, false, notificationKey, "La notificación activa no permite respuesta remota")
+                continue
+            }
+
+            rememberBotReply(packageName, text)
+            val sent = sendInlineReply(action, text)
+            if (!sent) clearRememberedBotReply(packageName, text)
+            reportDelivery(token, messageId, sent, notificationKey, if (sent) null else "Android no pudo ejecutar RemoteInput manual")
+        }
     }
 
     private fun packageSuffix(packageName: String): String = packageName.replace('.', '_')

@@ -47,6 +47,14 @@ class CompanyUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class StoreCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+
+
+class StoreUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+
+
 class CompanyIdentificationUpdate(BaseModel):
     aliases: list[str] = []
     keywords: list[str] = []

@@ -74,6 +74,27 @@ def conversation_messages(conversation_id: int, _: User = Depends(get_current_us
     return [{'id': row.id, 'direction': row.direction, 'sender': row.sender, 'body': row.body, 'created_at': row.created_at, 'delivery': row.raw_payload or {}} for row in rows]
 
 
+def _activate_human_mode(db: Session, conversation: Conversation, user: User, company: Company, sender_id: str | None):
+    conversation.status = 'human_active'
+    pending = db.query(HelpRequest).filter(HelpRequest.conversation_id == conversation.id, HelpRequest.status.in_(['new', 'reviewing'])).all()
+    for request in pending:
+        request.status = 'reviewing'
+        db.add(AuditLog(username=user.username, action='human_response_sent', entity='help_request', entity_id=str(request.id), details={'conversation_id': conversation.id, 'to': conversation.wa_user_id}))
+    db.add(AuditLog(username=user.username, action='manual_reply_sent', entity='conversation', entity_id=str(conversation.id), details={'to': conversation.wa_user_id, 'company': company.company_key, 'phone_number_id': sender_id, 'chatbot_paused': True}))
+
+
+def _latest_android_context(db: Session, conversation_id: int) -> dict:
+    rows = db.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.direction == 'inbound',
+    ).order_by(Message.id.desc()).limit(20).all()
+    for row in rows:
+        payload = row.raw_payload or {}
+        if payload.get('provider') == 'android_notification':
+            return payload
+    return {}
+
+
 @router.post('/conversaciones/{conversation_id}/responder')
 def reply_conversation(conversation_id: int, data: ConversationReply, user: User = Depends(require_operator), db: Session = Depends(get_db)):
     conversation = db.get(Conversation, conversation_id)
@@ -83,14 +104,65 @@ def reply_conversation(conversation_id: int, data: ConversationReply, user: User
     if not company:
         raise HTTPException(status_code=409, detail='La conversación no tiene una empresa válida')
 
+    text = data.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail='La respuesta no puede estar vacía')
+
     channel = db.query(ConversationChannel).filter(ConversationChannel.conversation_id == conversation.id).first()
     sender_id = channel.phone_number_id if channel else None
+
+    # Conversations created by the Android notification bridge must go back through
+    # the administrator phone instead of WhatsApp Cloud API. The phone polls this
+    # queued message and executes the notification RemoteInput reply.
+    if sender_id and sender_id.startswith('android:'):
+        device_id = sender_id.split(':', 1)[1]
+        context = _latest_android_context(db, conversation.id)
+        notification_key = context.get('notification_key')
+        package_name = context.get('package_name')
+        if not notification_key or not package_name:
+            raise HTTPException(status_code=409, detail='No hay una notificación activa de WhatsApp para usar como puente. Espera un mensaje nuevo del cliente y vuelve a intentar.')
+        if not context.get('reply_capable', False):
+            raise HTTPException(status_code=409, detail='La notificación actual de WhatsApp no permite respuesta directa desde Android.')
+
+        message = Message(
+            conversation_id=conversation.id,
+            direction='outbound',
+            sender=user.username,
+            body=text,
+            raw_payload={
+                'manual': True,
+                'manual_dashboard': True,
+                'transport': 'android_notification',
+                'delivery_status': 'requested',
+                'device_id': device_id,
+                'notification_key': notification_key,
+                'package_name': package_name,
+                'sender_display': context.get('sender_display'),
+                'operator': user.username,
+                'company': company.company_key,
+            },
+        )
+        db.add(message)
+        db.flush()
+        _activate_human_mode(db, conversation, user, company, sender_id)
+        db.add(AuditLog(username=user.username, action='manual_reply_queued_android', entity='message', entity_id=str(message.id), details={'conversation_id': conversation.id, 'device_id': device_id, 'notification_key': notification_key}))
+        db.commit()
+        db.refresh(message)
+        return {
+            'status': 'queued',
+            'sent': False,
+            'queued': True,
+            'message_id': message.id,
+            'provider': {'transport': 'android_notification', 'device_id': device_id},
+            'chatbot_paused': True,
+        }
+
     if not sender_id:
         sender_store = db.query(Store).filter(Store.company_id == company.id, Store.whatsapp_phone_number_id.isnot(None)).order_by(Store.id.asc()).first()
         sender_id = sender_store.whatsapp_phone_number_id if sender_store else None
 
     try:
-        result = send_text_message(conversation.wa_user_id, data.text.strip(), phone_number_id=sender_id, db=db)
+        result = send_text_message(conversation.wa_user_id, text, phone_number_id=sender_id, db=db)
     except Exception as exc:
         db.add(AuditLog(username=user.username, action='manual_reply_error', entity='conversation', entity_id=str(conversation.id), details={'to': conversation.wa_user_id, 'error': str(exc)}))
         db.commit()
@@ -101,17 +173,12 @@ def reply_conversation(conversation_id: int, data: ConversationReply, user: User
         db.commit()
         raise HTTPException(status_code=409, detail=f"Envío bloqueado: {result.get('reason') or result.get('error') or 'configuración de seguridad'}")
 
-    message = Message(conversation_id=conversation.id, direction='outbound', sender=user.username, body=data.text.strip(), raw_payload={'manual': True, 'result': result})
+    message = Message(conversation_id=conversation.id, direction='outbound', sender=user.username, body=text, raw_payload={'manual': True, 'result': result})
     db.add(message)
-    conversation.status = 'open'
-    pending = db.query(HelpRequest).filter(HelpRequest.conversation_id == conversation.id, HelpRequest.status.in_(['new', 'reviewing'])).all()
-    for request in pending:
-        request.status = 'reviewing'
-        db.add(AuditLog(username=user.username, action='human_response_sent', entity='help_request', entity_id=str(request.id), details={'conversation_id': conversation.id, 'to': conversation.wa_user_id}))
-    db.add(AuditLog(username=user.username, action='manual_reply_sent', entity='conversation', entity_id=str(conversation.id), details={'to': conversation.wa_user_id, 'company': company.company_key, 'phone_number_id': sender_id}))
+    _activate_human_mode(db, conversation, user, company, sender_id)
     db.commit()
     db.refresh(message)
-    return {'status': 'ok', 'sent': True, 'message_id': message.id, 'provider': result}
+    return {'status': 'ok', 'sent': True, 'message_id': message.id, 'provider': result, 'chatbot_paused': True}
 
 
 @router.get('/help-requests')
@@ -151,8 +218,17 @@ def update_help_request(request_id: int, data: HelpRequestStatus, user: User = D
     company = db.get(Company, row.company_id) if row.company_id else None
     channel = db.query(ConversationChannel).filter(ConversationChannel.conversation_id == row.conversation_id).first() if row.conversation_id else None
     store = db.get(Store, channel.store_id) if channel and channel.store_id else None
+    conversation = db.get(Conversation, row.conversation_id) if row.conversation_id else None
     db.add(AuditLog(username=user.username, action='actualizar_solicitud_ayuda', entity='help_request', entity_id=str(row.id), details={'status_before': previous, 'status_after': row.status, 'wa_user_id': row.wa_user_id}))
     if data.status in ('resolved', 'ignored') and previous not in ('resolved', 'ignored'):
+        # Closing the human case hands control back to the chatbot and restarts
+        # the company's decision tree for the next incoming message.
+        if conversation:
+            tree = company.decision_tree or {} if company else {}
+            conversation.status = 'open'
+            conversation.state = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
+            db.add(AuditLog(username=user.username, action='chatbot_resumed', entity='conversation', entity_id=str(conversation.id), details={'help_request_id': row.id, 'status': data.status}))
+
         success = data.status == 'resolved'
         store_name = store.name if store else 'Tienda sin identificar'
         company_name = company.name if company else 'Empresa sin identificar'
@@ -168,7 +244,7 @@ def update_help_request(request_id: int, data: HelpRequestStatus, user: User = D
                 details={'help_request_id': row.id, 'company': company_name, 'store': store_name, 'success': success, 'status': data.status},
             )
     db.commit()
-    return {'status': 'ok', 'id': row.id, 'request_status': row.status}
+    return {'status': 'ok', 'id': row.id, 'request_status': row.status, 'chatbot_resumed': data.status in ('resolved', 'ignored')}
 
 
 @router.post('/support/escalations/run')

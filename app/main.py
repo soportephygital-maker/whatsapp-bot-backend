@@ -5,9 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
-from .models import Company, User
+from .models import Company, Store, User
 from .auth import hash_password, verify_password
-from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, mobile_update, whatsapp
+from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, local_bridge, mobile_update, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -26,6 +26,7 @@ app.include_router(conversation_admin.router)
 app.include_router(dashboard.router)
 app.include_router(dashboard_patch.router)
 app.include_router(dashboard_ui.router)
+app.include_router(local_bridge.router)
 app.include_router(mobile_update.router)
 app.include_router(whatsapp.router)
 
@@ -37,7 +38,7 @@ def _public_page(title: str, body: str) -> HTMLResponse:
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title} - Phygital Bot</title>
 <style>body{{font-family:system-ui,-apple-system,sans-serif;max-width:850px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1f2937}}h1,h2{{color:#111827}}a{{color:#2563eb}}</style></head>
-<body><h1>{title}</h1>{body}<p><small>Última actualización: 18 de agosto de 2026.</small></p></body></html>''')
+<body><h1>{title}</h1>{body}<p><small>Última actualización: 21 de agosto de 2026.</small></p></body></html>''')
 
 
 @app.get('/privacy', response_class=HTMLResponse)
@@ -45,11 +46,11 @@ def privacy_policy():
     return _public_page('Política de privacidad', '''
 <p>Phygital Bot es una herramienta de atención y soporte operada para Grupoedm. Esta política explica el tratamiento de información cuando una persona interactúa con el servicio mediante WhatsApp, el panel web o la aplicación móvil asociada.</p>
 <h2>Información que podemos tratar</h2>
-<p>Podemos tratar el número de WhatsApp del remitente, el contenido de los mensajes enviados al bot, identificadores técnicos de WhatsApp, la empresa o tienda asociada a la conversación, solicitudes de soporte y datos necesarios para dar seguimiento al caso. Para usuarios internos también podemos tratar identificadores de sesión, rol y registros de actividad administrativa.</p>
+<p>Podemos tratar el nombre mostrado por WhatsApp, el contenido visible en las notificaciones autorizadas por el usuario del dispositivo, identificadores técnicos locales, la empresa o tienda asociada a la conversación, solicitudes de soporte y datos necesarios para dar seguimiento al caso. Para usuarios internos también podemos tratar identificadores de sesión, rol y registros de actividad administrativa.</p>
 <h2>Finalidades</h2>
-<p>Usamos la información para recibir y enrutar solicitudes, responder consultas, escalar casos a personal de soporte, mantener historial operativo, proteger el servicio y mejorar su funcionamiento.</p>
+<p>Usamos la información para recibir y enrutar solicitudes, responder consultas mediante las acciones de respuesta disponibles en Android, escalar casos a personal de soporte, mantener historial operativo, proteger el servicio y mejorar su funcionamiento.</p>
 <h2>Proveedores y transferencias</h2>
-<p>El servicio utiliza proveedores tecnológicos necesarios para su operación, incluyendo la plataforma WhatsApp de Meta y servicios de alojamiento e infraestructura. No vendemos datos personales.</p>
+<p>El servicio utiliza infraestructura de alojamiento necesaria para operar el backend. El acceso a notificaciones de WhatsApp se concede explícitamente desde Android y puede revocarse en cualquier momento. No vendemos datos personales.</p>
 <h2>Conservación y seguridad</h2>
 <p>La información se conserva únicamente durante el tiempo necesario para fines operativos, de soporte, seguridad y cumplimiento aplicable. Aplicamos controles de acceso y medidas técnicas razonables para protegerla.</p>
 <h2>Derechos y contacto</h2>
@@ -61,8 +62,8 @@ def privacy_policy():
 def terms_of_service():
     return _public_page('Condiciones del servicio', '''
 <p>Phygital Bot proporciona funciones de atención, clasificación y seguimiento de solicitudes relacionadas con servicios y operaciones de Grupoedm y sus proyectos autorizados.</p>
-<p>El usuario debe utilizar el servicio de forma legítima y proporcionar información suficiente para atender su solicitud. Las respuestas automatizadas pueden requerir validación o intervención de personal humano.</p>
-<p>El servicio puede modificarse, suspenderse temporalmente por mantenimiento o depender de plataformas de terceros como WhatsApp. El uso del servicio está sujeto también a las condiciones aplicables de dichas plataformas.</p>
+<p>La integración local de Android depende de que el propietario del dispositivo conceda acceso a notificaciones. Las respuestas automáticas solo pueden enviarse cuando WhatsApp publica una acción de respuesta compatible en la notificación.</p>
+<p>El servicio puede modificarse o suspenderse temporalmente por mantenimiento o por cambios de Android o WhatsApp.</p>
 <p>Para consultas sobre estas condiciones, escribe a <a href="mailto:bernabe.lopez@grupoedm.com.mx">bernabe.lopez@grupoedm.com.mx</a>.</p>
 ''')
 
@@ -71,7 +72,7 @@ def terms_of_service():
 def data_deletion():
     return _public_page('Eliminación de datos', '''
 <p>Si deseas solicitar la eliminación de datos asociados a una interacción con Phygital Bot, envía un correo a <a href="mailto:bernabe.lopez@grupoedm.com.mx">bernabe.lopez@grupoedm.com.mx</a> con el asunto <strong>Solicitud de eliminación de datos - Phygital Bot</strong>.</p>
-<p>Incluye el número de WhatsApp o identificador de cuenta relacionado con la solicitud y una descripción breve de los datos que deseas eliminar. Podemos solicitar una verificación razonable de identidad antes de ejecutar la eliminación para evitar solicitudes fraudulentas.</p>
+<p>Incluye el identificador relacionado con la solicitud y una descripción breve de los datos que deseas eliminar. Podemos solicitar una verificación razonable de identidad antes de ejecutar la eliminación para evitar solicitudes fraudulentas.</p>
 <p>Una vez verificada la solicitud, eliminaremos o anonimizaremos los datos que correspondan, salvo aquellos que deban conservarse por obligaciones legales, seguridad o prevención de fraude.</p>
 ''')
 
@@ -96,7 +97,6 @@ def startup():
     try:
         username = __import__('os').getenv('BOOTSTRAP_ADMIN_USERNAME')
         password = __import__('os').getenv('BOOTSTRAP_ADMIN_PASSWORD')
-
         if username and password:
             admin = db.query(User).filter(User.username == username).first()
             if not admin:
@@ -109,25 +109,19 @@ def startup():
                     admin.password_hash = hash_password(password)
                     changed = True
                 if admin.role != 'admin':
-                    admin.role = 'admin'
-                    changed = True
+                    admin.role = 'admin'; changed = True
                 if not admin.is_active:
-                    admin.is_active = True
-                    changed = True
+                    admin.is_active = True; changed = True
                 if changed:
                     db.commit()
-
             other_admins = db.query(User).filter(User.username != username, User.role == 'admin').all()
             if other_admins:
                 for row in other_admins:
                     row.role = 'operador'
                 db.commit()
 
-        # Existing company configuration lives in PostgreSQL and is never
-        # overwritten on application updates. A demo company is created only
-        # for a completely empty database.
         if not db.query(Company).first():
-            db.add(Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={
+            company = Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={
                 'nodo_raiz': 'inicio',
                 'nodos': {
                     'inicio': {
@@ -140,7 +134,20 @@ def startup():
                     'soporte': {'mensaje': 'Describe el problema y un operador podrá darle seguimiento.', 'opciones': []},
                     'informacion': {'mensaje': 'Escribe tu consulta.', 'opciones': []},
                 },
-            }))
+            })
+            db.add(company)
+            db.flush()
+            db.add(Store(company_id=company.id, name='Principal'))
+            db.commit()
+
+        # Existing companies created before the local Android bridge may have no stores.
+        # Create one neutral default store so the phone can be assigned immediately.
+        changed = False
+        for company in db.query(Company).all():
+            if not company.stores:
+                db.add(Store(company_id=company.id, name='Principal'))
+                changed = True
+        if changed:
             db.commit()
     finally:
         db.close()
@@ -152,7 +159,7 @@ def startup():
 
 @app.get('/health')
 def health():
-    return {'status': 'ok', 'environment': settings.environment}
+    return {'status': 'ok', 'environment': settings.environment, 'primary_transport': 'android_notification'}
 
 
 @app.get('/')
@@ -163,7 +170,8 @@ def root():
         'health': '/health',
         'dashboard': '/dashboard',
         'docs': '/docs',
-        'whatsapp_webhook': '/webhooks/whatsapp',
+        'local_bridge': '/api/local-bridge/inbound',
+        'legacy_whatsapp_webhook': '/webhooks/whatsapp',
         'mobile_update': '/api/mobile/update',
         'privacy': '/privacy',
         'terms': '/terms',

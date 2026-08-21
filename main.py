@@ -9,6 +9,7 @@ import os
 import shutil
 
 app = FastAPI(title="Chat Bot de Phygital Backend - Multi-Empresa")
+UI_VERSION = "UI 2026.08.21-14"
 
 app.add_middleware(
     CORSMiddleware,
@@ -347,6 +348,7 @@ def guardar_apariencia(data: AppearanceModel, usuario: str = "ZoeOrtiz"):
 @app.get("/api/stats")
 def obtener_stats():
     return {
+        "ui_version": UI_VERSION,
         "total_respuestas": METRICAS["total_respuestas"],
         "conversaciones": len(CONVERSACIONES),
         "en_atencion_humana": sum(1 for x in CONVERSACIONES.values() if x["modo"] == "humano"),
@@ -371,7 +373,7 @@ def dashboard_ui():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Phygital Admin</title>
+<title>Phygital Admin · UI 2026.08.21-14</title>
 <style>
 :root{--bg:#0d1117;--card:#161b22;--text:#c9d1d9;--primary:#238636;--accent:#58a6ff}
 *{box-sizing:border-box;font-family:Segoe UI,Roboto,sans-serif}body{margin:0;background:var(--bg);color:var(--text);background-size:cover;background-attachment:fixed}.hidden{display:none!important}
@@ -380,8 +382,8 @@ input,select,textarea{width:100%;padding:11px;margin:6px 0 12px;border-radius:8p
 </style>
 </head>
 <body>
-<section id="loginSection"><div class="login-card"><h2>Phygital Admin</h2><input id="userInput" placeholder="Usuario"><input id="passInput" type="password" placeholder="Contraseña"><button id="loginBtn" style="width:100%">Iniciar sesión</button><p id="errorMsg" class="muted"></p></div></section>
-<section id="dashboardSection" class="hidden"><div class="app"><div class="top"><div><h1 id="headerTitle">Panel Phygital</h1><div id="userInfo" class="muted"></div></div><div id="logoWrap"></div></div><div class="tabs"><button class="active" data-tab="chatTab">Conversaciones</button><button data-tab="settingsTab">Apariencia</button><button data-tab="adminTab">Administración</button></div>
+<section id="loginSection"><div class="login-card"><h2>Phygital Admin</h2><div class="muted" style="margin-bottom:12px">UI 2026.08.21-14</div><input id="userInput" placeholder="Usuario"><input id="passInput" type="password" placeholder="Contraseña"><button id="loginBtn" style="width:100%">Iniciar sesión</button><p id="errorMsg" class="muted"></p></div></section>
+<section id="dashboardSection" class="hidden"><div class="app"><div class="top"><div><h1 id="headerTitle">Panel Phygital</h1><div id="userInfo" class="muted"></div><div class="muted">UI 2026.08.21-14</div></div><div id="logoWrap"></div></div><div class="tabs"><button class="active" data-tab="chatTab">Conversaciones</button><button data-tab="settingsTab">Apariencia</button><button data-tab="adminTab">Administración</button></div>
 <div id="chatTab"><div class="grid"><div class="card"><h3>Conversaciones</h3><div id="conversationList" class="list"><div class="empty">Sin conversaciones todavía.</div></div></div><div class="card chat"><div id="chatEmpty" class="empty">Selecciona una conversación.</div><div id="chatContent" class="hidden"><div class="statusline"><strong id="chatNumber"></strong><span id="modeBadge" class="badge"></span><button id="takeBtn" class="secondary">Tomar conversación</button><button id="botBtn">Reactivar bot</button></div><div id="messages" class="messages"></div><div class="composer"><textarea id="replyText" rows="3" placeholder="Escribe una respuesta para enviar mediante la app administradora..."></textarea><div class="row"><button id="sendBtn">Enviar respuesta</button><button id="refreshBtn" class="secondary">Actualizar</button></div><div id="sendStatus" class="muted"></div></div></div></div></div></div>
 <div id="settingsTab" class="hidden"><div class="card"><h3>Apariencia del dashboard</h3><div class="settings"><label>Fondo<input id="bgColor" type="color" class="colorinput"></label><label>Tarjetas<input id="cardColor" type="color" class="colorinput"></label><label>Texto<input id="textColor" type="color" class="colorinput"></label><label>Color principal<input id="primaryColor" type="color" class="colorinput"></label><label>Color de acento<input id="accentColor" type="color" class="colorinput"></label><label>Imagen de fondo (URL)<input id="backgroundImage" placeholder="https://..."></label><label>Logo (URL)<input id="logoUrl" placeholder="https://..."></label><label>Texto de encabezado<input id="headerText"></label></div><div class="row"><button id="saveAppearance">Guardar apariencia</button><button id="resetAppearance" class="secondary">Restablecer</button></div><p class="muted">También puedes usar archivos subidos en /files/ como fondo o logo.</p></div></div>
 <div id="adminTab" class="hidden"><div class="settings"><div class="card"><h3>Puente App Administradora</h3><p class="muted">La app debe consultar mensajes pendientes y confirmar cada envío.</p><code>/api/app/bridge/pending</code><br><code>/api/app/bridge/ack</code><br><code>/api/chat/incoming</code></div><div class="card"><h3>Estado</h3><div id="statsBox" class="muted">Cargando...</div><button id="statsBtn" class="secondary">Actualizar estado</button></div></div></div>
@@ -391,7 +393,7 @@ let currentUser=null,currentNumber=null;
 const $=id=>document.getElementById(id);
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(e){}if(!r.ok)throw new Error(d.detail||'Error de servidor');return d}
 function post(url,data){return api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})}
-function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+function esc(s){return String(s??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]))}
 async function login(){try{currentUser=await post('/api/auth/login',{username:$('userInput').value,password:$('passInput').value});$('loginSection').classList.add('hidden');$('dashboardSection').classList.remove('hidden');$('userInfo').textContent=currentUser.username+' ('+currentUser.rol+')';await loadAppearance();await loadConversations();await loadStats()}catch(e){$('errorMsg').textContent=e.message}}
 async function loadConversations(){const list=await api('/api/conversaciones');const box=$('conversationList');if(!list.length){box.innerHTML='<div class="empty">Sin conversaciones todavía.</div>';return}box.innerHTML=list.map(c=>`<div class="conv ${c.numero===currentNumber?'active':''}" data-num="${esc(c.numero)}"><strong>${esc(c.numero)}</strong><br><span class="badge ${c.modo}">${c.modo==='humano'?'Atención humana':'Bot activo'}</span><div class="muted">${c.mensajes.length} mensajes</div></div>`).join('');box.querySelectorAll('.conv').forEach(el=>el.addEventListener('click',()=>openConversation(el.dataset.num)))}
 async function openConversation(num){currentNumber=num;const c=await api('/api/conversaciones/'+encodeURIComponent(num));$('chatEmpty').classList.add('hidden');$('chatContent').classList.remove('hidden');$('chatNumber').textContent=c.numero;const b=$('modeBadge');b.className='badge '+c.modo;b.textContent=c.modo==='humano'?'Atención humana':'Bot activo';$('takeBtn').classList.toggle('hidden',c.modo==='humano');$('botBtn').classList.toggle('hidden',c.modo==='bot');$('messages').innerHTML=c.mensajes.map(m=>`<div class="msg ${esc(m.origen)}"><div>${esc(m.texto)}</div><div class="muted">${esc(m.operador||m.origen)} · ${new Date(m.fecha).toLocaleString()}</div></div>`).join('');$('messages').scrollTop=$('messages').scrollHeight;await loadConversations()}
@@ -402,7 +404,7 @@ function applyAppearance(a){document.documentElement.style.setProperty('--bg',a.
 async function loadAppearance(){const a=await api('/api/apariencia');applyAppearance(a);$('bgColor').value=a.background_color;$('cardColor').value=a.card_color;$('textColor').value=a.text_color;$('primaryColor').value=a.primary_color;$('accentColor').value=a.accent_color;$('backgroundImage').value=a.background_image||'';$('logoUrl').value=a.logo_url||'';$('headerText').value=a.header_text||''}
 async function saveAppearance(){const a={background_color:$('bgColor').value,card_color:$('cardColor').value,text_color:$('textColor').value,primary_color:$('primaryColor').value,accent_color:$('accentColor').value,background_image:$('backgroundImage').value.trim(),logo_url:$('logoUrl').value.trim(),header_text:$('headerText').value.trim()};const d=await post('/api/apariencia?usuario='+encodeURIComponent(currentUser.username),a);applyAppearance(d.apariencia)}
 async function resetAppearance(){const a={background_color:'#0d1117',card_color:'#161b22',text_color:'#c9d1d9',primary_color:'#238636',accent_color:'#58a6ff',background_image:'',logo_url:'',header_text:'Panel Phygital - Gestión Multi-Empresa'};const d=await post('/api/apariencia?usuario='+encodeURIComponent(currentUser.username),a);applyAppearance(d.apariencia);await loadAppearance()}
-async function loadStats(){const s=await api('/api/stats');$('statsBox').innerHTML=`Conversaciones: <b>${s.conversaciones}</b><br>Atención humana: <b>${s.en_atencion_humana}</b><br>Pendientes app: <b>${s.mensajes_pendientes_app}</b>`}
+async function loadStats(){const s=await api('/api/stats');$('statsBox').innerHTML=`Versión: <b>${s.ui_version}</b><br>Conversaciones: <b>${s.conversaciones}</b><br>Atención humana: <b>${s.en_atencion_humana}</b><br>Pendientes app: <b>${s.mensajes_pendientes_app}</b>`}
 $('loginBtn').addEventListener('click',login);$('takeBtn').addEventListener('click',take);$('botBtn').addEventListener('click',reactivate);$('sendBtn').addEventListener('click',sendReply);$('refreshBtn').addEventListener('click',()=>currentNumber?openConversation(currentNumber):loadConversations());$('saveAppearance').addEventListener('click',saveAppearance);$('resetAppearance').addEventListener('click',resetAppearance);$('statsBtn').addEventListener('click',loadStats);document.querySelectorAll('.tabs button').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));btn.classList.add('active');['chatTab','settingsTab','adminTab'].forEach(id=>$(id).classList.add('hidden'));$(btn.dataset.tab).classList.remove('hidden')}));
 setInterval(()=>{if(currentUser){loadConversations();if(currentNumber)openConversation(currentNumber);}},5000);
 </script>

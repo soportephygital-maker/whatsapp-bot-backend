@@ -106,6 +106,6 @@ jobs:
             version_code=${{ env.VERSION_CODE }}
             version_name=${{ env.VERSION_NAME }}
             transport=android_notification
-            message=Actualización firmada de Phygital Bot sin Meta API. Requiere conceder Acceso a notificaciones en Android.
+            message=Versión 0.5.8: respuestas humanas desde dashboard mediante el puente Android, pausa automática del chatbot y mejoras de interfaz.
           files: phygital-bot-latest.apk
           make_latest: true

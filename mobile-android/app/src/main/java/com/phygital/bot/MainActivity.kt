@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -16,8 +17,10 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -30,6 +33,8 @@ class MainActivity : Activity() {
     private var username: String? = null
     private var tokenInjected = false
     private var dashboardMode = false
+    private var updatePromptVisible = false
+    private var pendingUpdateFile: File? = null
 
     private lateinit var status: TextView
     private lateinit var loginPanel: LinearLayout
@@ -63,9 +68,11 @@ class MainActivity : Activity() {
         }
         bridgeButton = Button(this).apply { text = "Configurar WhatsApp local" }
         val dashboardButton = Button(this).apply { text = "Dashboard" }
+        val updateButton = Button(this).apply { text = "Buscar actualización" }
         val logoutButton = Button(this).apply { text = "Salir" }
         actionsPanel.addView(bridgeButton)
         actionsPanel.addView(dashboardButton)
+        actionsPanel.addView(updateButton)
         actionsPanel.addView(logoutButton)
 
         webView = WebView(this).apply {
@@ -104,14 +111,23 @@ class MainActivity : Activity() {
         }
         bridgeButton.setOnClickListener { configureBridge() }
         dashboardButton.setOnClickListener { openDashboard() }
+        updateButton.setOnClickListener { checkForUpdate(true) }
         logoutButton.setOnClickListener { logout() }
 
         restoreSavedSession()
+        checkForUpdate(false)
     }
 
     override fun onResume() {
         super.onResume()
+        val file = pendingUpdateFile
+        if (file != null && Build.VERSION.SDK_INT >= 26 && packageManager.canRequestPackageInstalls()) {
+            pendingUpdateFile = null
+            installApk(file)
+            return
+        }
         if (token != null && !dashboardMode) refreshBridgeStatus()
+        checkForUpdate(false)
     }
 
     @Deprecated("Deprecated in Java")
@@ -152,6 +168,7 @@ class MainActivity : Activity() {
                 username = json.optString("username", userName)
                 saveSession()
                 runOnUiThread { showAuthenticatedUi() }
+                checkForUpdate(false)
             } catch (e: Exception) {
                 runOnUiThread { status.text = "No se pudo iniciar sesión: ${e.message}" }
             }
@@ -188,6 +205,90 @@ class MainActivity : Activity() {
         status.visibility = View.VISIBLE
         actionsPanel.visibility = View.VISIBLE
         refreshBridgeStatus()
+    }
+
+    private fun checkForUpdate(showIfCurrent: Boolean) {
+        Thread {
+            try {
+                val json = JSONObject(request("GET", "/api/mobile/update", null, null))
+                val published = json.optBoolean("published", false)
+                val latestCode = json.optInt("version_code", 0)
+                val latestName = json.optString("version_name", "")
+                val apkUrl = json.optString("apk_url", "")
+                val message = json.optString("message", "Hay una actualización disponible para Phygital Bot.")
+                if (published && latestCode > BuildConfig.VERSION_CODE && apkUrl.isNotBlank()) {
+                    runOnUiThread { showUpdatePrompt(latestName, message, apkUrl) }
+                } else if (showIfCurrent) {
+                    runOnUiThread { status.text = "La app está actualizada (${BuildConfig.VERSION_NAME})." }
+                }
+            } catch (e: Exception) {
+                if (showIfCurrent) runOnUiThread { status.text = "No se pudo consultar actualizaciones: ${e.message}" }
+            }
+        }.start()
+    }
+
+    private fun showUpdatePrompt(versionName: String, message: String, apkUrl: String) {
+        if (updatePromptVisible || isFinishing) return
+        updatePromptVisible = true
+        AlertDialog.Builder(this)
+            .setTitle("Actualización disponible${if (versionName.isNotBlank()) " · $versionName" else ""}")
+            .setMessage(message)
+            .setNegativeButton("Después") { _, _ -> updatePromptVisible = false }
+            .setPositiveButton("Instalar actualización") { _, _ ->
+                updatePromptVisible = false
+                downloadAndInstallUpdate(apkUrl)
+            }
+            .setOnCancelListener { updatePromptVisible = false }
+            .show()
+    }
+
+    private fun downloadAndInstallUpdate(apkUrl: String) {
+        status.text = "Descargando actualización..."
+        Thread {
+            try {
+                val dir = File(cacheDir, "updates").apply { mkdirs() }
+                val apk = File(dir, "phygital-bot-update.apk")
+                val connection = (URL(apkUrl).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20000
+                    readTimeout = 60000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Phygital-Bot-Android")
+                }
+                connection.inputStream.use { input -> apk.outputStream().use { output -> input.copyTo(output) } }
+                connection.disconnect()
+                runOnUiThread {
+                    status.text = "Actualización descargada. Confirma la instalación en Android."
+                    requestInstallOrOpen(apk)
+                }
+            } catch (e: Exception) {
+                runOnUiThread { status.text = "No se pudo descargar la actualización: ${e.message}" }
+            }
+        }.start()
+    }
+
+    private fun requestInstallOrOpen(apk: File) {
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            pendingUpdateFile = apk
+            AlertDialog.Builder(this)
+                .setTitle("Permitir actualizaciones")
+                .setMessage("Android necesita autorizar a Phygital Bot para instalar sus propias actualizaciones. Activa 'Permitir de esta fuente' y regresa a la app.")
+                .setPositiveButton("Abrir configuración") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
+            return
+        }
+        installApk(apk)
+    }
+
+    private fun installApk(apk: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     private fun configureBridge() {

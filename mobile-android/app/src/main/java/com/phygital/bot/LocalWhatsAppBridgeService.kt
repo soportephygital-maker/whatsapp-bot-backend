@@ -20,6 +20,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     private val allowedPackages = setOf("com.whatsapp", "com.whatsapp.w4b")
     private val sessionPrefsName = "phygital_session"
     private val bridgePrefsName = "phygital_local_bridge"
+    private val loopGuardPrefsName = "phygital_loop_guard"
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!allowedPackages.contains(sbn.packageName)) return
@@ -42,6 +43,14 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         if (text.isBlank()) return
         if (looksLikeGroup(notification, title)) return
         if (isSavedContact(title)) return
+
+        // WhatsApp can repost a notification after an inline reply. Never feed the bot's own
+        // recently-sent answer back into the bridge, otherwise it can answer itself forever.
+        if (isRecentBotReply(sbn.packageName, text)) return
+
+        // A single incoming WhatsApp message may trigger several notification updates with
+        // different notification keys. Collapse identical sender/text events for a short window.
+        if (isRapidDuplicate(sbn.packageName, title, text)) return
 
         val replyAction = findReplyAction(notification)
         val senderKey = extras.getString(Notification.EXTRA_CONVERSATION_TITLE)
@@ -75,7 +84,11 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                 val replyText = response.optString("reply_text", "")
                 outboundMessageId = response.optInt("outbound_message_id", 0)
                 if (shouldReply && replyText.isNotBlank() && replyAction != null && outboundMessageId > 0) {
+                    // Register before RemoteInput because WhatsApp may repost the conversation
+                    // notification immediately after sendInlineReply returns.
+                    rememberBotReply(sbn.packageName, replyText)
                     val sent = sendInlineReply(replyAction, replyText)
+                    if (!sent) clearRememberedBotReply(sbn.packageName, replyText)
                     reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else "Android no pudo ejecutar RemoteInput")
                 }
             } catch (e: Exception) {
@@ -87,6 +100,48 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     }
 
     private fun packageSuffix(packageName: String): String = packageName.replace('.', '_')
+
+    private fun guardKey(packageName: String, kind: String): String = "${kind}_${packageSuffix(packageName)}"
+
+    private fun normalizedMessage(value: String): String = value.trim().replace("\\s+".toRegex(), " ")
+
+    private fun rememberBotReply(packageName: String, text: String) {
+        getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE).edit()
+            .putString(guardKey(packageName, "reply_text"), normalizedMessage(text))
+            .putLong(guardKey(packageName, "reply_time"), System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun clearRememberedBotReply(packageName: String, text: String) {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        if (prefs.getString(guardKey(packageName, "reply_text"), null) == normalizedMessage(text)) {
+            prefs.edit()
+                .remove(guardKey(packageName, "reply_text"))
+                .remove(guardKey(packageName, "reply_time"))
+                .apply()
+        }
+    }
+
+    private fun isRecentBotReply(packageName: String, text: String): Boolean {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        val sentText = prefs.getString(guardKey(packageName, "reply_text"), null) ?: return false
+        val sentAt = prefs.getLong(guardKey(packageName, "reply_time"), 0L)
+        val age = System.currentTimeMillis() - sentAt
+        return age in 0..30_000 && sentText == normalizedMessage(text)
+    }
+
+    private fun isRapidDuplicate(packageName: String, sender: String, text: String): Boolean {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        val fingerprint = "$packageName|${normalizedMessage(sender)}|${normalizedMessage(text)}"
+        val key = guardKey(packageName, "inbound_fingerprint")
+        val timeKey = guardKey(packageName, "inbound_time")
+        val previous = prefs.getString(key, null)
+        val previousAt = prefs.getLong(timeKey, 0L)
+        val now = System.currentTimeMillis()
+        if (previous == fingerprint && now - previousAt in 0..5_000) return true
+        prefs.edit().putString(key, fingerprint).putLong(timeKey, now).apply()
+        return false
+    }
 
     private fun extractText(notification: Notification): String {
         val extras = notification.extras

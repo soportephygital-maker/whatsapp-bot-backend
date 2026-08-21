@@ -21,40 +21,70 @@ jobs:
       ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 37
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-37" "build-tools;37.0.0"
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.5.0'
+
       - name: Verify signing secrets
         shell: bash
         run: |
           test -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" || (echo "Missing ANDROID_KEYSTORE_BASE64" && exit 1)
           test -n "${{ secrets.ANDROID_SIGNING_PASSWORD }}" || (echo "Missing ANDROID_SIGNING_PASSWORD" && exit 1)
+
       - name: Restore signing keystore
         shell: bash
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+
       - name: Verify keystore
         shell: bash
-        run: keytool -list -keystore "$ANDROID_KEYSTORE_PATH" -storepass "$ANDROID_SIGNING_PASSWORD" -alias phygital-release >/dev/null
+        run: |
+          test -s "$ANDROID_KEYSTORE_PATH"
+          keytool -list -keystore "$ANDROID_KEYSTORE_PATH" -storepass "$ANDROID_SIGNING_PASSWORD" -alias phygital-release >/dev/null
+
       - name: Read app version
         shell: bash
         run: |
           VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' mobile-android/app/build.gradle.kts | head -1)
           VERSION_NAME=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' mobile-android/app/build.gradle.kts | head -1)
+          test -n "$VERSION_CODE"
+          test -n "$VERSION_NAME"
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=android-v$VERSION_CODE" >> "$GITHUB_ENV"
+
       - name: Build stable signed APK
-        run: gradle -p mobile-android assembleDebug --stacktrace
+        shell: bash
+        run: gradle -p mobile-android :app:assembleDebug --no-daemon --stacktrace --info
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          test -s mobile-android/app/build/outputs/apk/debug/app-debug.apk
+          apksigner verify --verbose --print-certs mobile-android/app/build/outputs/apk/debug/app-debug.apk
+
       - name: Prepare APK
         run: cp mobile-android/app/build/outputs/apk/debug/app-debug.apk phygital-bot-latest.apk
+
       - uses: actions/upload-artifact@v4
         with:
           name: phygital-bot-${{ env.VERSION_NAME }}
           path: phygital-bot-latest.apk
+
       - name: Publish Android release
         uses: softprops/action-gh-release@v2
         with:

@@ -9,6 +9,7 @@ import android.provider.ContactsContract
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -24,9 +25,12 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         if (!allowedPackages.contains(sbn.packageName)) return
         val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
         val suffix = packageSuffix(sbn.packageName)
-        if (!prefs.getBoolean("enabled_$suffix", false)) return
-        val storeId = prefs.getInt("store_id_$suffix", -1)
-        if (storeId <= 0) return
+        if (!prefs.getBoolean("app_enabled_$suffix", false)) return
+        val selectedStoreIds = prefs.getStringSet("selected_store_ids", emptySet())
+            ?.mapNotNull { it.toIntOrNull() }
+            ?.distinct()
+            ?: emptyList()
+        if (selectedStoreIds.isEmpty()) return
         val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null) ?: return
 
         val notification = sbn.notification ?: return
@@ -36,11 +40,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
         val text = extractText(notification).trim()
         if (text.isBlank()) return
-
-        // Group conversations never enter the bot.
         if (looksLikeGroup(notification, title)) return
-
-        // Contacts already saved in the phone never enter the bot.
         if (isSavedContact(title)) return
 
         val replyAction = findReplyAction(notification)
@@ -52,6 +52,8 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         Thread {
             var outboundMessageId = 0
             try {
+                val storesJson = JSONArray()
+                selectedStoreIds.forEach { storesJson.put(it) }
                 val payload = JSONObject()
                     .put("package_name", sbn.packageName)
                     .put("device_id", deviceId)
@@ -60,7 +62,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                     .put("sender", if (title.isBlank()) "Contacto" else title)
                     .put("sender_key", senderKey)
                     .put("text", text)
-                    .put("store_id", storeId)
+                    .put("selected_store_ids", storesJson)
                     .put("is_group", false)
                     .put("can_reply", replyAction != null)
                     .put("metadata", JSONObject()
@@ -107,8 +109,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val conversationTitle = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty()
         if (conversationTitle.isNotBlank() && conversationTitle != title) return true
         val info = extras.getCharSequence(Notification.EXTRA_INFO_TEXT)?.toString().orEmpty()
-        if (info.contains("messages from", ignoreCase = true) || info.contains("mensajes de", ignoreCase = true)) return true
-        return false
+        return info.contains("messages from", ignoreCase = true) || info.contains("mensajes de", ignoreCase = true)
     }
 
     private fun normalizeName(value: String): String {
@@ -121,23 +122,11 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     private fun isSavedContact(sender: String): Boolean {
         if (sender.isBlank()) return false
-        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-            // Fail closed for safety: without contacts permission the bridge must not process chats.
-            return true
-        }
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return true
         val senderName = normalizeName(sender)
         val senderDigits = digits(sender)
-        val projection = arrayOf(
-            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-            ContactsContract.CommonDataKinds.Phone.NUMBER
-        )
-        contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            projection,
-            null,
-            null,
-            null
-        )?.use { cursor ->
+        val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)
+        contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, projection, null, null, null)?.use { cursor ->
             val nameIx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
             val numberIx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
             while (cursor.moveToNext()) {
@@ -165,9 +154,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         return try {
             action.actionIntent.send(this, 0, intent)
             true
-        } catch (_: Exception) {
-            false
-        }
+        } catch (_: Exception) { false }
     }
 
     private fun reportDelivery(token: String, messageId: Int, sent: Boolean, key: String, error: String?) {

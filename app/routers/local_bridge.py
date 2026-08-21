@@ -26,7 +26,8 @@ class LocalInbound(BaseModel):
     sender: str = Field(default='Contacto', max_length=200)
     sender_key: str = Field(default='', max_length=500)
     text: str = Field(min_length=1, max_length=5000)
-    store_id: int
+    store_id: int | None = None
+    selected_store_ids: list[int] = Field(default_factory=list)
     is_group: bool = False
     can_reply: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -47,14 +48,7 @@ def _local_user_id(data: LocalInbound) -> str:
 
 
 def _provider_message_id(data: LocalInbound) -> str:
-    raw = '|'.join([
-        data.device_id,
-        data.package_name,
-        data.notification_key,
-        str(data.post_time),
-        data.sender_key,
-        data.text,
-    ])
+    raw = '|'.join([data.device_id, data.package_name, data.notification_key, str(data.post_time), data.sender_key, data.text])
     return 'local:' + hashlib.sha256(raw.encode()).hexdigest()[:56]
 
 
@@ -65,89 +59,33 @@ def _root_message(tree: dict) -> str:
     return str(node.get('mensaje') or '').strip()
 
 
-def _ensure_help_request(
-    db: Session,
-    *,
-    conversation: Conversation,
-    company: Company,
-    store: Store,
-    local_user_id: str,
-    body: str,
-    reason: str,
-) -> HelpRequest:
+def _selected_stores(data: LocalInbound, db: Session) -> list[Store]:
+    ids = list(dict.fromkeys([*(data.selected_store_ids or []), *([data.store_id] if data.store_id else [])]))
+    if not ids:
+        raise HTTPException(status_code=409, detail='Selecciona al menos una tienda en la app')
+    rows = db.query(Store).join(Company, Store.company_id == Company.id).filter(
+        Store.id.in_(ids), Company.is_active.is_(True)
+    ).order_by(Store.id.asc()).all()
+    if not rows:
+        raise HTTPException(status_code=409, detail='Las tiendas seleccionadas ya no están disponibles')
+    return rows
+
+
+def _ensure_help_request(db: Session, *, conversation: Conversation, company: Company, store: Store, local_user_id: str, body: str, reason: str) -> HelpRequest:
     conversation.status = 'help_pending'
-    row = db.query(HelpRequest).filter(
-        HelpRequest.conversation_id == conversation.id,
-        HelpRequest.status.in_(['new', 'reviewing']),
-    ).first()
+    row = db.query(HelpRequest).filter(HelpRequest.conversation_id == conversation.id, HelpRequest.status.in_(['new', 'reviewing'])).first()
     if row:
         return row
-
-    row = HelpRequest(
-        company_id=company.id,
-        conversation_id=conversation.id,
-        wa_user_id=local_user_id,
-        body=body,
-        reason=reason,
-        status='new',
-        is_known_contact=False,
-        is_group=False,
-    )
+    row = HelpRequest(company_id=company.id, conversation_id=conversation.id, wa_user_id=local_user_id, body=body, reason=reason, status='new', is_known_contact=False, is_group=False)
     db.add(row)
     db.flush()
-    emit_notification(
-        db,
-        audience='admin',
-        event_type='help_request_new',
-        title=f'Nueva solicitud de ayuda - {store.name}',
-        body=f'{company.name}: {local_user_id} solicita atención humana.',
-        event_key=f'help:{row.id}:admin:new',
-        details={
-            'help_request_id': row.id,
-            'company': company.name,
-            'store': store.name,
-            'local_user_id': local_user_id,
-            'transport': 'android_notification',
-        },
-    )
-    db.add(AuditLog(
-        action='human_help_request',
-        entity='conversation',
-        entity_id=str(conversation.id),
-        details={
-            'from': local_user_id,
-            'company': company.company_key,
-            'store': store.name,
-            'transport': 'android_notification',
-        },
-    ))
+    emit_notification(db, audience='admin', event_type='help_request_new', title=f'Nueva solicitud de ayuda - {store.name}', body=f'{company.name}: {local_user_id} solicita atención humana.', event_key=f'help:{row.id}:admin:new', details={'help_request_id': row.id, 'company': company.name, 'store': store.name, 'local_user_id': local_user_id, 'transport': 'android_notification'})
+    db.add(AuditLog(action='human_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': local_user_id, 'company': company.company_key, 'store': store.name, 'transport': 'android_notification'}))
     return row
 
 
-def _queue_outbound(
-    db: Session,
-    *,
-    conversation: Conversation,
-    text: str,
-    data: LocalInbound,
-    company: Company,
-    store: Store,
-) -> Message:
-    row = Message(
-        conversation_id=conversation.id,
-        direction='outbound',
-        sender='bot',
-        body=text,
-        raw_payload={
-            'transport': 'android_notification',
-            'delivery_status': 'requested',
-            'can_reply': data.can_reply,
-            'notification_key': data.notification_key,
-            'device_id': data.device_id,
-            'company': company.company_key,
-            'store': store.name,
-        },
-    )
+def _queue_outbound(db: Session, *, conversation: Conversation, text: str, data: LocalInbound, company: Company, store: Store) -> Message:
+    row = Message(conversation_id=conversation.id, direction='outbound', sender='bot', body=text, raw_payload={'transport': 'android_notification', 'delivery_status': 'requested', 'can_reply': data.can_reply, 'notification_key': data.notification_key, 'device_id': data.device_id, 'company': company.company_key, 'store': store.name})
     db.add(row)
     db.flush()
     return row
@@ -156,70 +94,38 @@ def _queue_outbound(
 @router.get('/stores')
 def bridge_stores(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rows = db.query(Store).join(Company, Store.company_id == Company.id).filter(Company.is_active.is_(True)).order_by(Company.name.asc(), Store.name.asc()).all()
-    return [
-        {
-            'id': row.id,
-            'name': row.name,
-            'company_id': row.company_id,
-            'company_key': row.company.company_key,
-            'company_name': row.company.name,
-        }
-        for row in rows
-    ]
+    return [{'id': row.id, 'name': row.name, 'company_id': row.company_id, 'company_key': row.company.company_key, 'company_name': row.company.name} for row in rows]
 
 
 @router.post('/inbound')
-def local_inbound(
-    data: LocalInbound,
-    operator: User = Depends(require_operator),
-    db: Session = Depends(get_db),
-):
+def local_inbound(data: LocalInbound, operator: User = Depends(require_operator), db: Session = Depends(get_db)):
     if data.package_name not in ALLOWED_PACKAGES:
         raise HTTPException(status_code=400, detail='Paquete no autorizado para el puente local')
 
-    store = db.get(Store, data.store_id)
-    if not store:
-        raise HTTPException(status_code=409, detail='Selecciona una tienda válida en la app')
-    fallback_company = db.get(Company, store.company_id)
-    if not fallback_company or not fallback_company.is_active:
-        raise HTTPException(status_code=409, detail='La empresa de la tienda está inactiva')
+    selected_stores = _selected_stores(data, db)
+    selected_company_ids = {row.company_id for row in selected_stores}
+    fallback_store = selected_stores[0]
+    fallback_company = db.get(Company, fallback_store.company_id)
 
     provider_message_id = _provider_message_id(data)
     duplicate = db.query(Message).filter(Message.provider_message_id == provider_message_id).first()
     if duplicate:
-        return {
-            'status': 'duplicate',
-            'should_reply': False,
-            'conversation_id': duplicate.conversation_id,
-        }
+        return {'status': 'duplicate', 'should_reply': False, 'conversation_id': duplicate.conversation_id}
 
     local_user_id = _local_user_id(data)
-    classification = classify_incoming(db, {
-        'from': data.sender,
-        'text': data.text,
-        'is_group': data.is_group,
-        'raw': {'group_id': 'local' if data.is_group else None},
-    })
-
+    classification = classify_incoming(db, {'from': data.sender, 'text': data.text, 'is_group': data.is_group, 'raw': {'group_id': 'local' if data.is_group else None}})
     if classification['is_group']:
-        db.add(AuditLog(
-            username=operator.username,
-            action='local_bridge_group_ignored',
-            entity='local_bridge',
-            entity_id=provider_message_id,
-            details={'sender': data.sender, 'store': store.name, 'package': data.package_name},
-        ))
+        db.add(AuditLog(username=operator.username, action='local_bridge_group_ignored', entity='local_bridge', entity_id=provider_message_id, details={'sender': data.sender, 'package': data.package_name}))
         db.commit()
         return {'status': 'ignored_group', 'should_reply': False}
 
     company, routing = detect_company(db, data.text, fallback=fallback_company)
-    company = company or fallback_company
+    if not company or company.id not in selected_company_ids:
+        company = fallback_company
+        routing = {'reason': 'selected_store_fallback'}
+    store = next((row for row in selected_stores if row.company_id == company.id), fallback_store)
 
-    conversation = db.query(Conversation).filter(
-        Conversation.wa_user_id == local_user_id,
-        Conversation.company_id == company.id,
-        Conversation.status.in_(['open', 'help_pending']),
-    ).order_by(Conversation.id.desc()).first()
+    conversation = db.query(Conversation).filter(Conversation.wa_user_id == local_user_id, Conversation.company_id == company.id, Conversation.status.in_(['open', 'help_pending'])).order_by(Conversation.id.desc()).first()
     is_new = conversation is None
     if not conversation:
         initial_state = (company.decision_tree or {}).get('nodo_raiz') or 'inicio'
@@ -235,49 +141,11 @@ def local_inbound(
     channel.store_id = store.id
     channel.phone_number_id = f'android:{data.device_id}'[:80]
 
-    db.add(Message(
-        conversation_id=conversation.id,
-        direction='inbound',
-        sender=local_user_id,
-        body=data.text,
-        provider_message_id=provider_message_id,
-        raw_payload={
-            'provider': 'android_notification',
-            'package_name': data.package_name,
-            'device_id': data.device_id,
-            'notification_key': data.notification_key,
-            'post_time': data.post_time,
-            'sender_display': data.sender,
-            'sender_key': data.sender_key,
-            'reply_capable': data.can_reply,
-            'store_id': store.id,
-            'classification': classification,
-            'company_routing': routing,
-            'metadata': data.metadata,
-        },
-    ))
-    db.add(AuditLog(
-        username=operator.username,
-        action='local_bridge_inbound',
-        entity='conversation',
-        entity_id=str(conversation.id),
-        details={
-            'company': company.company_key,
-            'store': store.name,
-            'sender': data.sender,
-            'package': data.package_name,
-            'routing': routing,
-        },
-    ))
+    db.add(Message(conversation_id=conversation.id, direction='inbound', sender=local_user_id, body=data.text, provider_message_id=provider_message_id, raw_payload={'provider': 'android_notification', 'package_name': data.package_name, 'device_id': data.device_id, 'notification_key': data.notification_key, 'post_time': data.post_time, 'sender_display': data.sender, 'sender_key': data.sender_key, 'reply_capable': data.can_reply, 'store_id': store.id, 'selected_store_ids': [s.id for s in selected_stores], 'classification': classification, 'company_routing': routing, 'metadata': data.metadata}))
+    db.add(AuditLog(username=operator.username, action='local_bridge_inbound', entity='conversation', entity_id=str(conversation.id), details={'company': company.company_key, 'store': store.name, 'sender': data.sender, 'package': data.package_name, 'routing': routing, 'selected_store_ids': [s.id for s in selected_stores]}))
 
     if classification['is_known_contact']:
-        db.add(AuditLog(
-            username=operator.username,
-            action='authorized_support_bot_skipped',
-            entity='conversation',
-            entity_id=str(conversation.id),
-            details={'from': data.sender, 'transport': 'android_notification'},
-        ))
+        db.add(AuditLog(username=operator.username, action='authorized_support_bot_skipped', entity='conversation', entity_id=str(conversation.id), details={'from': data.sender, 'transport': 'android_notification'}))
         db.commit()
         return {'status': 'known_support_skipped', 'should_reply': False, 'conversation_id': conversation.id}
 
@@ -286,25 +154,9 @@ def local_inbound(
     if matched:
         conversation.state = next_state
         if action == 'human_help':
-            _ensure_help_request(
-                db,
-                conversation=conversation,
-                company=company,
-                store=store,
-                local_user_id=local_user_id,
-                body=data.text,
-                reason='decision_tree_human_help',
-            )
+            _ensure_help_request(db, conversation=conversation, company=company, store=store, local_user_id=local_user_id, body=data.text, reason='decision_tree_human_help')
     elif classification['help_requested']:
-        _ensure_help_request(
-            db,
-            conversation=conversation,
-            company=company,
-            store=store,
-            local_user_id=local_user_id,
-            body=data.text,
-            reason='human_help_keyword',
-        )
+        _ensure_help_request(db, conversation=conversation, company=company, store=store, local_user_id=local_user_id, body=data.text, reason='human_help_keyword')
         response_text = 'Tu solicitud de atención humana fue registrada. El equipo de soporte dará seguimiento.'
         action = 'human_help'
     elif is_new:
@@ -316,48 +168,19 @@ def local_inbound(
     should_reply = bool(response_text and data.can_reply)
     outbound_message_id = None
     if response_text:
-        outbound = _queue_outbound(
-            db,
-            conversation=conversation,
-            text=response_text,
-            data=data,
-            company=company,
-            store=store,
-        )
+        outbound = _queue_outbound(db, conversation=conversation, text=response_text, data=data, company=company, store=store)
         outbound_message_id = outbound.id
         if not data.can_reply:
             payload = dict(outbound.raw_payload or {})
             payload['delivery_status'] = 'not_reply_capable'
             outbound.raw_payload = payload
-            db.add(AuditLog(
-                username=operator.username,
-                action='local_bridge_reply_unavailable',
-                entity='conversation',
-                entity_id=str(conversation.id),
-                details={'notification_key': data.notification_key, 'outbound_message_id': outbound.id},
-            ))
 
     db.commit()
-    return {
-        'status': 'ok',
-        'conversation_id': conversation.id,
-        'company_key': company.company_key,
-        'company_name': company.name,
-        'store_name': store.name,
-        'routing': routing,
-        'action': action,
-        'reply_text': response_text if should_reply else '',
-        'should_reply': should_reply,
-        'outbound_message_id': outbound_message_id,
-    }
+    return {'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key, 'company_name': company.name, 'store_name': store.name, 'routing': routing, 'action': action, 'reply_text': response_text if should_reply else '', 'should_reply': should_reply, 'outbound_message_id': outbound_message_id}
 
 
 @router.post('/delivery')
-def local_delivery(
-    data: DeliveryUpdate,
-    operator: User = Depends(require_operator),
-    db: Session = Depends(get_db),
-):
+def local_delivery(data: DeliveryUpdate, operator: User = Depends(require_operator), db: Session = Depends(get_db)):
     message = db.get(Message, data.message_id)
     if not message or message.direction != 'outbound':
         raise HTTPException(status_code=404, detail='Mensaje de salida no encontrado')
@@ -370,12 +193,6 @@ def local_delivery(
     if data.error:
         payload['delivery_error'] = data.error[:1000]
     message.raw_payload = payload
-    db.add(AuditLog(
-        username=operator.username,
-        action='local_bridge_reply_sent' if data.sent else 'local_bridge_reply_failed',
-        entity='message',
-        entity_id=str(message.id),
-        details={'conversation_id': message.conversation_id, 'error': data.error},
-    ))
+    db.add(AuditLog(username=operator.username, action='local_bridge_reply_sent' if data.sent else 'local_bridge_reply_failed', entity='message', entity_id=str(message.id), details={'conversation_id': message.conversation_id, 'error': data.error}))
     db.commit()
     return {'status': 'ok', 'message_id': message.id, 'sent': data.sent}

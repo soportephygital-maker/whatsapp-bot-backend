@@ -10,8 +10,8 @@ android {
         applicationId = "com.phygital.bot"
         minSdk = 26
         targetSdk = 37
-        versionCode = 9
-        versionName = "0.5.1"
+        versionCode = 10
+        versionName = "0.5.2"
     }
 
     signingConfigs {
@@ -19,9 +19,9 @@ android {
             val keyStorePath = System.getenv("ANDROID_KEYSTORE_PATH")
             if (!keyStorePath.isNullOrBlank()) {
                 storeFile = file(keyStorePath)
-                storePassword = System.getenv("ANDROID_STORE_PASSWORD")
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+                storePassword = System.getenv("ANDROID_SIGNING_PASSWORD")
+                keyAlias = "phygital-release"
+                keyPassword = System.getenv("ANDROID_SIGNING_PASSWORD")
             }
         }
     }

@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_ui import HTML, JS
 
 router = APIRouter(tags=['dashboard-ui-v2'])
-UI_VERSION = '2026.08.21-12'
+UI_VERSION = '2026.08.21-13'
 
 
 def _html() -> str:
@@ -67,6 +67,24 @@ def _js() -> str:
         "if(admin()){$('saveCompanyName').onclick=async()=>{",
         "if(admin()){$('addStore').onclick=async()=>{const name=$('newStoreName').value.trim();if(!name)return err('Escribe un nombre para la tienda');try{await api('/api/empresas/'+encodeURIComponent(key)+'/tiendas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});companyPanel(key)}catch(x){err(x.message)}};document.querySelectorAll('.saveStore').forEach(b=>b.onclick=async()=>{const row=b.closest('[data-store]'),name=row.querySelector('.storeName').value.trim();if(!name)return err('El nombre de tienda no puede estar vacío');try{await api('/api/empresas/'+encodeURIComponent(key)+'/tiendas/'+row.dataset.store,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});companyPanel(key)}catch(x){err(x.message)}});document.querySelectorAll('.deleteStore').forEach(b=>b.onclick=async()=>{const row=b.closest('[data-store]');if(!confirm('¿Eliminar esta tienda?'))return;try{await api('/api/empresas/'+encodeURIComponent(key)+'/tiendas/'+row.dataset.store,{method:'DELETE'});companyPanel(key)}catch(x){err(x.message)}});$('saveIdentification').onclick=async()=>{const split=v=>v.split(',').map(x=>x.trim()).filter(Boolean);try{await api('/api/empresas/'+encodeURIComponent(key)+'/identificacion',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({aliases:split($('companyAliases').value),tags:split($('companyTags').value),keywords:split($('companyKeywords').value)})});err('Identificación guardada.')}catch(x){err(x.message)}};$('applyBaseTemplate').onclick=async()=>{try{const r=await api('/api/empresas/'+encodeURIComponent(key)+'/plantilla-base',{method:'POST'});err('Plantilla combinada: '+(r.added_nodes||0)+' paso(s) y '+(r.added_options||0)+' opción(es) agregadas.');companyPanel(key)}catch(x){err(x.message)}};$('deleteCompany').onclick=async()=>{if(!confirm('¿Eliminar esta empresa? También se eliminarán sus tiendas, conversaciones de prueba, solicitudes, archivos y apoyos asignados.'))return;if(!confirm('Confirmación final: esta acción no se puede deshacer.'))return;try{await api('/api/empresas/'+encodeURIComponent(key),{method:'DELETE'});companies()}catch(x){err(x.message)}};$('saveCompanyName').onclick=async()=>{",
     )
+
+    js = js.replace(
+        "return {nodo_raiz:clean[root]?root:Object.keys(clean)[0],nodos:clean}",
+        "return {nodo_raiz:clean[root]?root:Object.keys(clean)[0],nodos:clean,respuesta_sin_sentido_1:String(raw?.respuesta_sin_sentido_1||'No pude identificar una opción válida. Por favor describe nuevamente lo que necesitas o usa alguna de las opciones disponibles.'),respuesta_sin_sentido_2:String(raw?.respuesta_sin_sentido_2||'Sigo sin poder identificar tu solicitud. Revisa las opciones disponibles o escribe humano si necesitas atención de una persona.')}",
+    )
+    js = js.replace(
+        "return {nodo_raiz:'inicio',nodos:{inicio:{mensaje:'Escribe aquí el mensaje inicial.',opciones:[]}}}",
+        "return {nodo_raiz:'inicio',nodos:{inicio:{mensaje:'Escribe aquí el mensaje inicial.',opciones:[]}},respuesta_sin_sentido_1:'No pude identificar una opción válida. Por favor describe nuevamente lo que necesitas o usa alguna de las opciones disponibles.',respuesta_sin_sentido_2:'Sigo sin poder identificar tu solicitud. Revisa las opciones disponibles o escribe humano si necesitas atención de una persona.'}",
+    )
+    js = js.replace(
+        "if($('rootNode'))treeDraft.nodo_raiz=$('rootNode').value}",
+        "if($('rootNode'))treeDraft.nodo_raiz=$('rootNode').value;if($('noMatchFirst'))treeDraft.respuesta_sin_sentido_1=$('noMatchFirst').value;if($('noMatchRepeat'))treeDraft.respuesta_sin_sentido_2=$('noMatchRepeat').value}",
+    )
+    js = js.replace(
+        "<div id=\"nodesHost\"></div>${admin()?'<button id=\"saveTree\">Guardar árbol</button>':''}",
+        "<div id=\"nodesHost\"></div><div class=\"card\"><h4>Cuando no entiende el mensaje</h4><p class=\"muted\">Estos textos se usan solo cuando ninguna palabra/criterio del paso actual coincide.</p><label>Primera vez que no entiende</label><textarea id=\"noMatchFirst\" ${admin()?'':'readonly'}>${esc(treeDraft.respuesta_sin_sentido_1||'')}</textarea><label>Si vuelve a insistir con algo que no coincide</label><textarea id=\"noMatchRepeat\" ${admin()?'':'readonly'}>${esc(treeDraft.respuesta_sin_sentido_2||'')}</textarea></div>${admin()?'<button id=\"saveTree\">Guardar árbol</button>':''}",
+    )
+
     js = js.replace(
         "if(localStorage.getItem(TK))show()});",
         "if(localStorage.getItem(TK)){show();if(location.hash==='#arbol')setTimeout(async()=>{try{const a=await api('/api/empresas/listar');$('content').innerHTML='<h2>Selecciona empresa para editar su árbol</h2>'+a.map(c=>`<button data-tree-company=\"${esc(c.empresa_id)}\"><b>${esc(c.nombre)}</b><div class=\"muted\">${esc(c.empresa_id)}</div></button>`).join('');document.querySelectorAll('[data-tree-company]').forEach(b=>b.onclick=()=>companyPanel(b.dataset.treeCompany))}catch(x){err(x.message)}},200)}});",

@@ -56,9 +56,13 @@ def _provider_message_id(data: LocalInbound) -> str:
     return 'local:' + hashlib.sha256(raw.encode()).hexdigest()[:56]
 
 
+def _root_state(tree: dict) -> str:
+    return str(tree.get('nodo_raiz') or tree.get('root') or 'inicio')
+
+
 def _root_message(tree: dict) -> str:
     nodes = tree.get('nodos') or tree.get('nodes') or {}
-    root = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
+    root = _root_state(tree)
     node = nodes.get(root) or nodes.get('inicio') or {}
     return str(node.get('mensaje') or '').strip()
 
@@ -164,8 +168,7 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
 
     conversation = db.query(Conversation).filter(Conversation.wa_user_id == local_user_id, Conversation.company_id == company.id, Conversation.status.in_(['open', 'help_pending'])).order_by(Conversation.id.desc()).first()
     if not conversation:
-        initial_state = (company.decision_tree or {}).get('nodo_raiz') or 'inicio'
-        conversation = Conversation(company_id=company.id, wa_user_id=local_user_id, state=initial_state)
+        conversation = Conversation(company_id=company.id, wa_user_id=local_user_id, state=_root_state(company.decision_tree or {}))
         db.add(conversation)
         db.flush()
 
@@ -189,10 +192,24 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         return {'status': 'known_support_skipped', 'should_reply': False, 'conversation_id': conversation.id}
 
     tree = company.decision_tree or {}
+    root_state = _root_state(tree)
     matched, response_text, next_state, action = match_response_with_action(tree, conversation.state, data.text)
+
+    # Existing conversations can be sitting in a child state (or in the old "humano"
+    # state from earlier builds). If a message does not match there, retry against the
+    # company's root choices. This lets a user type a recognized subject such as
+    # "etiquetas" at any time and re-enter the correct flow instead of getting stuck.
+    matched_from_root = False
+    if not matched and conversation.state != root_state:
+        matched, response_text, next_state, action = match_response_with_action(tree, root_state, data.text)
+        matched_from_root = matched
+
     if matched:
         conversation.state = next_state
+        if action != 'human_help':
+            conversation.status = 'open'
         inbound_payload['tree_unmatched'] = False
+        inbound_payload['tree_matched_from_root'] = matched_from_root
         inbound_message.raw_payload = dict(inbound_payload)
         if action == 'human_help':
             _ensure_help_request(db, conversation=conversation, company=company, store=store, local_user_id=local_user_id, body=data.text, reason='decision_tree_human_help')

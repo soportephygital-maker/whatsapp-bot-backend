@@ -60,13 +60,6 @@ def _root_state(tree: dict) -> str:
     return str(tree.get('nodo_raiz') or tree.get('root') or 'inicio')
 
 
-def _root_message(tree: dict) -> str:
-    nodes = tree.get('nodos') or tree.get('nodes') or {}
-    root = _root_state(tree)
-    node = nodes.get(root) or nodes.get('inicio') or {}
-    return str(node.get('mensaje') or '').strip()
-
-
 def _no_match_message(tree: dict, repeated: bool) -> str:
     key = 'respuesta_sin_sentido_2' if repeated else 'respuesta_sin_sentido_1'
     fallback = DEFAULT_NO_MATCH_REPEAT if repeated else DEFAULT_NO_MATCH_FIRST
@@ -89,15 +82,14 @@ def _explicit_human_request(value: str) -> bool:
 
 
 def _previous_message_was_unmatched(db: Session, conversation_id: int, current_message_id: int) -> bool:
-    rows = db.query(Message).filter(
+    row = db.query(Message).filter(
         Message.conversation_id == conversation_id,
         Message.direction == 'inbound',
         Message.id < current_message_id,
-    ).order_by(Message.id.desc()).limit(1).all()
-    if not rows:
+    ).order_by(Message.id.desc()).first()
+    if not row:
         return False
-    payload = rows[0].raw_payload or {}
-    return bool(payload.get('tree_unmatched'))
+    return bool((row.raw_payload or {}).get('tree_unmatched'))
 
 
 def _selected_stores(data: LocalInbound, db: Session) -> list[Store]:
@@ -166,7 +158,11 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         routing = {'reason': 'selected_store_fallback'}
     store = next((row for row in selected_stores if row.company_id == company.id), fallback_store)
 
-    conversation = db.query(Conversation).filter(Conversation.wa_user_id == local_user_id, Conversation.company_id == company.id, Conversation.status.in_(['open', 'help_pending'])).order_by(Conversation.id.desc()).first()
+    conversation = db.query(Conversation).filter(
+        Conversation.wa_user_id == local_user_id,
+        Conversation.company_id == company.id,
+        Conversation.status.in_(['open', 'help_pending', 'human_active']),
+    ).order_by(Conversation.id.desc()).first()
     if not conversation:
         conversation = Conversation(company_id=company.id, wa_user_id=local_user_id, state=_root_state(company.decision_tree or {}))
         db.add(conversation)
@@ -191,14 +187,18 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         db.commit()
         return {'status': 'known_support_skipped', 'should_reply': False, 'conversation_id': conversation.id}
 
+    # Once a person has taken over the conversation, keep recording incoming
+    # messages but never execute the chatbot until the help case is closed.
+    if conversation.status == 'human_active':
+        inbound_payload['chatbot_paused'] = True
+        inbound_message.raw_payload = dict(inbound_payload)
+        db.add(AuditLog(username=operator.username, action='chatbot_skipped_human_active', entity='conversation', entity_id=str(conversation.id), details={'sender': data.sender, 'store': store.name}))
+        db.commit()
+        return {'status': 'human_active', 'conversation_id': conversation.id, 'should_reply': False, 'chatbot_paused': True}
+
     tree = company.decision_tree or {}
     root_state = _root_state(tree)
     matched, response_text, next_state, action = match_response_with_action(tree, conversation.state, data.text)
-
-    # Existing conversations can be sitting in a child state (or in the old "humano"
-    # state from earlier builds). If a message does not match there, retry against the
-    # company's root choices. This lets a user type a recognized subject such as
-    # "etiquetas" at any time and re-enter the correct flow instead of getting stuck.
     matched_from_root = False
     if not matched and conversation.state != root_state:
         matched, response_text, next_state, action = match_response_with_action(tree, root_state, data.text)

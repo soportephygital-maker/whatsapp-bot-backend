@@ -9,14 +9,19 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Shader
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.LayerDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -28,6 +33,8 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.math.max
+import kotlin.math.min
 
 class AdminGateActivity : Activity() {
     private val baseUrl = "https://whatsapp-bot-backend-v2.onrender.com"
@@ -42,6 +49,7 @@ class AdminGateActivity : Activity() {
     private var updatePromptVisible = false
     private var pendingUpdateFile: File? = null
     @Volatile private var notificationPolling = false
+    @Volatile private var backgroundLoading = false
 
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
@@ -50,6 +58,9 @@ class AdminGateActivity : Activity() {
     private lateinit var dashboardButton: Button
     private lateinit var adminPanelButton: Button
     private lateinit var permissionsButton: Button
+
+    private val backgroundCacheFile: File
+        get() = File(filesDir, "dashboard-background.img")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,6 +104,8 @@ class AdminGateActivity : Activity() {
         root.addView(rolePanel)
         setContentView(root)
 
+        root.post { applyCachedAppearance() }
+
         loginButton.setOnClickListener {
             val user = usernameInput.text.toString().trim()
             val pass = passwordInput.text.toString()
@@ -117,6 +130,7 @@ class AdminGateActivity : Activity() {
             installApk(file)
             return
         }
+        applyCachedAppearance()
         if (token != null) refreshAppearanceFromServer()
         checkForUpdate(false)
     }
@@ -184,11 +198,22 @@ class AdminGateActivity : Activity() {
         Thread {
             try {
                 val theme = JSONObject(request("GET", "/api/settings/appearance", null, auth))
-                val prefs = getSharedPreferences(appearancePrefsName, MODE_PRIVATE).edit()
+                val oldPrefs = getSharedPreferences(appearancePrefsName, MODE_PRIVATE)
+                val oldImage = oldPrefs.getString("backgroundImage", "").orEmpty()
+                val newImage = theme.optString("backgroundImage", "").trim()
+                val prefs = oldPrefs.edit()
                 listOf("background", "cards", "text", "accent", "input", "backgroundImage", "backgroundSize").forEach { key ->
                     prefs.putString(key, theme.optString(key, ""))
                 }
+                prefs.putInt("imageRepeatCount", theme.optInt("imageRepeatCount", 1).coerceIn(1, 12))
+                prefs.putInt("cardOpacity", theme.optInt("cardOpacity", 90).coerceIn(10, 100))
                 prefs.apply()
+
+                if (newImage.isBlank()) {
+                    if (backgroundCacheFile.exists()) backgroundCacheFile.delete()
+                } else if (newImage != oldImage || !backgroundCacheFile.exists()) {
+                    cacheBackgroundImage(newImage)
+                }
                 runOnUiThread { applyCachedAppearance() }
             } catch (_: Exception) {}
         }.start()
@@ -200,8 +225,18 @@ class AdminGateActivity : Activity() {
         val background = prefs.getString("background", "#040814") ?: "#040814"
         val text = prefs.getString("text", "#edf6ff") ?: "#edf6ff"
         val backgroundImage = prefs.getString("backgroundImage", "").orEmpty()
-        try { root.setBackgroundColor(Color.parseColor(background)) } catch (_: Exception) { root.setBackgroundColor(Color.parseColor("#040814")) }
-        if (backgroundImage.isNotBlank()) loadBackgroundImage(backgroundImage)
+        val backgroundSize = prefs.getString("backgroundSize", "cover") ?: "cover"
+        val repeatCount = prefs.getInt("imageRepeatCount", 1).coerceIn(1, 12)
+        val backgroundColor = try { Color.parseColor(background) } catch (_: Exception) { Color.parseColor("#040814") }
+
+        val cached = if (backgroundCacheFile.exists()) BitmapFactory.decodeFile(backgroundCacheFile.absolutePath) else null
+        if (cached != null && backgroundImage.isNotBlank()) {
+            root.background = buildBackgroundDrawable(cached, backgroundSize, repeatCount, backgroundColor)
+        } else {
+            root.setBackgroundColor(backgroundColor)
+            if (backgroundImage.isNotBlank() && !backgroundLoading) cacheBackgroundImage(backgroundImage)
+        }
+
         val textColor = try { Color.parseColor(text) } catch (_: Exception) { Color.WHITE }
         if (::status.isInitialized) status.setTextColor(textColor)
         fun tintPanel(panel: LinearLayout) {
@@ -215,16 +250,75 @@ class AdminGateActivity : Activity() {
         if (::rolePanel.isInitialized) tintPanel(rolePanel)
     }
 
-    private fun loadBackgroundImage(url: String) {
+    private fun cacheBackgroundImage(url: String) {
+        if (backgroundLoading) return
+        backgroundLoading = true
         Thread {
             try {
-                val connection = URL(url).openConnection().apply { connectTimeout = 15000; readTimeout = 15000 }
-                val bitmap = connection.getInputStream().use { BitmapFactory.decodeStream(it) } ?: return@Thread
-                runOnUiThread {
-                    if (!isFinishing) root.background = BitmapDrawable(resources, bitmap).apply { gravity = android.view.Gravity.FILL }
+                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20000
+                    readTimeout = 30000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Phygital-Bot-Android")
                 }
-            } catch (_: Exception) {}
+                if (connection.responseCode !in 200..299) throw IllegalStateException("HTTP ${connection.responseCode}")
+                val temp = File(filesDir, "dashboard-background.tmp")
+                connection.inputStream.use { input -> temp.outputStream().use { output -> input.copyTo(output) } }
+                connection.disconnect()
+                val bitmap = BitmapFactory.decodeFile(temp.absolutePath)
+                if (bitmap != null) {
+                    if (backgroundCacheFile.exists()) backgroundCacheFile.delete()
+                    temp.renameTo(backgroundCacheFile)
+                    runOnUiThread { if (!isFinishing) applyCachedAppearance() }
+                } else {
+                    temp.delete()
+                }
+            } catch (_: Exception) {
+            } finally {
+                backgroundLoading = false
+            }
         }.start()
+    }
+
+    private fun buildBackgroundDrawable(bitmap: Bitmap, mode: String, repeatCount: Int, backgroundColor: Int): LayerDrawable {
+        val color = ColorDrawable(backgroundColor)
+        val width = max(1, root.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels)
+        val height = max(1, root.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels)
+
+        if (repeatCount > 1) {
+            val tileWidth = max(1, width / repeatCount)
+            val ratio = bitmap.height.toFloat() / max(1, bitmap.width).toFloat()
+            val tileHeight = max(1, (tileWidth * ratio).toInt())
+            val tile = Bitmap.createScaledBitmap(bitmap, tileWidth, tileHeight, true)
+            val tiled = BitmapDrawable(resources, tile).apply {
+                tileModeX = Shader.TileMode.REPEAT
+                tileModeY = Shader.TileMode.REPEAT
+                gravity = Gravity.TOP or Gravity.START
+            }
+            return LayerDrawable(arrayOf(color, tiled))
+        }
+
+        val drawable = when (mode) {
+            "contain" -> {
+                val scale = min(width.toFloat() / bitmap.width, height.toFloat() / bitmap.height)
+                val scaled = Bitmap.createScaledBitmap(bitmap, max(1, (bitmap.width * scale).toInt()), max(1, (bitmap.height * scale).toInt()), true)
+                BitmapDrawable(resources, scaled).apply { gravity = Gravity.CENTER }
+            }
+            "auto" -> BitmapDrawable(resources, bitmap).apply { gravity = Gravity.CENTER }
+            else -> {
+                val scale = max(width.toFloat() / bitmap.width, height.toFloat() / bitmap.height)
+                val scaledWidth = max(1, (bitmap.width * scale).toInt())
+                val scaledHeight = max(1, (bitmap.height * scale).toInt())
+                val scaled = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
+                val x = max(0, (scaledWidth - width) / 2)
+                val y = max(0, (scaledHeight - height) / 2)
+                val cropWidth = min(width, scaled.width - x)
+                val cropHeight = min(height, scaled.height - y)
+                val cropped = Bitmap.createBitmap(scaled, x, y, cropWidth, cropHeight)
+                BitmapDrawable(resources, cropped).apply { gravity = Gravity.FILL }
+            }
+        }
+        return LayerDrawable(arrayOf(color, drawable))
     }
 
     private fun showPermissionCenter() {

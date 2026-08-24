@@ -4,17 +4,25 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from ..auth import get_current_user, require_admin, require_case_closer, require_operator, require_primary_admin
 from ..database import get_db
-from ..models import AppNotification, AuditLog, Company, Contact, Conversation, ConversationChannel, HelpRequest, Message, Store, User
+from ..models import AppNotification, AuditLog, Company, Contact, Conversation, ConversationChannel, GlobalSetting, HelpRequest, Message, Store, User
 from ..schemas import ConversationReply, HelpRequestStatus, UIAuditEvent
 from ..services.escalation import process_help_escalations
 from ..services.notifications import audience_for_role, emit_notification
 from ..services.whatsapp import send_text_message
 
 router = APIRouter(prefix='/api', tags=['dashboard'])
+OWNER_ALIAS_KEY = 'owner_display_alias'
+DEFAULT_OWNER_ALIAS = 'Zoe Ortiz'
 
 
 def _hidden_admin_username() -> str:
     return (os.getenv('BOOTSTRAP_ADMIN_USERNAME') or '').strip()
+
+
+def _owner_alias(db: Session) -> str:
+    row = db.get(GlobalSetting, OWNER_ALIAS_KEY)
+    value = row.value if row and isinstance(row.value, dict) else {}
+    return str(value.get('alias') or DEFAULT_OWNER_ALIAS).strip() or DEFAULT_OWNER_ALIAS
 
 
 @router.get('/stats')
@@ -47,12 +55,39 @@ def conversations(company_id: int | None = Query(default=None), _: User = Depend
 
 
 @router.get('/conversaciones/{conversation_id}/mensajes')
-def conversation_messages(conversation_id: int, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def conversation_messages(conversation_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     conversation = db.get(Conversation, conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail='Conversación no encontrada')
     rows = db.query(Message).filter(Message.conversation_id == conversation_id).order_by(Message.created_at.asc()).all()
-    return [{'id': row.id, 'direction': row.direction, 'sender': row.sender, 'body': row.body, 'created_at': row.created_at, 'delivery': row.raw_payload or {}} for row in rows]
+    primary_admin = _hidden_admin_username()
+    alias = _owner_alias(db)
+    result = []
+    for row in rows:
+        sender = row.sender
+        internal_sender = None
+        if primary_admin and sender == primary_admin:
+            if user.role == 'admin':
+                internal_sender = sender
+            sender = alias
+        raw = row.raw_payload or {}
+        delivery = {
+            key: raw.get(key)
+            for key in ('delivery_status', 'sent', 'error', 'transport', 'provider_message_id')
+            if key in raw
+        }
+        item = {
+            'id': row.id,
+            'direction': row.direction,
+            'sender': sender,
+            'body': row.body,
+            'created_at': row.created_at,
+            'delivery': delivery,
+        }
+        if internal_sender:
+            item['internal_sender'] = internal_sender
+        result.append(item)
+    return result
 
 
 def _activate_human_mode(db: Session, conversation: Conversation, user: User, company: Company, sender_id: str | None):

@@ -41,12 +41,18 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 
 def require_operator(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role not in ('admin', 'operador'):
+    if current_user.role not in ('admin', 'gerente', 'operador'):
         raise HTTPException(status_code=403, detail='El rol lector no puede responder ni modificar conversaciones')
     return current_user
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role not in ('admin', 'gerente'):
+        raise HTTPException(status_code=403, detail='Se requieren permisos de administrador o gerente')
+    return current_user
+
+
+def require_primary_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail='Se requieren permisos de administrador')
+        raise HTTPException(status_code=403, detail='Solo el administrador puede administrar usuarios y permisos')
     return current_user

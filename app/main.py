@@ -7,7 +7,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, Store, User
 from .auth import hash_password, verify_password
-from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, local_bridge, manager_patch, mobile_update, whatsapp
+from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, local_bridge, manager_patch, mobile_update, settings as settings_router, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -24,6 +24,7 @@ app.include_router(company_resources.router)
 app.include_router(contacts.router)
 app.include_router(conversation_admin.router)
 app.include_router(dashboard.router)
+app.include_router(settings_router.router)
 app.include_router(manager_patch.router)
 app.include_router(dashboard_patch.router)
 app.include_router(dashboard_ui.router)

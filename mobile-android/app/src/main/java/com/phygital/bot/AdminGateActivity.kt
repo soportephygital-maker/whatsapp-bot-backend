@@ -9,8 +9,9 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -198,7 +199,9 @@ class AdminGateActivity : Activity() {
         val prefs = getSharedPreferences(appearancePrefsName, MODE_PRIVATE)
         val background = prefs.getString("background", "#040814") ?: "#040814"
         val text = prefs.getString("text", "#edf6ff") ?: "#edf6ff"
+        val backgroundImage = prefs.getString("backgroundImage", "").orEmpty()
         try { root.setBackgroundColor(Color.parseColor(background)) } catch (_: Exception) { root.setBackgroundColor(Color.parseColor("#040814")) }
+        if (backgroundImage.isNotBlank()) loadBackgroundImage(backgroundImage)
         val textColor = try { Color.parseColor(text) } catch (_: Exception) { Color.WHITE }
         if (::status.isInitialized) status.setTextColor(textColor)
         fun tintPanel(panel: LinearLayout) {
@@ -210,6 +213,18 @@ class AdminGateActivity : Activity() {
         }
         if (::loginPanel.isInitialized) tintPanel(loginPanel)
         if (::rolePanel.isInitialized) tintPanel(rolePanel)
+    }
+
+    private fun loadBackgroundImage(url: String) {
+        Thread {
+            try {
+                val connection = URL(url).openConnection().apply { connectTimeout = 15000; readTimeout = 15000 }
+                val bitmap = connection.getInputStream().use { BitmapFactory.decodeStream(it) } ?: return@Thread
+                runOnUiThread {
+                    if (!isFinishing) root.background = BitmapDrawable(resources, bitmap).apply { gravity = android.view.Gravity.FILL }
+                }
+            } catch (_: Exception) {}
+        }.start()
     }
 
     private fun showPermissionCenter() {

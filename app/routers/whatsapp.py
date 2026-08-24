@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 from ..config import settings
@@ -12,6 +13,7 @@ from ..services.notifications import emit_notification
 from ..services.whatsapp import extract_messages, send_text_message
 
 router = APIRouter(prefix='/webhooks/whatsapp', tags=['whatsapp'])
+HUMAN_PAUSE_MINUTES = 60
 
 
 @router.get('')
@@ -42,7 +44,32 @@ def _ensure_help(db: Session, conversation: Conversation, company: Company, stor
         db.add(help_request)
         db.flush()
         emit_notification(db, audience='admin', event_type='help_request_new', title=f'Nueva solicitud de ayuda - {store.name}', body=f'{company.name}: {wa_user_id} solicita atención humana.', event_key=f'help:{help_request.id}:admin:new', details={'help_request_id': help_request.id, 'company': company.name, 'store': store.name, 'wa_user_id': wa_user_id})
-    db.add(AuditLog(action='human_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'company': company.company_key, 'store': store.name}))
+    db.add(AuditLog(action='human_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'company': company.company_key, 'store': store.name, 'chatbot_pause_minutes': HUMAN_PAUSE_MINUTES}))
+
+
+def _human_pause_deadline(db: Session, conversation_id: int) -> tuple[HelpRequest | None, datetime | None]:
+    request = db.query(HelpRequest).filter(
+        HelpRequest.conversation_id == conversation_id,
+        HelpRequest.status.in_(['new', 'reviewing']),
+    ).order_by(HelpRequest.created_at.desc()).first()
+
+    anchor = request.created_at if request else None
+    recent_outbound = db.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.direction == 'outbound',
+    ).order_by(Message.id.desc()).limit(50).all()
+    for row in recent_outbound:
+        payload = row.raw_payload or {}
+        is_manual = bool(payload.get('manual') or payload.get('manual_dashboard') or (row.sender and row.sender != 'bot'))
+        if not is_manual:
+            continue
+        if row.created_at and (anchor is None or row.created_at > anchor):
+            anchor = row.created_at
+        break
+
+    if anchor is None:
+        return request, None
+    return request, anchor + timedelta(minutes=HUMAN_PAUSE_MINUTES)
 
 
 @router.post('')
@@ -74,7 +101,11 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
         if duplicate:
             continue
 
-        conversation = db.query(Conversation).filter(Conversation.wa_user_id == wa_user_id, Conversation.company_id == company.id, Conversation.status.in_(['open', 'help_pending'])).order_by(Conversation.id.desc()).first()
+        conversation = db.query(Conversation).filter(
+            Conversation.wa_user_id == wa_user_id,
+            Conversation.company_id == company.id,
+            Conversation.status.in_(['open', 'help_pending', 'human_active']),
+        ).order_by(Conversation.id.desc()).first()
         if not conversation:
             conversation = Conversation(company_id=company.id, wa_user_id=wa_user_id, state=(company.decision_tree or {}).get('nodo_raiz') or 'inicio')
             db.add(conversation)
@@ -95,7 +126,19 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
             db.add(AuditLog(action='authorized_support_bot_skipped', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'company': company.company_key, 'store': store.name}))
             continue
 
-        matched, response_text, next_state, action = match_response_with_action(company.decision_tree or {}, conversation.state, message_text)
+        tree = company.decision_tree or {}
+        root_state = tree.get('nodo_raiz') or 'inicio'
+        if conversation.status in ('help_pending', 'human_active'):
+            request_row, pause_until = _human_pause_deadline(db, conversation.id)
+            now = datetime.utcnow()
+            if pause_until and now < pause_until:
+                db.add(AuditLog(action='chatbot_skipped_human_support', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'store': store.name, 'conversation_status': conversation.status, 'help_request_id': request_row.id if request_row else None, 'pause_until': pause_until.isoformat(), 'remaining_seconds': max(1, int((pause_until - now).total_seconds()))}))
+                continue
+            conversation.status = 'open'
+            conversation.state = root_state
+            db.add(AuditLog(action='chatbot_auto_resumed_after_human_timeout', entity='conversation', entity_id=str(conversation.id), details={'help_request_id': request_row.id if request_row else None, 'pause_minutes': HUMAN_PAUSE_MINUTES}))
+
+        matched, response_text, next_state, action = match_response_with_action(tree, conversation.state, message_text)
         if matched:
             conversation.state = next_state
             if action == 'human_help':

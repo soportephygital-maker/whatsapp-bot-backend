@@ -9,7 +9,7 @@ from ..models import AuditLog, GlobalSetting, RolePolicy, User
 router = APIRouter(prefix='/api/settings', tags=['settings'])
 
 APPEARANCE_KEY = 'dashboard_appearance'
-ALLOWED_ROLES = ('admin', 'gerente', 'operador', 'lector')
+VISIBLE_ROLES = ('gerente', 'operador', 'lector')
 PERMISSION_LABELS = {
     'operate': 'Responder y modificar conversaciones',
     'admin_access': 'Acceso administrativo general',
@@ -25,6 +25,8 @@ DEFAULT_APPEARANCE = {
     'input': '#08111f',
     'backgroundImage': '',
     'backgroundSize': 'cover',
+    'imageRepeatCount': 1,
+    'cardOpacity': 90,
     'contentWidth': '1240',
     'density': 'comfortable',
     'cardRadius': '18',
@@ -39,6 +41,8 @@ class AppearanceUpdate(BaseModel):
     input: str = Field(default=DEFAULT_APPEARANCE['input'], max_length=30)
     backgroundImage: str = Field(default='', max_length=2000)
     backgroundSize: str = Field(default='cover', pattern='^(cover|contain|auto)$')
+    imageRepeatCount: int = Field(default=1, ge=1, le=12)
+    cardOpacity: int = Field(default=90, ge=10, le=100)
     contentWidth: str = Field(default='1240', pattern='^(960|1100|1240|1440|1600)$')
     density: str = Field(default='comfortable', pattern='^(compact|comfortable|spacious)$')
     cardRadius: str = Field(default='18', pattern='^(0|8|12|18|24|32)$')
@@ -76,7 +80,8 @@ def update_appearance(data: AppearanceUpdate, user: User = Depends(require_permi
 
 @router.get('/me-permissions')
 def my_permissions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return {'role': user.role, 'permissions': effective_permissions(db, user.role)}
+    public_role = 'gerente' if user.role == 'admin' else user.role
+    return {'role': public_role, 'permissions': effective_permissions(db, user.role)}
 
 
 @router.get('/role-policies')
@@ -84,19 +89,16 @@ def list_role_policies(_: User = Depends(require_primary_admin), db: Session = D
     return {
         'labels': PERMISSION_LABELS,
         'roles': [
-            {'role': role, 'permissions': effective_permissions(db, role), 'protected': role == 'admin'}
-            for role in ALLOWED_ROLES
+            {'role': role, 'permissions': effective_permissions(db, role), 'protected': False}
+            for role in VISIBLE_ROLES
         ],
     }
 
 
 @router.put('/role-policies/{role}')
 def update_role_policy(role: str, data: RolePolicyUpdate, admin: User = Depends(require_primary_admin), db: Session = Depends(get_db)):
-    if role not in ALLOWED_ROLES:
+    if role not in VISIBLE_ROLES:
         raise HTTPException(status_code=404, detail='Rol no reconocido')
-    if role == 'admin':
-        raise HTTPException(status_code=400, detail='Los permisos del administrador principal están protegidos')
-
     allowed = set(PERMISSION_LABELS)
     permissions = {key: bool(value) for key, value in data.permissions.items() if key in allowed}
     merged = {**DEFAULT_ROLE_PERMISSIONS[role], **permissions}

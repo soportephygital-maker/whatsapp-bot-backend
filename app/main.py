@@ -36,22 +36,47 @@ _escalation_thread_started = False
 
 
 def _public_page(title: str, body: str) -> HTMLResponse:
-    return HTMLResponse(f'''<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} - Phygital Bot</title><style>body{{font-family:system-ui,-apple-system,sans-serif;max-width:850px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1f2937}}h1,h2{{color:#111827}}a{{color:#2563eb}}</style></head><body><h1>{title}</h1>{body}<p><small>Última actualización: 21 de agosto de 2026.</small></p></body></html>''')
+    return HTMLResponse(f'''<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} - Phygital Bot</title>
+<style>body{{font-family:system-ui,-apple-system,sans-serif;max-width:850px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1f2937}}h1,h2{{color:#111827}}a{{color:#2563eb}}</style></head>
+<body><h1>{title}</h1>{body}<p><small>Última actualización: 21 de agosto de 2026.</small></p></body></html>''')
 
 
 @app.get('/privacy', response_class=HTMLResponse)
 def privacy_policy():
-    return _public_page('Política de privacidad', '<p>Phygital Bot es una herramienta de atención y soporte operada para Grupoedm.</p>')
+    return _public_page('Política de privacidad', '''
+<p>Phygital Bot es una herramienta de atención y soporte operada para Grupoedm. Esta política explica el tratamiento de información cuando una persona interactúa con el servicio mediante WhatsApp, el panel web o la aplicación móvil asociada.</p>
+<h2>Información que podemos tratar</h2>
+<p>Podemos tratar el nombre mostrado por WhatsApp, el contenido visible en las notificaciones autorizadas por el usuario del dispositivo, identificadores técnicos locales, la empresa o tienda asociada a la conversación, solicitudes de soporte y datos necesarios para dar seguimiento al caso. Para usuarios internos también podemos tratar identificadores de sesión, rol y registros de actividad administrativa.</p>
+<h2>Finalidades</h2>
+<p>Usamos la información para recibir y enrutar solicitudes, responder consultas mediante las acciones de respuesta disponibles en Android, escalar casos a personal de soporte, mantener historial operativo, proteger el servicio y mejorar su funcionamiento.</p>
+<h2>Proveedores y transferencias</h2>
+<p>El servicio utiliza infraestructura de alojamiento necesaria para operar el backend. El acceso a notificaciones de WhatsApp se concede explícitamente desde Android y puede revocarse en cualquier momento. No vendemos datos personales.</p>
+<h2>Conservación y seguridad</h2>
+<p>La información se conserva únicamente durante el tiempo necesario para fines operativos, de soporte, seguridad y cumplimiento aplicable. Aplicamos controles de acceso y medidas técnicas razonables para protegerla.</p>
+<h2>Derechos y contacto</h2>
+<p>Para solicitar acceso, corrección o eliminación de información relacionada con Phygital Bot, escribe a <a href="mailto:bernabe.lopez@grupoedm.com.mx">bernabe.lopez@grupoedm.com.mx</a>.</p>
+''')
 
 
 @app.get('/terms', response_class=HTMLResponse)
 def terms_of_service():
-    return _public_page('Condiciones del servicio', '<p>Phygital Bot proporciona funciones de atención, clasificación y seguimiento de solicitudes relacionadas con servicios y operaciones autorizadas.</p>')
+    return _public_page('Condiciones del servicio', '''
+<p>Phygital Bot proporciona funciones de atención, clasificación y seguimiento de solicitudes relacionadas con servicios y operaciones de Grupoedm y sus proyectos autorizados.</p>
+<p>La integración local de Android depende de que el propietario del dispositivo conceda acceso a notificaciones. Las respuestas automáticas solo pueden enviarse cuando WhatsApp publica una acción de respuesta compatible en la notificación.</p>
+<p>El servicio puede modificarse o suspenderse temporalmente por mantenimiento o por cambios de Android o WhatsApp.</p>
+<p>Para consultas sobre estas condiciones, escribe a <a href="mailto:bernabe.lopez@grupoedm.com.mx">bernabe.lopez@grupoedm.com.mx</a>.</p>
+''')
 
 
 @app.get('/data-deletion', response_class=HTMLResponse)
 def data_deletion():
-    return _public_page('Eliminación de datos', '<p>Para solicitar eliminación de datos relacionados con Phygital Bot, contacta al responsable del servicio.</p>')
+    return _public_page('Eliminación de datos', '''
+<p>Si deseas solicitar la eliminación de datos asociados a una interacción con Phygital Bot, envía un correo a <a href="mailto:bernabe.lopez@grupoedm.com.mx">bernabe.lopez@grupoedm.com.mx</a> con el asunto <strong>Solicitud de eliminación de datos - Phygital Bot</strong>.</p>
+<p>Incluye el identificador relacionado con la solicitud y una descripción breve de los datos que deseas eliminar. Podemos solicitar una verificación razonable de identidad antes de ejecutar la eliminación para evitar solicitudes fraudulentas.</p>
+<p>Una vez verificada la solicitud, eliminaremos o anonimizaremos los datos que correspondan, salvo aquellos que deban conservarse por obligaciones legales, seguridad o prevención de fraude.</p>
+''')
 
 
 def _escalation_loop():
@@ -83,7 +108,8 @@ def startup():
             else:
                 changed = False
                 if not verify_password(password, admin.password_hash):
-                    admin.password_hash = hash_password(password); changed = True
+                    admin.password_hash = hash_password(password)
+                    changed = True
                 if admin.role != 'admin':
                     admin.role = 'admin'; changed = True
                 if not admin.is_active:
@@ -95,20 +121,39 @@ def startup():
                 for row in other_admins:
                     row.role = 'operador'
                 db.commit()
-            # The primary administrator is intentionally invisible in activity.
             db.query(AuditLog).filter(AuditLog.username == username).delete(synchronize_session=False)
             db.commit()
 
         if not db.query(Company).first():
-            company = Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={'nodo_raiz':'inicio','nodos':{'inicio':{'mensaje':'Bienvenido. Elige una opción: 1) Soporte 2) Información','opciones':[{'comando':'1','respuesta':'Cuéntame brevemente tu problema.','siguiente':'soporte'},{'comando':'2','respuesta':'¿Qué información necesitas?','siguiente':'informacion'}]},'soporte':{'mensaje':'Describe el problema y un operador podrá darle seguimiento.','opciones':[]},'informacion':{'mensaje':'Escribe tu consulta.','opciones':[]}}})
-            db.add(company); db.flush(); db.add(Store(company_id=company.id, name='Principal')); db.commit()
+            company = Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={
+                'nodo_raiz': 'inicio',
+                'nodos': {
+                    'inicio': {
+                        'mensaje': 'Bienvenido. Elige una opción: 1) Soporte 2) Información',
+                        'opciones': [
+                            {'comando': '1', 'respuesta': 'Cuéntame brevemente tu problema.', 'siguiente': 'soporte'},
+                            {'comando': '2', 'respuesta': '¿Qué información necesitas?', 'siguiente': 'informacion'},
+                        ],
+                    },
+                    'soporte': {'mensaje': 'Describe el problema y un operador podrá darle seguimiento.', 'opciones': []},
+                    'informacion': {'mensaje': 'Escribe tu consulta.', 'opciones': []},
+                },
+            })
+            db.add(company)
+            db.flush()
+            db.add(Store(company_id=company.id, name='Principal'))
+            db.commit()
+
         changed = False
         for company in db.query(Company).all():
             if not company.stores:
-                db.add(Store(company_id=company.id, name='Principal')); changed = True
-        if changed: db.commit()
+                db.add(Store(company_id=company.id, name='Principal'))
+                changed = True
+        if changed:
+            db.commit()
     finally:
         db.close()
+
     if settings.environment.lower() == 'production' and not _escalation_thread_started:
         _escalation_thread_started = True
         threading.Thread(target=_escalation_loop, name='support-escalations', daemon=True).start()
@@ -121,4 +166,16 @@ def health():
 
 @app.get('/')
 def root():
-    return {'name': settings.app_name, 'status': 'running', 'health': '/health', 'dashboard': '/dashboard', 'docs': '/docs', 'local_bridge': '/api/local-bridge/inbound', 'legacy_whatsapp_webhook': '/webhooks/whatsapp', 'mobile_update': '/api/mobile/update', 'privacy': '/privacy', 'terms': '/terms', 'data_deletion': '/data-deletion'}
+    return {
+        'name': settings.app_name,
+        'status': 'running',
+        'health': '/health',
+        'dashboard': '/dashboard',
+        'docs': '/docs',
+        'local_bridge': '/api/local-bridge/inbound',
+        'legacy_whatsapp_webhook': '/webhooks/whatsapp',
+        'mobile_update': '/api/mobile/update',
+        'privacy': '/privacy',
+        'terms': '/terms',
+        'data_deletion': '/data-deletion',
+    }

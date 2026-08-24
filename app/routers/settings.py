@@ -9,6 +9,8 @@ from ..models import AuditLog, GlobalSetting, RolePolicy, User
 router = APIRouter(prefix='/api/settings', tags=['settings'])
 
 APPEARANCE_KEY = 'dashboard_appearance'
+OWNER_ALIAS_KEY = 'owner_display_alias'
+DEFAULT_OWNER_ALIAS = 'Zoe Ortiz'
 VISIBLE_ROLES = ('gerente', 'operador', 'lector')
 PERMISSION_LABELS = {
     'operate': 'Responder y modificar conversaciones',
@@ -52,10 +54,21 @@ class RolePolicyUpdate(BaseModel):
     permissions: dict[str, bool]
 
 
+class OwnerAliasUpdate(BaseModel):
+    alias: str = Field(min_length=2, max_length=80)
+
+
 def _appearance(db: Session) -> dict:
     row = db.get(GlobalSetting, APPEARANCE_KEY)
     value = row.value if row and isinstance(row.value, dict) else {}
     return {**DEFAULT_APPEARANCE, **value}
+
+
+def owner_display_alias(db: Session) -> str:
+    row = db.get(GlobalSetting, OWNER_ALIAS_KEY)
+    value = row.value if row and isinstance(row.value, dict) else {}
+    alias = str(value.get('alias') or DEFAULT_OWNER_ALIAS).strip()
+    return alias or DEFAULT_OWNER_ALIAS
 
 
 @router.get('/appearance')
@@ -76,6 +89,33 @@ def update_appearance(data: AppearanceUpdate, user: User = Depends(require_permi
     db.add(AuditLog(username=user.username, action='dashboard_appearance_updated', entity='global_setting', entity_id=APPEARANCE_KEY, details=value))
     db.commit()
     return {'status': 'ok', 'appearance': value}
+
+
+@router.get('/owner-alias')
+def get_owner_alias(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    import os
+    primary = (os.getenv('BOOTSTRAP_ADMIN_USERNAME') or '').strip()
+    payload = {'alias': owner_display_alias(db), 'can_edit': user.role == 'admin'}
+    if user.role == 'admin':
+        payload['internal_username'] = primary or user.username
+    return payload
+
+
+@router.put('/owner-alias')
+def update_owner_alias(data: OwnerAliasUpdate, admin: User = Depends(require_primary_admin), db: Session = Depends(get_db)):
+    alias = data.alias.strip()
+    if not alias:
+        raise HTTPException(status_code=422, detail='El seudónimo no puede estar vacío')
+    value = {'alias': alias}
+    row = db.get(GlobalSetting, OWNER_ALIAS_KEY)
+    if not row:
+        row = GlobalSetting(key=OWNER_ALIAS_KEY, value=value, updated_by=admin.username)
+        db.add(row)
+    else:
+        row.value = value
+        row.updated_by = admin.username
+    db.commit()
+    return {'status': 'ok', 'alias': alias, 'internal_username': admin.username}
 
 
 @router.get('/me-permissions')

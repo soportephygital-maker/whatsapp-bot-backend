@@ -40,6 +40,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        startManualReplyPolling()
         if (!allowedPackages.contains(sbn.packageName)) return
         val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
         val suffix = packageSuffix(sbn.packageName)
@@ -117,11 +118,36 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                 try {
                     pollManualReplies()
                 } catch (_: Exception) {
-                    // A temporary network/server error must not stop notification listening.
                 }
                 try { Thread.sleep(2500) } catch (_: InterruptedException) {}
             }
         }.start()
+    }
+
+    private fun notificationTitle(sbn: StatusBarNotification): String =
+        sbn.notification?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+
+    private fun normalizeConversationLabel(value: String): String =
+        normalizeName(value).removePrefix("52 ").removePrefix("521 ").trim()
+
+    private fun findActiveConversationNotification(notificationKey: String, packageName: String, senderDisplay: String): StatusBarNotification? {
+        val active = try { activeNotifications?.toList().orEmpty() } catch (_: Exception) { emptyList() }
+        active.firstOrNull { it.key == notificationKey && it.packageName == packageName }?.let { return it }
+
+        val wantedLabel = normalizeConversationLabel(senderDisplay)
+        val wantedDigits = digits(senderDisplay)
+        return active
+            .asSequence()
+            .filter { it.packageName == packageName }
+            .filter { findReplyAction(it.notification ?: return@filter false) != null }
+            .firstOrNull { candidate ->
+                val title = notificationTitle(candidate)
+                val titleLabel = normalizeConversationLabel(title)
+                val titleDigits = digits(title)
+                (wantedLabel.isNotBlank() && titleLabel == wantedLabel) ||
+                    (wantedDigits.length >= 7 && titleDigits.length >= 7 &&
+                        (wantedDigits.endsWith(titleDigits.takeLast(10)) || titleDigits.endsWith(wantedDigits.takeLast(10))))
+            }
     }
 
     private fun pollManualReplies() {
@@ -138,23 +164,22 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             val messageId = row.optInt("message_id", 0)
             val notificationKey = row.optString("notification_key", "")
             val packageName = row.optString("package_name", "")
+            val senderDisplay = row.optString("sender_display", "")
             val text = row.optString("text", "").trim()
-            if (messageId <= 0 || notificationKey.isBlank() || text.isBlank() || !allowedPackages.contains(packageName)) continue
+            if (messageId <= 0 || text.isBlank() || !allowedPackages.contains(packageName)) continue
 
-            val active = try { activeNotifications?.firstOrNull { it.key == notificationKey && it.packageName == packageName } } catch (_: Exception) { null }
-            // If WhatsApp removed the notification, keep the item pending. A future inbound
-            // notification from that conversation refreshes the context and the operator can retry.
+            val active = findActiveConversationNotification(notificationKey, packageName, senderDisplay)
             if (active == null) continue
             val action = findReplyAction(active.notification ?: continue)
             if (action == null) {
-                reportDelivery(token, messageId, false, notificationKey, "La notificación activa no permite respuesta remota")
+                reportDelivery(token, messageId, false, active.key, "La notificación activa no permite respuesta remota")
                 continue
             }
 
             rememberBotReply(packageName, text)
             val sent = sendInlineReply(action, text)
             if (!sent) clearRememberedBotReply(packageName, text)
-            reportDelivery(token, messageId, sent, notificationKey, if (sent) null else "Android no pudo ejecutar RemoteInput manual")
+            reportDelivery(token, messageId, sent, active.key, if (sent) null else "Android no pudo ejecutar RemoteInput manual")
         }
     }
 

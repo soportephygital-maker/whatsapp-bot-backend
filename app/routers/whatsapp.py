@@ -143,6 +143,8 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
             conversation.state = next_state
             if action == 'human_help':
                 _ensure_help(db, conversation, company, store, wa_user_id, message_text, 'decision_tree_human_help')
+                db.add(AuditLog(action='chatbot_silenced_on_human_handoff', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'store': store.name, 'company': company.company_key}))
+                continue
             try:
                 send_result = send_text_message(wa_user_id, response_text, phone_number_id=phone_number_id, db=db)
             except Exception as exc:
@@ -155,6 +157,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
 
         if classification['help_requested']:
             _ensure_help(db, conversation, company, store, wa_user_id, message_text, 'human_help_requested')
+            db.add(AuditLog(action='chatbot_silenced_on_human_handoff', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'store': store.name, 'company': company.company_key}))
         else:
             db.add(AuditLog(action='unknown_contact_no_tree_match', entity='conversation', entity_id=str(conversation.id), details={'from': wa_user_id, 'store': store.name, 'company': company.company_key}))
 

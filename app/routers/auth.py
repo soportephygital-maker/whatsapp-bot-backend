@@ -22,6 +22,8 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail='Credenciales incorrectas')
     db.add(AuditLog(username=user.username, action='login_exitoso', entity='session', entity_id=str(user.id), details={'role': user.role}))
     db.commit()
+    # The primary administrator remains an internal role. The dashboard only needs
+    # the internal token/session; the role itself is not exposed in user listings.
     return {'access_token': create_access_token(user.username), 'token_type': 'bearer', 'username': user.username, 'rol': user.role}
 
 
@@ -29,13 +31,16 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 def list_users(admin: User = Depends(require_primary_admin), db: Session = Depends(get_db)):
     _ = admin
     primary_admin = _bootstrap_admin_username()
-    rows = db.query(User).order_by(User.username.asc()).all()
+    query = db.query(User)
+    if primary_admin:
+        query = query.filter(User.username != primary_admin)
+    rows = query.order_by(User.username.asc()).all()
     return [{
         'id': u.id,
         'username': u.username,
         'role': u.role,
         'is_active': u.is_active,
-        'is_primary_admin': bool(primary_admin and u.username == primary_admin),
+        'is_primary_admin': False,
         'created_at': u.created_at,
     } for u in rows]
 
@@ -62,8 +67,7 @@ def update_user(user_id: int, data: UserUpdate, admin: User = Depends(require_pr
         raise HTTPException(status_code=404, detail='Usuario no encontrado')
     primary_admin = _bootstrap_admin_username()
     if primary_admin and user.username == primary_admin:
-        if data.role is not None or data.is_active is False:
-            raise HTTPException(status_code=400, detail='El administrador principal no puede perder permisos ni desactivarse')
+        raise HTTPException(status_code=404, detail='Usuario no encontrado')
     before_role = user.role
     before_active = user.is_active
     if data.role is not None:
@@ -97,7 +101,7 @@ def delete_user(user_id: int, admin: User = Depends(require_primary_admin), db: 
         raise HTTPException(status_code=404, detail='Usuario no encontrado')
     primary_admin = _bootstrap_admin_username()
     if (primary_admin and user.username == primary_admin) or user.id == admin.id:
-        raise HTTPException(status_code=400, detail='El administrador principal no puede eliminarse')
+        raise HTTPException(status_code=404, detail='Usuario no encontrado')
     target_username = user.username
     target_role = user.role
     db.delete(user)

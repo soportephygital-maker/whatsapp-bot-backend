@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_ui import HTML, JS
 
 router = APIRouter(tags=['dashboard-ui-v2'])
-UI_VERSION = '2026.08.21-15'
+UI_VERSION = '2026.08.21-16'
 
 
 def _html() -> str:

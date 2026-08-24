@@ -3,12 +3,12 @@ from fastapi.responses import HTMLResponse, Response
 from .manager_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-tree-multiline'])
-UI_VERSION = '2026.08.21-25'
+UI_VERSION = '2026.08.21-26'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20', '2026.08.21-21', '2026.08.21-22', '2026.08.21-23', '2026.08.21-24'):
+    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20', '2026.08.21-21', '2026.08.21-22', '2026.08.21-23', '2026.08.21-24', '2026.08.21-25'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     html = html.replace(
@@ -52,7 +52,7 @@ conv=async function(companyId=null){
         const activeHelp=new Map();
         helps.filter(h=>['new','reviewing'].includes(h.status)).forEach(h=>{if(!activeHelp.has(Number(h.conversation_id)))activeHelp.set(Number(h.conversation_id),h)});
         $('content').innerHTML='<h2>Conversaciones</h2><p class="muted">Aquí aparecen únicamente los chats que ya solicitaron apoyo de una persona o que están siendo atendidos por un humano.</p>'+
-            (active.map(r=>{const h=activeHelp.get(Number(r.id));return `<div class="row" data-conv="${r.id}" ${h?`data-help="${h.id}"`:''}><b>${esc(r.company_name)}</b> · ${esc(r.wa_user_id)} <span class="badge">${r.known_contact?'contacto':'no agregado'}</span><div>${esc(r.state)} · <span class="badge">${r.status==='human_active'?'humano atendiendo':'esperando humano'}</span></div><div class="toolbar"><button class="open-human-chat">Abrir conversación</button>${h&&operate()?'<button class="close-human-success">Cerrar atendido</button><button class="close-human-ignore danger">Cerrar sin éxito</button>':''}</div></div>`}).join('')||'<div class="muted">No hay conversaciones esperando atención humana.</div>');
+            (active.map(r=>{const h=activeHelp.get(Number(r.id));const canClose=admin();const approval=!canClose&&h?'<div class="muted">En espera de confirmación por parte de gerente o soporte.</div>':'';return `<div class="row" data-conv="${r.id}" ${h?`data-help="${h.id}"`:''}><b>${esc(r.company_name)}</b> · ${esc(r.wa_user_id)} <span class="badge">${r.known_contact?'contacto':'no agregado'}</span><div>${esc(r.state)} · <span class="badge">${r.status==='human_active'?'humano atendiendo':'esperando humano'}</span></div>${approval}<div class="toolbar"><button class="open-human-chat">Abrir conversación</button>${h&&canClose?'<button class="close-human-success">Cerrar atendido</button><button class="close-human-ignore danger">Cerrar sin éxito</button>':''}</div></div>`}).join('')||'<div class="muted">No hay conversaciones esperando atención humana.</div>');
         document.querySelectorAll('.open-human-chat').forEach(b=>b.onclick=()=>openChat(Number(b.closest('[data-conv]').dataset.conv)));
         document.querySelectorAll('.close-human-success,.close-human-ignore').forEach(b=>b.onclick=async()=>{
             const row=b.closest('[data-help]');if(!row)return;

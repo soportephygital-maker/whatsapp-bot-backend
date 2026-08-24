@@ -135,6 +135,7 @@ class MainActivity : Activity() {
         logoutButton.setOnClickListener { logout() }
 
         restoreSavedSession()
+        if (intent.getBooleanExtra("open_dashboard", false) && token != null) openDashboard("")
         checkForUpdate(false)
     }
 

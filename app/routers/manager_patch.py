@@ -3,12 +3,12 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-gerente'])
-UI_VERSION = '2026.08.21-21'
+UI_VERSION = '2026.08.21-22'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20'):
+    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20', '2026.08.21-21'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     return html
@@ -19,6 +19,10 @@ def _js() -> str:
     js = js.replace(
         "if(r.status===401){localStorage.clear();location.reload();throw Error('Sesión expirada')}",
         "if(r.status===401){localStorage.removeItem(TK);localStorage.removeItem(RK);if($('app'))$('app').classList.add('h');if($('login'))$('login').classList.remove('h');const e=$('loginError');if(e)e.textContent='Sesión inválida o vencida. Inicia sesión nuevamente.';throw Error('Sesión inválida o vencida')}",
+    )
+    js = js.replace(
+        "if(localStorage.getItem(TK))show()",
+        "if(new URLSearchParams(location.search).get('embedded')==='1'&&localStorage.getItem(TK))show()",
     )
     js = js.replace(
         "const TK='phygital_token',RK='phygital_role',$=id=>document.getElementById(id),role=()=>localStorage.getItem(RK)||'',admin=()=>role()==='admin',operate=()=>['admin','operador'].includes(role());",

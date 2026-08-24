@@ -3,12 +3,12 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-gerente'])
-UI_VERSION = '2026.08.21-20'
+UI_VERSION = '2026.08.21-21'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19'):
+    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     return html
@@ -16,6 +16,10 @@ def _html() -> str:
 
 def _js() -> str:
     js = base_js()
+    js = js.replace(
+        "if(r.status===401){localStorage.clear();location.reload();throw Error('Sesión expirada')}",
+        "if(r.status===401){localStorage.removeItem(TK);localStorage.removeItem(RK);if($('app'))$('app').classList.add('h');if($('login'))$('login').classList.remove('h');const e=$('loginError');if(e)e.textContent='Sesión inválida o vencida. Inicia sesión nuevamente.';throw Error('Sesión inválida o vencida')}",
+    )
     js = js.replace(
         "const TK='phygital_token',RK='phygital_role',$=id=>document.getElementById(id),role=()=>localStorage.getItem(RK)||'',admin=()=>role()==='admin',operate=()=>['admin','operador'].includes(role());",
         "const TK='phygital_token',RK='phygital_role',$=id=>document.getElementById(id),role=()=>localStorage.getItem(RK)||'',rootAdmin=()=>role()==='admin',admin=()=>['admin','gerente'].includes(role()),operate=()=>['admin','gerente','operador'].includes(role());",

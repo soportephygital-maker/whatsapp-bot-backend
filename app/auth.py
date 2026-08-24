@@ -111,6 +111,12 @@ def require_admin(current_user: User = Depends(get_current_user), db: Session = 
     return current_user
 
 
+def require_case_closer(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role not in ('admin', 'gerente'):
+        raise HTTPException(status_code=403, detail='Solo Administrador o Gerente pueden cerrar un caso')
+    return current_user
+
+
 def require_primary_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != 'admin':
         raise HTTPException(status_code=403, detail='Solo el administrador puede administrar usuarios y permisos')

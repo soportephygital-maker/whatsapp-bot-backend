@@ -6,12 +6,17 @@ import android.app.AlertDialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -27,6 +32,7 @@ class AdminGateActivity : Activity() {
     private val baseUrl = "https://whatsapp-bot-backend-v2.onrender.com"
     private val sessionPrefsName = "phygital_session"
     private val notificationPrefsName = "phygital_notifications"
+    private val appearancePrefsName = "phygital_global_appearance"
     private val notificationChannelId = "phygital_support_alerts"
 
     private var token: String? = null
@@ -36,25 +42,31 @@ class AdminGateActivity : Activity() {
     private var pendingUpdateFile: File? = null
     @Volatile private var notificationPolling = false
 
+    private lateinit var root: LinearLayout
     private lateinit var status: TextView
     private lateinit var loginPanel: LinearLayout
     private lateinit var rolePanel: LinearLayout
+    private lateinit var dashboardButton: Button
+    private lateinit var adminPanelButton: Button
+    private lateinit var permissionsButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         createNotificationChannel()
         requestNotificationPermissionIfNeeded()
 
-        val root = LinearLayout(this).apply {
+        root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 24, 24, 24)
         }
+        applyCachedAppearance()
+
         status = TextView(this).apply {
             text = "Inicia sesión para continuar."
-            setPadding(0, 12, 0, 12)
+            setPadding(0, 12, 0, 18)
         }
         loginPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        rolePanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = android.view.View.GONE }
+        rolePanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
 
         val usernameInput = EditText(this).apply { hint = "Usuario" }
         val passwordInput = EditText(this).apply { hint = "Contraseña"; inputType = 0x00000081 }
@@ -63,10 +75,15 @@ class AdminGateActivity : Activity() {
         loginPanel.addView(passwordInput)
         loginPanel.addView(loginButton)
 
-        val dashboardButton = Button(this).apply { text = "Abrir panel de administración" }
+        dashboardButton = Button(this).apply { text = "Dashboard" }
+        adminPanelButton = Button(this).apply { text = "Panel de administración" }
+        permissionsButton = Button(this).apply { text = "Revisar permisos de la app" }
         val updateButton = Button(this).apply { text = "Buscar actualización" }
         val logoutButton = Button(this).apply { text = "Salir" }
+
         rolePanel.addView(dashboardButton)
+        rolePanel.addView(adminPanelButton)
+        rolePanel.addView(permissionsButton)
         rolePanel.addView(updateButton)
         rolePanel.addView(logoutButton)
 
@@ -81,10 +98,9 @@ class AdminGateActivity : Activity() {
             if (user.isBlank() || pass.isBlank()) status.text = "Escribe usuario y contraseña."
             else login(user, pass)
         }
-        dashboardButton.setOnClickListener {
-            if (role == "admin") startActivity(Intent(this, MainActivity::class.java))
-            else status.text = "El dashboard está disponible únicamente para el administrador."
-        }
+        dashboardButton.setOnClickListener { startActivity(Intent(this, MainActivity::class.java).putExtra("open_dashboard", true)) }
+        adminPanelButton.setOnClickListener { startActivity(Intent(this, MainActivity::class.java)) }
+        permissionsButton.setOnClickListener { showPermissionCenter() }
         updateButton.setOnClickListener { checkForUpdate(true) }
         logoutButton.setOnClickListener { logout() }
 
@@ -100,6 +116,7 @@ class AdminGateActivity : Activity() {
             installApk(file)
             return
         }
+        if (token != null) refreshAppearanceFromServer()
         checkForUpdate(false)
     }
 
@@ -114,6 +131,7 @@ class AdminGateActivity : Activity() {
                 username = json.optString("username", userName)
                 saveSession()
                 runOnUiThread { showRoleUi() }
+                refreshAppearanceFromServer()
                 startNotificationPolling()
                 checkForUpdate(false)
             } catch (e: Exception) {
@@ -138,6 +156,7 @@ class AdminGateActivity : Activity() {
         role = prefs.getString("role", null)
         username = prefs.getString("username", null)
         showRoleUi()
+        refreshAppearanceFromServer()
         Thread {
             try {
                 request("GET", "/api/stats", null, savedToken)
@@ -150,15 +169,93 @@ class AdminGateActivity : Activity() {
     }
 
     private fun showRoleUi() {
-        loginPanel.visibility = android.view.View.GONE
-        rolePanel.visibility = android.view.View.VISIBLE
-        val isAdmin = role == "admin"
-        rolePanel.getChildAt(0).visibility = if (isAdmin) android.view.View.VISIBLE else android.view.View.GONE
-        status.text = if (isAdmin) {
-            "Administrador · acceso al dashboard y alertas administrativas. Versión ${BuildConfig.VERSION_NAME}."
-        } else {
-            "Sesión ${role ?: "usuario"}. Esta cuenta solo recibe las notificaciones correspondientes a su puesto."
+        loginPanel.visibility = View.GONE
+        rolePanel.visibility = View.VISIBLE
+        val elevated = role == "admin" || role == "gerente"
+        adminPanelButton.visibility = if (elevated) View.VISIBLE else View.GONE
+        dashboardButton.visibility = View.VISIBLE
+        permissionsButton.visibility = View.VISIBLE
+        status.text = "Sesión activa · versión ${BuildConfig.VERSION_NAME}."
+    }
+
+    private fun refreshAppearanceFromServer() {
+        val auth = token ?: return
+        Thread {
+            try {
+                val theme = JSONObject(request("GET", "/api/settings/appearance", null, auth))
+                val prefs = getSharedPreferences(appearancePrefsName, MODE_PRIVATE).edit()
+                listOf("background", "cards", "text", "accent", "input", "backgroundImage", "backgroundSize").forEach { key ->
+                    prefs.putString(key, theme.optString(key, ""))
+                }
+                prefs.apply()
+                runOnUiThread { applyCachedAppearance() }
+            } catch (_: Exception) {}
+        }.start()
+    }
+
+    private fun applyCachedAppearance() {
+        if (!::root.isInitialized) return
+        val prefs = getSharedPreferences(appearancePrefsName, MODE_PRIVATE)
+        val background = prefs.getString("background", "#040814") ?: "#040814"
+        val text = prefs.getString("text", "#edf6ff") ?: "#edf6ff"
+        try { root.setBackgroundColor(Color.parseColor(background)) } catch (_: Exception) { root.setBackgroundColor(Color.parseColor("#040814")) }
+        val textColor = try { Color.parseColor(text) } catch (_: Exception) { Color.WHITE }
+        if (::status.isInitialized) status.setTextColor(textColor)
+        fun tintPanel(panel: LinearLayout) {
+            for (i in 0 until panel.childCount) {
+                val v = panel.getChildAt(i)
+                if (v is TextView) v.setTextColor(textColor)
+                if (v is EditText) v.setHintTextColor(textColor and 0x99FFFFFF.toInt())
+            }
         }
+        if (::loginPanel.isInitialized) tintPanel(loginPanel)
+        if (::rolePanel.isInitialized) tintPanel(rolePanel)
+    }
+
+    private fun showPermissionCenter() {
+        val rows = mutableListOf<String>()
+        val contacts = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        val notifications = Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        val listener = hasNotificationListenerAccess()
+        val installs = Build.VERSION.SDK_INT < 26 || packageManager.canRequestPackageInstalls()
+        val power = getSystemService(PowerManager::class.java)
+        val battery = Build.VERSION.SDK_INT < 23 || power.isIgnoringBatteryOptimizations(packageName)
+
+        rows += "${if (contacts) "✓" else "✗"} Contactos"
+        rows += "${if (notifications) "✓" else "✗"} Notificaciones de Phygital"
+        rows += "${if (listener) "✓" else "✗"} Acceso a notificaciones de WhatsApp"
+        rows += "${if (installs) "✓" else "✗"} Instalar actualizaciones"
+        rows += "${if (battery) "✓" else "✗"} Sin restricción de batería"
+        rows += "✓ Internet"
+        rows += "✓ Estado de red"
+        rows += "✓ WakeLock"
+
+        val allOk = contacts && notifications && listener && installs && battery
+        AlertDialog.Builder(this)
+            .setTitle(if (allOk) "Todos los permisos están listos" else "Faltan permisos")
+            .setMessage(rows.joinToString("\n"))
+            .setPositiveButton(if (allOk) "Cerrar" else "Corregir faltantes") { _, _ -> openNextMissingPermission(contacts, notifications, listener, installs, battery) }
+            .setNegativeButton("Cerrar", null)
+            .show()
+    }
+
+    private fun openNextMissingPermission(contacts: Boolean, notifications: Boolean, listener: Boolean, installs: Boolean, battery: Boolean) {
+        when {
+            !contacts -> requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 3001)
+            !notifications && Build.VERSION.SDK_INT >= 33 -> requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2001)
+            !listener -> startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            !installs && Build.VERSION.SDK_INT >= 26 -> startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            !battery && Build.VERSION.SDK_INT >= 23 -> {
+                try { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))) }
+                catch (_: Exception) { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+            }
+        }
+    }
+
+    private fun hasNotificationListenerAccess(): Boolean {
+        val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
+        val component = ComponentName(this, LocalWhatsAppBridgeService::class.java).flattenToString()
+        return enabled.split(":").any { it.equals(component, ignoreCase = true) }
     }
 
     private fun createNotificationChannel() {
@@ -183,22 +280,15 @@ class AdminGateActivity : Activity() {
             while (notificationPolling && token != null) {
                 try {
                     val events = JSONArray(request("GET", "/api/notifications?after_id=${if (lastId < 0) 0 else lastId}", null, auth))
-                    if (lastId < 0) {
-                        val start = maxOf(0, events.length() - 5)
-                        for (i in start until events.length()) {
-                            val event = events.getJSONObject(i)
-                            showSupportNotification(event.optInt("id", 0), event.optString("title", "Phygital Bot"), event.optString("body", "Nueva alerta"))
-                            lastId = maxOf(lastId, event.optInt("id", 0))
-                        }
-                        if (events.length() == 0) lastId = 0
-                    } else {
-                        for (i in 0 until events.length()) {
-                            val event = events.getJSONObject(i)
-                            val id = event.optInt("id", 0)
+                    for (i in 0 until events.length()) {
+                        val event = events.getJSONObject(i)
+                        val id = event.optInt("id", 0)
+                        if (lastId >= 0 || i >= maxOf(0, events.length() - 5)) {
                             showSupportNotification(id, event.optString("title", "Phygital Bot"), event.optString("body", "Nueva alerta"))
-                            lastId = maxOf(lastId, id)
                         }
+                        lastId = maxOf(lastId, id)
                     }
+                    if (events.length() == 0 && lastId < 0) lastId = 0
                     prefs.edit().putInt(prefKey, lastId).apply()
                 } catch (_: Exception) {}
                 try { Thread.sleep(15000) } catch (_: InterruptedException) { break }
@@ -212,14 +302,8 @@ class AdminGateActivity : Activity() {
         val pendingIntent = PendingIntent.getActivity(this, id, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = if (Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, notificationChannelId)
         else @Suppress("DEPRECATION") android.app.Notification.Builder(this)
-        val notification = builder
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(android.app.Notification.BigTextStyle().bigText(body))
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
-            .build()
+        val notification = builder.setSmallIcon(android.R.drawable.ic_dialog_alert).setContentTitle(title).setContentText(body)
+            .setStyle(android.app.Notification.BigTextStyle().bigText(body)).setAutoCancel(true).setContentIntent(pendingIntent).build()
         getSystemService(NotificationManager::class.java).notify(20000 + id, notification)
     }
 
@@ -232,9 +316,8 @@ class AdminGateActivity : Activity() {
                 val latestName = json.optString("version_name", "")
                 val apkUrl = json.optString("apk_url", "")
                 val message = json.optString("message", "Hay una actualización disponible para Phygital Bot.")
-                if (published && latestCode > BuildConfig.VERSION_CODE && apkUrl.isNotBlank()) {
-                    runOnUiThread { showUpdatePrompt(latestName, message, apkUrl) }
-                } else if (showIfCurrent) runOnUiThread { status.text = "La app está actualizada (${BuildConfig.VERSION_NAME})." }
+                if (published && latestCode > BuildConfig.VERSION_CODE && apkUrl.isNotBlank()) runOnUiThread { showUpdatePrompt(latestName, message, apkUrl) }
+                else if (showIfCurrent) runOnUiThread { status.text = "La app está actualizada (${BuildConfig.VERSION_NAME})." }
             } catch (e: Exception) {
                 if (showIfCurrent) runOnUiThread { status.text = "No se pudo consultar actualizaciones: ${e.message}" }
             }
@@ -244,16 +327,10 @@ class AdminGateActivity : Activity() {
     private fun showUpdatePrompt(versionName: String, message: String, apkUrl: String) {
         if (updatePromptVisible || isFinishing) return
         updatePromptVisible = true
-        AlertDialog.Builder(this)
-            .setTitle("Actualización disponible${if (versionName.isNotBlank()) " · $versionName" else ""}")
-            .setMessage(message)
-            .setNegativeButton("Después") { _, _ -> updatePromptVisible = false }
-            .setPositiveButton("Instalar actualización") { _, _ ->
-                updatePromptVisible = false
-                downloadAndInstallUpdate(apkUrl)
-            }
-            .setOnCancelListener { updatePromptVisible = false }
-            .show()
+        AlertDialog.Builder(this).setTitle("Actualización disponible${if (versionName.isNotBlank()) " · $versionName" else ""}")
+            .setMessage(message).setNegativeButton("Después") { _, _ -> updatePromptVisible = false }
+            .setPositiveButton("Instalar actualización") { _, _ -> updatePromptVisible = false; downloadAndInstallUpdate(apkUrl) }
+            .setOnCancelListener { updatePromptVisible = false }.show()
     }
 
     private fun downloadAndInstallUpdate(apkUrl: String) {
@@ -262,30 +339,18 @@ class AdminGateActivity : Activity() {
             try {
                 val dir = File(cacheDir, "updates").apply { mkdirs() }
                 val apk = File(dir, "phygital-bot-update.apk")
-                val connection = (URL(apkUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 20000
-                    readTimeout = 60000
-                    instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", "Phygital-Bot-Android")
-                }
+                val connection = (URL(apkUrl).openConnection() as HttpURLConnection).apply { connectTimeout = 20000; readTimeout = 60000; instanceFollowRedirects = true; setRequestProperty("User-Agent", "Phygital-Bot-Android") }
                 connection.inputStream.use { input -> apk.outputStream().use { output -> input.copyTo(output) } }
                 connection.disconnect()
                 runOnUiThread { requestInstallOrOpen(apk) }
-            } catch (e: Exception) {
-                runOnUiThread { status.text = "No se pudo descargar la actualización: ${e.message}" }
-            }
+            } catch (e: Exception) { runOnUiThread { status.text = "No se pudo descargar la actualización: ${e.message}" } }
         }.start()
     }
 
     private fun requestInstallOrOpen(apk: File) {
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
             pendingUpdateFile = apk
-            AlertDialog.Builder(this)
-                .setTitle("Permitir actualizaciones")
-                .setMessage("Activa 'Permitir de esta fuente' y regresa a Phygital Bot.")
-                .setPositiveButton("Abrir configuración") { _, _ -> startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) }
-                .setNegativeButton("Cancelar", null)
-                .show()
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
             return
         }
         installApk(apk)
@@ -293,42 +358,29 @@ class AdminGateActivity : Activity() {
 
     private fun installApk(apk: File) {
         val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        val intent = Intent(Intent.ACTION_VIEW).apply { setDataAndType(uri, "application/vnd.android.package-archive"); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK) }
         startActivity(intent)
     }
 
     private fun logout() {
         notificationPolling = false
-        token = null
-        role = null
-        username = null
+        token = null; role = null; username = null
         getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit().clear().apply()
-        rolePanel.visibility = android.view.View.GONE
-        loginPanel.visibility = android.view.View.VISIBLE
+        rolePanel.visibility = View.GONE
+        loginPanel.visibility = View.VISIBLE
         status.text = "Sesión cerrada."
     }
 
     private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2001)
-        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2001)
     }
 
     private fun request(method: String, path: String, body: String?, bearer: String?): String {
         val connection = (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = 20000
-            readTimeout = 20000
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Accept", "application/json")
+            requestMethod = method; connectTimeout = 20000; readTimeout = 20000
+            setRequestProperty("Content-Type", "application/json"); setRequestProperty("Accept", "application/json")
             if (bearer != null) setRequestProperty("Authorization", "Bearer $bearer")
-            if (body != null) {
-                doOutput = true
-                outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            }
+            if (body != null) { doOutput = true; outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) } }
         }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream

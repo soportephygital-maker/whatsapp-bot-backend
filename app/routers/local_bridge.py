@@ -1,6 +1,7 @@
 import hashlib
 import re
 import unicodedata
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,7 @@ router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge'])
 ALLOWED_PACKAGES = {'com.whatsapp', 'com.whatsapp.w4b'}
 DEFAULT_NO_MATCH_FIRST = 'No pude identificar una opción válida. Por favor describe nuevamente lo que necesitas o usa alguna de las opciones disponibles.'
 DEFAULT_NO_MATCH_REPEAT = 'Sigo sin poder identificar tu solicitud. Revisa las opciones disponibles o escribe humano si necesitas atención de una persona.'
+HUMAN_PAUSE_MINUTES = 60
 
 
 class LocalInbound(BaseModel):
@@ -92,6 +94,31 @@ def _previous_message_was_unmatched(db: Session, conversation_id: int, current_m
     return bool((row.raw_payload or {}).get('tree_unmatched'))
 
 
+def _human_pause_deadline(db: Session, conversation_id: int) -> tuple[HelpRequest | None, datetime | None]:
+    request = db.query(HelpRequest).filter(
+        HelpRequest.conversation_id == conversation_id,
+        HelpRequest.status.in_(['new', 'reviewing']),
+    ).order_by(HelpRequest.created_at.desc()).first()
+
+    anchor = request.created_at if request else None
+    recent_outbound = db.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.direction == 'outbound',
+    ).order_by(Message.id.desc()).limit(50).all()
+    for row in recent_outbound:
+        payload = row.raw_payload or {}
+        is_manual = bool(payload.get('manual') or payload.get('manual_dashboard') or (row.sender and row.sender != 'bot'))
+        if not is_manual:
+            continue
+        if row.created_at and (anchor is None or row.created_at > anchor):
+            anchor = row.created_at
+        break
+
+    if anchor is None:
+        return request, None
+    return request, anchor + timedelta(minutes=HUMAN_PAUSE_MINUTES)
+
+
 def _selected_stores(data: LocalInbound, db: Session) -> list[Store]:
     ids = list(dict.fromkeys([*(data.selected_store_ids or []), *([data.store_id] if data.store_id else [])]))
     if not ids:
@@ -113,7 +140,7 @@ def _ensure_help_request(db: Session, *, conversation: Conversation, company: Co
     db.add(row)
     db.flush()
     emit_notification(db, audience='admin', event_type='help_request_new', title=f'Nueva solicitud de ayuda - {store.name}', body=f'{company.name}: {local_user_id} solicita atención humana.', event_key=f'help:{row.id}:admin:new', details={'help_request_id': row.id, 'company': company.name, 'store': store.name, 'local_user_id': local_user_id, 'transport': 'android_notification'})
-    db.add(AuditLog(action='human_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': local_user_id, 'company': company.company_key, 'store': store.name, 'transport': 'android_notification'}))
+    db.add(AuditLog(action='human_help_request', entity='conversation', entity_id=str(conversation.id), details={'from': local_user_id, 'company': company.company_key, 'store': store.name, 'transport': 'android_notification', 'chatbot_pause_minutes': HUMAN_PAUSE_MINUTES}))
     return row
 
 
@@ -223,15 +250,24 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         db.commit()
         return {'status': 'known_support_skipped', 'should_reply': False, 'conversation_id': conversation.id}
 
-    if conversation.status == 'human_active':
-        inbound_payload['chatbot_paused'] = True
-        inbound_message.raw_payload = dict(inbound_payload)
-        db.add(AuditLog(username=operator.username, action='chatbot_skipped_human_active', entity='conversation', entity_id=str(conversation.id), details={'sender': data.sender, 'store': store.name}))
-        db.commit()
-        return {'status': 'human_active', 'conversation_id': conversation.id, 'should_reply': False, 'chatbot_paused': True}
-
     tree = company.decision_tree or {}
     root_state = _root_state(tree)
+    if conversation.status in ('help_pending', 'human_active'):
+        request_row, pause_until = _human_pause_deadline(db, conversation.id)
+        now = datetime.utcnow()
+        if pause_until and now < pause_until:
+            remaining_seconds = max(1, int((pause_until - now).total_seconds()))
+            inbound_payload['chatbot_paused'] = True
+            inbound_payload['human_pause_until'] = pause_until.isoformat()
+            inbound_message.raw_payload = dict(inbound_payload)
+            db.add(AuditLog(username=operator.username, action='chatbot_skipped_human_support', entity='conversation', entity_id=str(conversation.id), details={'sender': data.sender, 'store': store.name, 'conversation_status': conversation.status, 'help_request_id': request_row.id if request_row else None, 'pause_until': pause_until.isoformat(), 'remaining_seconds': remaining_seconds}))
+            db.commit()
+            return {'status': 'human_support_paused', 'conversation_id': conversation.id, 'should_reply': False, 'chatbot_paused': True, 'pause_until': pause_until.isoformat(), 'remaining_seconds': remaining_seconds}
+
+        conversation.status = 'open'
+        conversation.state = root_state
+        db.add(AuditLog(username=operator.username, action='chatbot_auto_resumed_after_human_timeout', entity='conversation', entity_id=str(conversation.id), details={'help_request_id': request_row.id if request_row else None, 'pause_minutes': HUMAN_PAUSE_MINUTES}))
+
     matched, response_text, next_state, action = match_response_with_action(tree, conversation.state, data.text)
     matched_from_root = False
     if not matched and conversation.state != root_state:

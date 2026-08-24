@@ -5,6 +5,7 @@ import android.app.Notification
 import android.app.RemoteInput
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.PowerManager
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
@@ -72,42 +73,58 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "android-device"
 
         Thread {
-            var outboundMessageId = 0
-            try {
-                val storesJson = JSONArray()
-                selectedStoreIds.forEach { storesJson.put(it) }
-                val payload = JSONObject()
-                    .put("package_name", sbn.packageName)
-                    .put("device_id", deviceId)
-                    .put("notification_key", sbn.key)
-                    .put("post_time", sbn.postTime)
-                    .put("sender", if (title.isBlank()) "Contacto" else title)
-                    .put("sender_key", senderKey)
-                    .put("text", text)
-                    .put("selected_store_ids", storesJson)
-                    .put("is_group", false)
-                    .put("can_reply", replyAction != null)
-                    .put("metadata", JSONObject()
-                        .put("category", notification.category ?: "")
-                        .put("saved_contact", false)
-                        .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp"))
+            withWakeLock("inbound", 60_000L) {
+                var outboundMessageId = 0
+                try {
+                    val storesJson = JSONArray()
+                    selectedStoreIds.forEach { storesJson.put(it) }
+                    val payload = JSONObject()
+                        .put("package_name", sbn.packageName)
+                        .put("device_id", deviceId)
+                        .put("notification_key", sbn.key)
+                        .put("post_time", sbn.postTime)
+                        .put("sender", if (title.isBlank()) "Contacto" else title)
+                        .put("sender_key", senderKey)
+                        .put("text", text)
+                        .put("selected_store_ids", storesJson)
+                        .put("is_group", false)
+                        .put("can_reply", replyAction != null)
+                        .put("metadata", JSONObject()
+                            .put("category", notification.category ?: "")
+                            .put("saved_contact", false)
+                            .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp"))
 
-                val response = JSONObject(request("POST", "/api/local-bridge/inbound", payload.toString(), token))
-                val shouldReply = response.optBoolean("should_reply", false)
-                val replyText = response.optString("reply_text", "")
-                outboundMessageId = response.optInt("outbound_message_id", 0)
-                if (shouldReply && replyText.isNotBlank() && replyAction != null && outboundMessageId > 0) {
-                    rememberBotReply(sbn.packageName, replyText)
-                    val sent = sendInlineReply(replyAction, replyText)
-                    if (!sent) clearRememberedBotReply(sbn.packageName, replyText)
-                    reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else "Android no pudo ejecutar RemoteInput")
-                }
-            } catch (e: Exception) {
-                if (outboundMessageId > 0) {
-                    try { reportDelivery(token, outboundMessageId, false, sbn.key, e.message ?: "Error local") } catch (_: Exception) {}
+                    val response = JSONObject(request("POST", "/api/local-bridge/inbound", payload.toString(), token))
+                    val shouldReply = response.optBoolean("should_reply", false)
+                    val replyText = response.optString("reply_text", "")
+                    outboundMessageId = response.optInt("outbound_message_id", 0)
+                    if (shouldReply && replyText.isNotBlank() && replyAction != null && outboundMessageId > 0) {
+                        rememberBotReply(sbn.packageName, replyText)
+                        val sent = sendInlineReply(replyAction, replyText)
+                        if (!sent) clearRememberedBotReply(sbn.packageName, replyText)
+                        reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else "Android no pudo ejecutar RemoteInput")
+                    }
+                } catch (e: Exception) {
+                    if (outboundMessageId > 0) {
+                        try { reportDelivery(token, outboundMessageId, false, sbn.key, e.message ?: "Error local") } catch (_: Exception) {}
+                    }
                 }
             }
         }.start()
+    }
+
+    private fun withWakeLock(tag: String, timeoutMs: Long, block: () -> Unit) {
+        val power = getSystemService(PowerManager::class.java)
+        val wakeLock = power?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhygitalBot:$tag")
+        try {
+            wakeLock?.setReferenceCounted(false)
+            wakeLock?.acquire(timeoutMs)
+            block()
+        } finally {
+            if (wakeLock?.isHeld == true) {
+                try { wakeLock.release() } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun startManualReplyPolling() {
@@ -116,7 +133,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         Thread {
             while (manualPollRunning) {
                 try {
-                    pollManualReplies()
+                    withWakeLock("manual-poll", 30_000L) { pollManualReplies() }
                 } catch (_: Exception) {
                 }
                 try { Thread.sleep(2500) } catch (_: InterruptedException) {}

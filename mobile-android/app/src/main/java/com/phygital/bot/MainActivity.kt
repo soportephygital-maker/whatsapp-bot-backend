@@ -106,7 +106,7 @@ class MainActivity : Activity() {
                         val quotedToken = JSONObject.quote(currentToken)
                         val quotedRole = JSONObject.quote(role ?: "")
                         view.evaluateJavascript(
-                            "localStorage.setItem('phygital_token',$quotedToken);localStorage.setItem('phygital_role',$quotedRole);location.reload();",
+                            "localStorage.setItem('phygital_token',$quotedToken);localStorage.setItem('phygital_role',$quotedRole);if(window.show){show();}",
                             null
                         )
                     }
@@ -164,7 +164,7 @@ class MainActivity : Activity() {
         status.visibility = View.GONE
         actionsPanel.visibility = View.GONE
         webView.visibility = View.VISIBLE
-        webView.loadUrl("$baseUrl/dashboard$hash")
+        webView.loadUrl("$baseUrl/dashboard?embedded=1$hash")
     }
 
     private fun closeDashboard() {

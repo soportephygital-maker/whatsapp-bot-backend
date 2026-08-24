@@ -2,7 +2,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from ..auth import get_current_user, require_admin, require_operator, require_primary_admin
+from ..auth import get_current_user, require_admin, require_case_closer, require_operator, require_primary_admin
 from ..database import get_db
 from ..models import AppNotification, AuditLog, Company, Contact, Conversation, ConversationChannel, HelpRequest, Message, Store, User
 from ..schemas import ConversationReply, HelpRequestStatus, UIAuditEvent
@@ -127,7 +127,7 @@ def help_requests(status: str | None = Query(default=None), company_id: int | No
 
 
 @router.patch('/help-requests/{request_id}')
-def update_help_request(request_id: int, data: HelpRequestStatus, user: User = Depends(require_operator), db: Session = Depends(get_db)):
+def update_help_request(request_id: int, data: HelpRequestStatus, user: User = Depends(require_case_closer), db: Session = Depends(get_db)):
     row = db.get(HelpRequest, request_id)
     if not row: raise HTTPException(status_code=404, detail='Solicitud no encontrada')
     previous = row.status; row.status = data.status

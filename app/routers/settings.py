@@ -15,9 +15,6 @@ PERMISSION_LABELS = {
     'admin_access': 'Acceso administrativo general',
     'appearance_edit': 'Editar apariencia global',
     'activity_view': 'Ver actividad y auditoría',
-    'manage_companies': 'Administrar empresas y árboles',
-    'manage_users': 'Administrar usuarios',
-    'manage_roles': 'Editar permisos de roles',
 }
 
 DEFAULT_APPEARANCE = {
@@ -64,7 +61,7 @@ def get_appearance(_: User = Depends(get_current_user), db: Session = Depends(ge
 
 @router.put('/appearance')
 def update_appearance(data: AppearanceUpdate, user: User = Depends(require_permission('appearance_edit')), db: Session = Depends(get_db)):
-    value = data.model_dump()
+    value = data.dict()
     row = db.get(GlobalSetting, APPEARANCE_KEY)
     if not row:
         row = GlobalSetting(key=APPEARANCE_KEY, value=value, updated_by=user.username)

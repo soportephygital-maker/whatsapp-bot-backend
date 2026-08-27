@@ -8,6 +8,8 @@ from .config import settings
 from .database import get_db
 from .models import RolePolicy, User
 
+SUPER_ADMIN_USERNAME = 'admin'
+
 pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/api/auth/login')
 
@@ -118,6 +120,6 @@ def require_case_closer(current_user: User = Depends(get_current_user)) -> User:
 
 
 def require_primary_admin(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail='Solo el administrador puede administrar usuarios y permisos')
+    if current_user.username != SUPER_ADMIN_USERNAME or current_user.role != 'admin':
+        raise HTTPException(status_code=403, detail='Solo el super admin puede administrar usuarios y permisos')
     return current_user

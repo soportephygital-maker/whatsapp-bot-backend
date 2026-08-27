@@ -5,9 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
-from .models import AuditLog, Company, Store, User
-from .auth import hash_password, verify_password
-from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, local_bridge, manager_patch, mobile_update, settings as settings_router, tree_editor_patch, whatsapp
+from .models import Company, Store
+from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, local_bridge, manager_patch, mobile_update, settings as settings_router, super_admin, tree_editor_patch, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -19,6 +18,7 @@ app.add_middleware(
     allow_headers=['*'],
 )
 app.include_router(auth.router)
+app.include_router(super_admin.router)
 app.include_router(companies.router)
 app.include_router(company_resources.router)
 app.include_router(contacts.router)
@@ -98,32 +98,7 @@ def startup():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        username = __import__('os').getenv('BOOTSTRAP_ADMIN_USERNAME')
-        password = __import__('os').getenv('BOOTSTRAP_ADMIN_PASSWORD')
-        if username and password:
-            admin = db.query(User).filter(User.username == username).first()
-            if not admin:
-                admin = User(username=username, password_hash=hash_password(password), role='admin', is_active=True)
-                db.add(admin)
-                db.commit()
-            else:
-                changed = False
-                if not verify_password(password, admin.password_hash):
-                    admin.password_hash = hash_password(password)
-                    changed = True
-                if admin.role != 'admin':
-                    admin.role = 'admin'; changed = True
-                if not admin.is_active:
-                    admin.is_active = True; changed = True
-                if changed:
-                    db.commit()
-            other_admins = db.query(User).filter(User.username != username, User.role == 'admin').all()
-            if other_admins:
-                for row in other_admins:
-                    row.role = 'operador'
-                db.commit()
-            db.query(AuditLog).filter(AuditLog.username == username).delete(synchronize_session=False)
-            db.commit()
+        super_admin._ensure_core_users(db)
 
         if not db.query(Company).first():
             company = Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={

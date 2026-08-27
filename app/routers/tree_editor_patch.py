@@ -158,8 +158,8 @@ async function superAdminPanel(){
 '''
     js = js.replace("document.addEventListener('DOMContentLoaded'", flow_code + "\ndocument.addEventListener('DOMContentLoaded'")
     js = js.replace(
-        "$('navActivity').onclick=()=>activity();",
-        "$('navActivity').onclick=()=>activity();if($('navSuperAdmin'))$('navSuperAdmin').onclick=()=>superAdminPanel();",
+        "$('navActivity').onclick=activity;",
+        "$('navActivity').onclick=activity;if($('navSuperAdmin'))$('navSuperAdmin').onclick=superAdminPanel;",
     )
     return js
 

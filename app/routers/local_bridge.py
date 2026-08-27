@@ -287,7 +287,7 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         inbound_payload['tree_unmatched'] = False
         inbound_message.raw_payload = dict(inbound_payload)
         _ensure_help_request(db, conversation=conversation, company=company, store=store, local_user_id=local_user_id, body=data.text, reason='explicit_human_request')
-        response_text = 'Tu solicitud de atención humana fue registrada. El equipo de soporte dará seguimiento.'
+        response_text = ''
         action = 'human_help'
     else:
         repeated = _previous_message_was_unmatched(db, conversation.id, inbound_message.id)
@@ -296,6 +296,12 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         inbound_message.raw_payload = dict(inbound_payload)
         response_text = _no_match_message(tree, repeated)
         action = 'no_match_repeat' if repeated else 'no_match_first'
+
+    if action == 'human_help':
+        response_text = ''
+        inbound_payload['chatbot_paused'] = True
+        inbound_payload['human_handoff_silent'] = True
+        inbound_message.raw_payload = dict(inbound_payload)
 
     response_text = (response_text or '').strip()
     should_reply = bool(response_text and data.can_reply)
@@ -309,7 +315,7 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
             outbound.raw_payload = payload
 
     db.commit()
-    return {'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key, 'company_name': company.name, 'store_name': store.name, 'routing': routing, 'action': action, 'reply_text': response_text if should_reply else '', 'should_reply': should_reply, 'outbound_message_id': outbound_message_id}
+    return {'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key, 'company_name': company.name, 'store_name': store.name, 'routing': routing, 'action': action, 'reply_text': response_text if should_reply else '', 'should_reply': should_reply, 'outbound_message_id': outbound_message_id, 'chatbot_paused': action == 'human_help'}
 
 
 @router.post('/delivery')

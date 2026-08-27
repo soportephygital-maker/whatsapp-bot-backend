@@ -18,7 +18,7 @@ import java.net.URLEncoder
 import java.text.Normalizer
 
 class LocalWhatsAppBridgeService : NotificationListenerService() {
-    private val baseUrl = "https://whatsapp-bot-backend-v2.onrender.com"
+    private val baseUrl = "https://whatsapp-bot-backend-142e.onrender.com"
     private val allowedPackages = setOf("com.whatsapp", "com.whatsapp.w4b")
     private val sessionPrefsName = "phygital_session"
     private val bridgePrefsName = "phygital_local_bridge"

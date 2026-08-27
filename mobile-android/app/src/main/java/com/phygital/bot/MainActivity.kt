@@ -28,7 +28,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 class MainActivity : Activity() {
-    private val baseUrl = "https://whatsapp-bot-backend-v2.onrender.com"
+    private val baseUrl = "https://whatsapp-bot-backend-142e.onrender.com"
     private val sessionPrefsName = "phygital_session"
     private val bridgePrefsName = "phygital_local_bridge"
     private val notificationPrefsName = "phygital_notifications"

@@ -3,12 +3,12 @@ from fastapi.responses import HTMLResponse, Response
 from .manager_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-tree-multiline'])
-UI_VERSION = '2026.08.21-28'
+UI_VERSION = '2026.08.21-29'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20', '2026.08.21-21', '2026.08.21-22', '2026.08.21-23', '2026.08.21-24', '2026.08.21-25', '2026.08.21-26', '2026.08.21-27'):
+    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20', '2026.08.21-21', '2026.08.21-22', '2026.08.21-23', '2026.08.21-24', '2026.08.21-25', '2026.08.21-26', '2026.08.21-27', '2026.08.21-28'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     html = html.replace(
@@ -128,7 +128,7 @@ async function downloadSuperBackup(){
     const r=await fetch('/api/super-admin/backup',{headers:headers()});
     if(!r.ok){let t=await r.text();throw Error(t||('HTTP '+r.status))}
     const blob=await r.blob(),disp=r.headers.get('content-disposition')||'',m=disp.match(/filename="?([^";]+)"?/i);
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=m?m[1]:'phygital-backup.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=m?m[1]:'phygital-full-backup.zip';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1500);
 }
 
 async function superAdminPanel(){
@@ -139,18 +139,19 @@ async function superAdminPanel(){
         const total=Object.values(preview.rows_to_delete||{}).reduce((a,b)=>a+Number(b||0),0);
         $('content').innerHTML=`<h2>Super Admin</h2><p class="muted">Herramientas exclusivas de la cuenta interna oculta.</p>
         <div class="card"><h3>Cambio rápido de identidad</h3><p>Entrar como <b>Zoe Ortiz</b> sin cerrar sesión manualmente.</p><button id="switchZoe">Cambiar a Zoe Ortiz</button></div>
-        <div class="card"><h3>Respaldo total</h3><p>Descarga usuarios, empresas, tiendas, conversaciones, mensajes, solicitudes, árbol/configuraciones, auditoría y demás tablas en JSON y CSV dentro de un ZIP.</p><button id="downloadBackup">Descargar respaldo ZIP</button></div>
-        <div class="super-danger"><h3>Borrado total de datos operativos</h3><p>Se eliminarán aproximadamente <b>${esc(total)}</b> registros. Se preservan <b>admin</b> y <b>Zoe Ortiz</b>, además de la estructura de la aplicación.</p><p class="muted">Primero descarga el respaldo. Después marca la confirmación, escribe exactamente <b>${esc(preview.confirmation_phrase)}</b> y confirma con la contraseña del super admin.</p><label><input id="backupConfirmed" type="checkbox" style="width:auto"> Ya descargué y verifiqué el respaldo</label><input id="wipePhrase" placeholder="${esc(preview.confirmation_phrase)}"><input id="wipePassword" type="password" placeholder="Contraseña del super admin"><button id="wipeAll" class="danger">BORRAR TODOS LOS DATOS OPERATIVOS</button></div>`;
-        $('downloadBackup').onclick=async()=>{try{await downloadSuperBackup();err('Respaldo ZIP generado y descargado.')}catch(x){err(x.message)}};
+        <div class="card"><h3>Respaldo integral de la aplicación</h3><p>Descarga un ZIP con <b>el código y archivos del proyecto presentes en esta instancia</b>, más todas las tablas de la base de datos en JSON y CSV. Por seguridad no incluye variables de entorno, secretos, keystore Android, .git ni caches/builds.</p><button id="downloadBackup">Descargar respaldo integral ZIP</button></div>
+        <div class="super-danger"><h3>DESTRUIR INSTANCIA COMPLETA</h3><p>Esta acción eliminará el <b>esquema completo de la base de datos</b>, incluyendo usuarios, empresas, tiendas, conversaciones, mensajes, configuraciones y auditoría. No se preserva ninguna cuenta. La instancia quedará marcada como destruida y no podrá arrancar normalmente hasta restaurarla o hacer un redeploy limpio.</p><p>Registros actuales aproximados: <b>${esc(total)}</b>.</p><p class="muted">Primero descarga y verifica el respaldo integral. Después marca la confirmación, escribe exactamente <b>${esc(preview.confirmation_phrase)}</b> y confirma con la contraseña del super admin.</p><label><input id="backupConfirmed" type="checkbox" style="width:auto"> Ya descargué y verifiqué el respaldo integral</label><input id="wipePhrase" placeholder="${esc(preview.confirmation_phrase)}"><input id="wipePassword" type="password" placeholder="Contraseña del super admin"><button id="wipeAll" class="danger">DESTRUIR ESTA INSTANCIA</button></div>`;
+        $('downloadBackup').onclick=async()=>{try{await downloadSuperBackup();err('Respaldo integral ZIP generado y descargado.')}catch(x){err(x.message)}};
         $('switchZoe').onclick=async()=>{if(!confirm('¿Cambiar ahora a la cuenta Zoe Ortiz?'))return;try{const r=await api('/api/super-admin/switch-to-zoe',{method:'POST'});localStorage.setItem(TK,r.access_token);localStorage.setItem(RK,r.rol);location.reload()}catch(x){err(x.message)}};
         $('wipeAll').onclick=async()=>{
-            if(!$('backupConfirmed').checked)return err('Debes confirmar que ya descargaste el respaldo.');
-            if(!confirm('Confirmación 1 de 2: ¿realmente deseas borrar todos los datos operativos?'))return;
-            if(!confirm('Confirmación FINAL: esta acción no se puede deshacer sin un respaldo.'))return;
+            if(!$('backupConfirmed').checked)return err('Debes confirmar que ya descargaste y verificaste el respaldo integral.');
+            if(!confirm('Confirmación 1 de 3: se eliminará TODA la base de datos de esta instancia. ¿Continuar?'))return;
+            if(!confirm('Confirmación 2 de 3: no se conservarán admin, Zoe Ortiz ni ninguna otra cuenta. ¿Continuar?'))return;
+            if(!confirm('CONFIRMACIÓN FINAL: la aplicación quedará inutilizable hasta restauración o redeploy. ¿DESTRUIR?'))return;
             try{
                 const r=await api('/api/super-admin/wipe',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:$('wipePhrase').value,password:$('wipePassword').value,backup_confirmed:true})});
-                err('Borrado completado. La aplicación conserva admin y Zoe Ortiz y sigue lista para configurarse de nuevo.');
-                await superAdminPanel();
+                err('Instancia destruida. Para recuperarla necesitas redeploy limpio y/o restaurar el respaldo integral.');
+                setTimeout(()=>location.reload(),1500);
             }catch(x){err(x.message)}
         };
     }catch(x){err(x.message)}

@@ -106,6 +106,6 @@ jobs:
             version_code=${{ env.VERSION_CODE }}
             version_name=${{ env.VERSION_NAME }}
             transport=android_notification
-            message=Versión 0.5.8: respuestas humanas desde dashboard mediante el puente Android, pausa automática del chatbot y mejoras de interfaz.
+            message=Versión 0.6.5: conexión al nuevo servidor de Render, dashboard UI 2026.08.21-28 y handoff humano silencioso.
           files: phygital-bot-latest.apk
           make_latest: true

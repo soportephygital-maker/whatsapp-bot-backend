@@ -8,7 +8,7 @@ def test_human_help_action_is_exposed():
     assert matched is True
     assert next_state == 'humano'
     assert action == 'human_help'
-    assert 'persona' in response.lower()
+    assert response == ''
 
 
 def test_legacy_three_value_match_remains_compatible():

@@ -6,6 +6,7 @@ import os
 import zipfile
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,8 +24,16 @@ SUPER_ADMIN_USERNAME = 'admin'
 SUPER_ADMIN_PASSWORD = '197382'
 MANAGER_USERNAME = 'Zoe Ortiz'
 MANAGER_PASSWORD = '197382'
-WIPE_CONFIRMATION = 'BORRAR TODOS LOS DATOS'
+WIPE_CONFIRMATION = 'DESTRUIR INSTANCIA COMPLETA'
 OWNER_ALIAS_KEY = 'owner_display_alias'
+DESTROY_MARKER = Path(os.getenv('PHYGITAL_DESTROY_MARKER', '.phygital_instance_destroyed'))
+SOURCE_EXCLUDED_PARTS = {
+    '.git', '.gradle', '.idea', '.pytest_cache', '__pycache__', 'build', 'dist',
+    '.venv', 'venv', 'node_modules',
+}
+SOURCE_EXCLUDED_NAMES = {
+    '.env', 'phygital-release.jks', DESTROY_MARKER.name,
+}
 
 
 class WipeRequest(BaseModel):
@@ -74,6 +83,11 @@ def _ensure_core_users(db: Session) -> None:
 
 @router.on_event('startup')
 def bootstrap_hidden_super_admin() -> None:
+    if DESTROY_MARKER.exists():
+        raise RuntimeError(
+            'Esta instancia de Phygital Bot fue destruida desde Super Admin. '
+            'Restaura un respaldo o realiza un redeploy limpio para recuperarla.'
+        )
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
@@ -111,12 +125,50 @@ def _csv_value(value):
     return '' if value is None else str(value)
 
 
+def _should_include_source(path: Path, root: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    if any(part in SOURCE_EXCLUDED_PARTS for part in rel.parts):
+        return False
+    if path.name in SOURCE_EXCLUDED_NAMES:
+        return False
+    return path.is_file()
+
+
+def _append_source_tree(zf: zipfile.ZipFile, manifest: dict) -> None:
+    root = Path.cwd().resolve()
+    included = 0
+    total_bytes = 0
+    for path in root.rglob('*'):
+        if not _should_include_source(path, root):
+            continue
+        try:
+            rel = path.relative_to(root)
+            size = path.stat().st_size
+            if size > 50 * 1024 * 1024:
+                continue
+            zf.write(path, f'source-code/{rel.as_posix()}')
+            included += 1
+            total_bytes += size
+        except (OSError, ValueError):
+            continue
+    manifest['source_code'] = {
+        'root': str(root),
+        'files': included,
+        'bytes': total_bytes,
+        'excluded': sorted(SOURCE_EXCLUDED_PARTS | SOURCE_EXCLUDED_NAMES),
+        'note': 'No se incluyen secretos de entorno, .git, caches, builds ni keystores de firma.',
+    }
+
+
 def _build_backup_zip(db: Session) -> bytes:
     out = io.BytesIO()
     manifest = {
         'application': 'Phygital Bot / WhatsApp Bot Backend',
         'generated_at': datetime.utcnow().isoformat() + 'Z',
-        'format': 'JSON and CSV per database table',
+        'format': 'Copia de código desplegado + JSON y CSV por tabla de base de datos',
         'tables': {},
     }
     with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
@@ -124,7 +176,7 @@ def _build_backup_zip(db: Session) -> bytes:
             rows = _table_rows(db, table)
             manifest['tables'][table.name] = len(rows)
             zf.writestr(
-                f'json/{table.name}.json',
+                f'database/json/{table.name}.json',
                 json.dumps(rows, ensure_ascii=False, indent=2),
             )
             csv_buffer = io.StringIO()
@@ -133,12 +185,19 @@ def _build_backup_zip(db: Session) -> bytes:
             writer.writeheader()
             for row in db.execute(table.select()).mappings().all():
                 writer.writerow({name: _csv_value(row.get(name)) for name in fieldnames})
-            zf.writestr(f'csv/{table.name}.csv', csv_buffer.getvalue())
+            zf.writestr(f'database/csv/{table.name}.csv', csv_buffer.getvalue())
+
+        _append_source_tree(zf, manifest)
         zf.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2))
         zf.writestr(
             'README.txt',
-            'Respaldo total de Phygital Bot. Cada tabla se incluye en JSON y CSV. '
-            'Los datos binarios se representan en JSON como base64.\n',
+            'RESPALDO INTEGRAL DE PHYGITAL BOT\n\n'
+            '- source-code/: copia del código y archivos del proyecto presentes en la instancia desplegada.\n'
+            '- database/json/: todas las tablas en JSON.\n'
+            '- database/csv/: todas las tablas en CSV.\n'
+            '- manifest.json: inventario del respaldo.\n\n'
+            'Por seguridad no se exportan variables de entorno, secretos, keystore Android, .git ni caches/builds.\n'
+            'Un redeploy desde GitHub y la restauración de base de datos son necesarios para una recuperación completa.\n',
         )
     return out.getvalue()
 
@@ -149,6 +208,7 @@ def super_admin_status(current_user: User = Depends(get_current_user)):
         'is_super_admin': _is_super_admin(current_user),
         'username': current_user.username,
         'role': current_user.role,
+        'instance_destroyed': DESTROY_MARKER.exists(),
     }
 
 
@@ -177,7 +237,7 @@ def download_total_backup(_: User = Depends(require_super_admin), db: Session = 
         content=payload,
         media_type='application/zip',
         headers={
-            'Content-Disposition': f'attachment; filename="phygital-backup-{stamp}.zip"',
+            'Content-Disposition': f'attachment; filename="phygital-full-backup-{stamp}.zip"',
             'Cache-Control': 'no-store',
         },
     )
@@ -187,15 +247,18 @@ def download_total_backup(_: User = Depends(require_super_admin), db: Session = 
 def wipe_preview(_: User = Depends(require_super_admin), db: Session = Depends(get_db)):
     counts = {}
     for table in Base.metadata.sorted_tables:
-        if table.name == 'users':
-            counts[table.name] = db.query(User).filter(User.username.notin_([SUPER_ADMIN_USERNAME, MANAGER_USERNAME])).count()
-        else:
+        try:
             counts[table.name] = len(db.execute(table.select()).all())
+        except Exception:
+            db.rollback()
+            counts[table.name] = 0
     return {
         'confirmation_phrase': WIPE_CONFIRMATION,
-        'preserved_users': [SUPER_ADMIN_USERNAME, MANAGER_USERNAME],
+        'preserved_users': [],
         'rows_to_delete': counts,
         'requires_backup_confirmation': True,
+        'destructive': True,
+        'effect': 'Se eliminará el esquema completo de la base y la instancia quedará marcada como destruida hasta redeploy/restauración.',
     }
 
 
@@ -204,29 +267,34 @@ def wipe_all_operational_data(data: WipeRequest, admin: User = Depends(require_s
     if data.confirmation.strip() != WIPE_CONFIRMATION:
         raise HTTPException(status_code=400, detail=f'Escribe exactamente: {WIPE_CONFIRMATION}')
     if not data.backup_confirmed:
-        raise HTTPException(status_code=400, detail='Confirma que descargaste un respaldo antes del borrado')
+        raise HTTPException(status_code=400, detail='Confirma que descargaste y verificaste el respaldo integral antes de destruir la instancia')
     if not verify_password(data.password, admin.password_hash):
         raise HTTPException(status_code=401, detail='Contraseña de super admin incorrecta')
 
-    deleted = {}
     try:
-        for table in reversed(Base.metadata.sorted_tables):
-            if table.name == 'users':
-                result = db.execute(table.delete().where(table.c.username.notin_([SUPER_ADMIN_USERNAME, MANAGER_USERNAME])))
-            else:
-                result = db.execute(table.delete())
-            deleted[table.name] = int(result.rowcount or 0)
-        db.commit()
-        _ensure_core_users(db)
+        DESTROY_MARKER.write_text(
+            json.dumps({
+                'destroyed_at': datetime.utcnow().isoformat() + 'Z',
+                'destroyed_by': SUPER_ADMIN_USERNAME,
+                'reason': 'super_admin_destructive_wipe',
+            }, ensure_ascii=False, indent=2),
+            encoding='utf-8',
+        )
+        db.close()
+        Base.metadata.drop_all(bind=engine)
     except Exception:
-        db.rollback()
+        try:
+            DESTROY_MARKER.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
     return {
-        'status': 'ok',
-        'deleted': deleted,
-        'preserved_users': [SUPER_ADMIN_USERNAME, MANAGER_USERNAME],
-        'application_ready': True,
+        'status': 'destroyed',
+        'preserved_users': [],
+        'application_ready': False,
+        'instance_destroyed': True,
+        'recovery': 'Redeploy limpio + restauración del respaldo integral.',
     }
 
 

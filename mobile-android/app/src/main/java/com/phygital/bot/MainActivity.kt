@@ -69,7 +69,7 @@ class MainActivity : Activity() {
         loginPanel.addView(loginButton)
 
         status = TextView(this).apply {
-            text = "Inicia sesión para continuar."
+            text = "Servidor: $baseUrl\nVersión ${BuildConfig.VERSION_NAME}\nInicia sesión para continuar."
             setPadding(0, 12, 0, 12)
         }
         actionsPanel = LinearLayout(this).apply {
@@ -123,7 +123,7 @@ class MainActivity : Activity() {
         loginButton.setOnClickListener {
             val user = usernameInput.text.toString().trim()
             val password = passwordInput.text.toString()
-            if (user.isBlank() || password.isBlank()) status.text = "Escribe usuario y contraseña."
+            if (user.isBlank() || password.isBlank()) status.text = "Escribe usuario y contraseña.\nServidor: $baseUrl"
             else login(user, password)
         }
         storesButton.setOnClickListener { selectStores() }
@@ -177,7 +177,7 @@ class MainActivity : Activity() {
     }
 
     private fun login(userName: String, password: String) {
-        status.text = "Iniciando sesión..."
+        status.text = "Iniciando sesión...\nServidor: $baseUrl\nEndpoint: /api/auth/login"
         Thread {
             try {
                 val body = JSONObject().put("username", userName).put("password", password).toString()
@@ -190,7 +190,9 @@ class MainActivity : Activity() {
                 startNotificationPolling()
                 checkForUpdate(false)
             } catch (e: Exception) {
-                runOnUiThread { status.text = "No se pudo iniciar sesión: ${e.message}" }
+                runOnUiThread {
+                    status.text = "No se pudo iniciar sesión.\nVersión: ${BuildConfig.VERSION_NAME}\nServidor: $baseUrl\nEndpoint: /api/auth/login\nDetalle: ${e.message}"
+                }
             }
         }.start()
     }
@@ -270,7 +272,7 @@ class MainActivity : Activity() {
                         .show()
                 }
             } catch (e: Exception) {
-                runOnUiThread { status.text = "No se pudieron cargar las tiendas: ${e.message}" }
+                runOnUiThread { status.text = "No se pudieron cargar las tiendas: ${e.message}\nServidor: $baseUrl" }
             }
         }.start()
     }
@@ -347,10 +349,10 @@ class MainActivity : Activity() {
         val apps = listOfNotNull(if (wa) "WhatsApp" else null, if (wb) "Business" else null).joinToString(" + ")
         val listener = hasNotificationListenerAccess()
         status.text = when {
-            stores.isEmpty() -> "Selecciona una o más tiendas para este teléfono. Versión ${BuildConfig.VERSION_NAME}."
+            stores.isEmpty() -> "Selecciona una o más tiendas para este teléfono. Versión ${BuildConfig.VERSION_NAME}.\nServidor: $baseUrl"
             !wa && !wb -> "${stores.size} tienda(s) seleccionada(s). Elige qué aplicación(es) atenderá el bot."
             !listener -> "${stores.size} tienda(s) · $apps. Falta Acceso a notificaciones."
-            else -> "Puente activo · ${stores.size} tienda(s) · $apps · versión ${BuildConfig.VERSION_NAME}."
+            else -> "Puente activo · ${stores.size} tienda(s) · $apps · versión ${BuildConfig.VERSION_NAME}.\nServidor: $baseUrl"
         }
     }
 
@@ -430,9 +432,9 @@ class MainActivity : Activity() {
                 val message = json.optString("message", "Hay una actualización disponible para Phygital Bot.")
                 if (published && latestCode > BuildConfig.VERSION_CODE && apkUrl.isNotBlank()) {
                     runOnUiThread { showUpdatePrompt(latestName, message, apkUrl) }
-                } else if (showIfCurrent) runOnUiThread { status.text = "La app está actualizada (${BuildConfig.VERSION_NAME})." }
+                } else if (showIfCurrent) runOnUiThread { status.text = "La app está actualizada (${BuildConfig.VERSION_NAME}).\nServidor: $baseUrl" }
             } catch (e: Exception) {
-                if (showIfCurrent) runOnUiThread { status.text = "No se pudo consultar actualizaciones: ${e.message}" }
+                if (showIfCurrent) runOnUiThread { status.text = "No se pudo consultar actualizaciones.\nServidor: $baseUrl\nEndpoint: /api/mobile/update\nDetalle: ${e.message}" }
             }
         }.start()
     }
@@ -509,7 +511,7 @@ class MainActivity : Activity() {
         actionsPanel.visibility = View.GONE
         status.visibility = View.VISIBLE
         loginPanel.visibility = View.VISIBLE
-        status.text = "Sesión cerrada."
+        status.text = "Sesión cerrada.\nVersión ${BuildConfig.VERSION_NAME}\nServidor: $baseUrl"
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -519,12 +521,15 @@ class MainActivity : Activity() {
     }
 
     private fun request(method: String, path: String, body: String?, bearer: String?): String {
-        val connection = (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
+        val fullUrl = baseUrl + path
+        val connection = (URL(fullUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 20000
             readTimeout = 20000
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
+            setRequestProperty("User-Agent", "Phygital-Bot-Android/${BuildConfig.VERSION_NAME}")
+            setRequestProperty("X-Phygital-App-Version", BuildConfig.VERSION_NAME)
             if (bearer != null) setRequestProperty("Authorization", "Bearer $bearer")
             if (body != null) {
                 doOutput = true
@@ -532,10 +537,14 @@ class MainActivity : Activity() {
             }
         }
         val code = connection.responseCode
+        val finalUrl = connection.url?.toString() ?: fullUrl
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
         connection.disconnect()
-        if (code !in 200..299) throw IllegalStateException("HTTP $code $text")
+        if (code !in 200..299) {
+            val compact = text.replace("\n", " ").replace("\r", " ").take(500)
+            throw IllegalStateException("HTTP $code | URL=$finalUrl | respuesta=$compact")
+        }
         return text
     }
 }

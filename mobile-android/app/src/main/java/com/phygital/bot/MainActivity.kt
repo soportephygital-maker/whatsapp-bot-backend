@@ -520,31 +520,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun request(method: String, path: String, body: String?, bearer: String?): String {
-        val fullUrl = baseUrl + path
-        val connection = (URL(fullUrl).openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = 20000
-            readTimeout = 20000
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "Phygital-Bot-Android/${BuildConfig.VERSION_NAME}")
-            setRequestProperty("X-Phygital-App-Version", BuildConfig.VERSION_NAME)
-            if (bearer != null) setRequestProperty("Authorization", "Bearer $bearer")
-            if (body != null) {
-                doOutput = true
-                outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            }
-        }
-        val code = connection.responseCode
-        val finalUrl = connection.url?.toString() ?: fullUrl
-        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
-        connection.disconnect()
-        if (code !in 200..299) {
-            val compact = text.replace("\n", " ").replace("\r", " ").take(500)
-            throw IllegalStateException("HTTP $code | URL=$finalUrl | respuesta=$compact")
-        }
-        return text
-    }
+    private fun request(method: String, path: String, body: String?, bearer: String?): String =
+        NetworkClient.request(method, path, body, bearer)
 }

@@ -17,16 +17,7 @@ def _is_default_store(store: Store) -> bool:
     )
 
 
-@router.delete('/eliminar-vacia/{company_key}')
-def delete_empty_company(
-    company_key: str,
-    admin: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    company = db.query(Company).filter(Company.company_key == company_key).first()
-    if not company:
-        raise HTTPException(status_code=404, detail='Empresa no encontrada')
-
+def _delete_if_empty(company: Company, admin: User, db: Session):
     reasons: list[str] = []
     if db.query(Conversation).filter(Conversation.company_id == company.id).first():
         reasons.append('conversaciones')
@@ -53,7 +44,9 @@ def delete_empty_company(
             detail='No se puede eliminar esta cadena porque ya contiene ' + ', '.join(reasons) + '. Puedes desactivarla si ya no la usarás.',
         )
 
+    company_key = company.company_key
     company_name = company.name
+    company_id = company.id
     for store in stores:
         db.delete(store)
     db.delete(company)
@@ -61,8 +54,32 @@ def delete_empty_company(
         username=admin.username,
         action='eliminar_empresa_vacia',
         entity='company',
-        entity_id=company_key,
-        details={'company_name': company_name},
+        entity_id=str(company_id),
+        details={'company_key': company_key, 'company_name': company_name},
     ))
     db.commit()
-    return {'status': 'ok', 'deleted_company': company_key}
+    return {'status': 'ok', 'deleted_company': company_key, 'deleted_company_id': company_id}
+
+
+@router.delete('/eliminar-vacia/{company_key}')
+def delete_empty_company(
+    company_key: str,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    company = db.query(Company).filter(Company.company_key == company_key).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Empresa no encontrada')
+    return _delete_if_empty(company, admin, db)
+
+
+@router.delete('/eliminar-vacia-id/{company_id}')
+def delete_empty_company_by_id(
+    company_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    company = db.get(Company, company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail='Empresa no encontrada')
+    return _delete_if_empty(company, admin, db)

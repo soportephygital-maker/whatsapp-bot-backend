@@ -121,6 +121,31 @@ class HelpRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
+class SupportTicket(Base):
+    __tablename__ = 'support_tickets'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), index=True)
+    store_id: Mapped[int | None] = mapped_column(ForeignKey('stores.id', ondelete='SET NULL'), nullable=True, index=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey('conversations.id', ondelete='CASCADE'), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default='open', index=True)
+    subject: Mapped[str] = mapped_column(String(240), default='Incidencia')
+    description: Mapped[str] = mapped_column(Text, default='')
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    closed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    close_result: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+
+class SupportEmailRecipient(Base):
+    __tablename__ = 'support_email_recipients'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), index=True)
+    name: Mapped[str] = mapped_column(String(160), default='Soporte')
+    email: Mapped[str] = mapped_column(String(254), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class CompanyFile(Base):
     __tablename__ = 'company_files'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

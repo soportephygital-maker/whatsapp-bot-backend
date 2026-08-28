@@ -10,8 +10,8 @@ android {
         applicationId = "com.phygital.bot"
         minSdk = 26
         targetSdk = 36
-        versionCode = 24
-        versionName = "0.6.6"
+        versionCode = 25
+        versionName = "0.6.7"
     }
 
     signingConfigs {
@@ -48,4 +48,6 @@ android {
 
 dependencies {
     implementation("androidx.core:core:1.15.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
 }

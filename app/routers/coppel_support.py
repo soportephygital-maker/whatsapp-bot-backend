@@ -3,13 +3,15 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_admin
 from ..database import get_db
-from ..models import AuditLog, Company, GlobalSetting, User
+from ..models import AuditLog, Company, GlobalSetting, Store, User
 from ..services.company_routing import normalize
 from ..services.coppel_tree import coppel_decision_tree
 
 router = APIRouter(prefix='/api/empresas', tags=['coppel-support'])
-COPPEL_TEMPLATE_MARKER = 'coppel_support_tree_v2_applied'
-COPPEL_TEMPLATE_VERSION = 2
+COPPEL_TEMPLATE_MARKER = 'coppel_support_tree_v3_applied'
+COPPEL_TEMPLATE_VERSION = 3
+COPPEL_DEFAULT_KEY = 'coppel'
+COPPEL_DEFAULT_NAME = 'Coppel'
 
 
 def _looks_like_coppel(company: Company) -> bool:
@@ -17,42 +19,76 @@ def _looks_like_coppel(company: Company) -> bool:
     return 'coppel' in text
 
 
-def ensure_coppel_template(db: Session) -> bool:
-    """Apply the current Coppel support tree once to every detected Coppel company.
+def _ensure_coppel_company(db: Session) -> tuple[Company, bool]:
+    company = db.query(Company).filter(
+        (Company.company_key.ilike('%coppel%')) | (Company.name.ilike('%coppel%'))
+    ).order_by(Company.id.asc()).first()
+    if company:
+        return company, False
 
-    The marker stores company ids already upgraded to this template version. This
-    lets a Coppel company created later receive the template on the next deploy
-    without overwriting companies already edited after the template was applied.
+    company = Company(
+        company_key=COPPEL_DEFAULT_KEY,
+        name=COPPEL_DEFAULT_NAME,
+        decision_tree=coppel_decision_tree(),
+        is_active=True,
+    )
+    db.add(company)
+    db.flush()
+    db.add(Store(company_id=company.id, name='Principal'))
+    db.add(AuditLog(
+        action='crear_empresa_coppel_automatica',
+        entity='company',
+        entity_id=str(company.id),
+        details={'company_key': company.company_key, 'template': 'coppel_support_v3'},
+    ))
+    return company, True
+
+
+def ensure_coppel_template(db: Session) -> bool:
+    """Ensure Coppel exists and receives the current support tree once.
+
+    Existing Coppel companies are not overwritten again after this template
+    version has been applied, so later dashboard edits remain intact.
     """
     marker = db.get(GlobalSetting, COPPEL_TEMPLATE_MARKER)
     marker_value = marker.value if marker and isinstance(marker.value, dict) else {}
     applied_ids = {int(value) for value in marker_value.get('company_ids', []) if str(value).isdigit()}
     changed = False
 
+    coppel_company, created = _ensure_coppel_company(db)
+    if created:
+        changed = True
+
     for company in db.query(Company).all():
         if not _looks_like_coppel(company) or company.id in applied_ids:
             continue
         company.decision_tree = coppel_decision_tree()
+        if not company.stores:
+            db.add(Store(company_id=company.id, name='Principal'))
         applied_ids.add(company.id)
         changed = True
         db.add(AuditLog(
             action='aplicar_plantilla_coppel_automatica',
             entity='company',
             entity_id=str(company.id),
-            details={'company_key': company.company_key, 'template': 'coppel_support_v2'},
+            details={'company_key': company.company_key, 'template': 'coppel_support_v3'},
         ))
 
+    if coppel_company.id not in applied_ids:
+        applied_ids.add(coppel_company.id)
+
+    value = {
+        'applied': bool(applied_ids),
+        'company_ids': sorted(applied_ids),
+        'version': COPPEL_TEMPLATE_VERSION,
+    }
+    if marker:
+        marker.value = value
+        marker.updated_by = 'system'
+    else:
+        db.add(GlobalSetting(key=COPPEL_TEMPLATE_MARKER, value=value, updated_by='system'))
+
     if changed or not marker:
-        value = {
-            'applied': bool(applied_ids),
-            'company_ids': sorted(applied_ids),
-            'version': COPPEL_TEMPLATE_VERSION,
-        }
-        if marker:
-            marker.value = value
-            marker.updated_by = 'system'
-        else:
-            db.add(GlobalSetting(key=COPPEL_TEMPLATE_MARKER, value=value, updated_by='system'))
         db.commit()
     return changed
 
@@ -67,6 +103,6 @@ def apply_coppel_template(
     if not company:
         raise HTTPException(status_code=404, detail='Empresa no encontrada')
     company.decision_tree = coppel_decision_tree()
-    db.add(AuditLog(username=admin.username, action='aplicar_plantilla_coppel', entity='company', entity_id=company_key, details={'template': 'coppel_support_v2'}))
+    db.add(AuditLog(username=admin.username, action='aplicar_plantilla_coppel', entity='company', entity_id=company_key, details={'template': 'coppel_support_v3'}))
     db.commit()
     return {'status': 'ok', 'structure': company.decision_tree}

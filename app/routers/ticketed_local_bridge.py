@@ -32,6 +32,58 @@ def _replace_queued_reply(db: Session, result: dict, text: str, can_reply: bool)
     result['should_reply'] = bool(text and can_reply)
 
 
+def _selected_context_store(data: local_bridge.LocalInbound, db: Session) -> Store | None:
+    # An explicitly selected store is the strongest company context for a
+    # generic first message such as "hola".
+    if data.store_id:
+        store = db.get(Store, data.store_id)
+        if store:
+            return store
+
+    ids = list(dict.fromkeys(data.selected_store_ids or []))
+    if not ids:
+        return None
+    stores = db.query(Store).filter(Store.id.in_(ids)).order_by(Store.id.asc()).all()
+    company_ids = {row.company_id for row in stores}
+    # If every selected store belongs to the same company, the company context
+    # is unambiguous even though the message itself does not name the brand.
+    if len(company_ids) == 1 and stores:
+        return stores[0]
+    return None
+
+
+def _align_unmatched_conversation_context(
+    db: Session,
+    *,
+    data: local_bridge.LocalInbound,
+    conversation: Conversation,
+    channel: ConversationChannel | None,
+    result: dict,
+) -> tuple[Company | None, Store | None]:
+    store = _selected_context_store(data, db)
+    if not store:
+        company = db.get(Company, conversation.company_id) if conversation.company_id else None
+        current_store = db.get(Store, channel.store_id) if channel and channel.store_id else None
+        return company, current_store
+
+    company = db.get(Company, store.company_id)
+    if not company:
+        return None, store
+
+    conversation.company_id = company.id
+    conversation.state = local_bridge._root_state(company.decision_tree or {})
+    if channel:
+        channel.company_id = company.id
+        channel.store_id = store.id
+
+    # Keep the API response consistent with the corrected database context so
+    # the dashboard and Android client agree on the active company immediately.
+    result['company_key'] = company.company_key
+    result['company_name'] = company.name
+    result['store_name'] = store.name
+    return company, store
+
+
 @router.post('/inbound')
 def ticketed_local_inbound(
     data: local_bridge.LocalInbound,
@@ -47,13 +99,27 @@ def ticketed_local_inbound(
     if not conversation or not conversation.company_id:
         return result
 
-    company = db.get(Company, conversation.company_id)
     channel = db.query(ConversationChannel).filter(ConversationChannel.conversation_id == conversation.id).first()
-    store = db.get(Store, channel.store_id) if channel and channel.store_id else None
+    routing = result.get('routing') or {}
+
+    # local_bridge needs a fallback company to evaluate the tree. Do not let
+    # that fallback leak into the dashboard when the Android app already gives
+    # us an unambiguous selected store/company context.
+    if not routing.get('matched'):
+        company, store = _align_unmatched_conversation_context(
+            db,
+            data=data,
+            conversation=conversation,
+            channel=channel,
+            result=result,
+        )
+    else:
+        company = db.get(Company, conversation.company_id)
+        store = db.get(Store, channel.store_id) if channel and channel.store_id else None
+
     if not company:
         return result
 
-    routing = result.get('routing') or {}
     action = str(result.get('action') or '')
     inbound_count = db.query(func.count(Message.id)).filter(
         Message.conversation_id == conversation.id,
@@ -61,10 +127,9 @@ def ticketed_local_inbound(
     ).scalar() or 0
     is_first_message = inbound_count == 1
 
-    # A brand/store fallback selected by the Android bridge is not enough to
-    # treat the customer as identified. On the first unidentified message
-    # ("hola", "buenas", or any free text), always send the configurable
-    # global-entry prompt instead of a company tree error/no-match response.
+    # A brand/store fallback is not enough to treat the customer as identified.
+    # On the first unidentified message ("hola", "buenas", or any free text),
+    # always send the configurable global-entry prompt instead of a tree error.
     if is_first_message and not routing.get('matched'):
         welcome = _global_welcome(db)
         if welcome:
@@ -73,7 +138,7 @@ def ticketed_local_inbound(
             result['company_identified'] = False
             result['ticket_id'] = None
             result['ticket_code'] = None
-            db.commit()
+        db.commit()
         return result
 
     tree = company.decision_tree or {}

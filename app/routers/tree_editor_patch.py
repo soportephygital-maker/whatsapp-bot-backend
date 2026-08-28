@@ -3,12 +3,12 @@ from fastapi.responses import HTMLResponse, Response
 from .manager_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-tree-multiline'])
-UI_VERSION = '2026.08.21-29'
+UI_VERSION = '2026.08.21-30'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20', '2026.08.21-21', '2026.08.21-22', '2026.08.21-23', '2026.08.21-24', '2026.08.21-25', '2026.08.21-26', '2026.08.21-27', '2026.08.21-28'):
+    for old in ('2026.08.21-16', '2026.08.21-17', '2026.08.21-18', '2026.08.21-19', '2026.08.21-20', '2026.08.21-21', '2026.08.21-22', '2026.08.21-23', '2026.08.21-24', '2026.08.21-25', '2026.08.21-26', '2026.08.21-27', '2026.08.21-28', '2026.08.21-29'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     html = html.replace(
@@ -40,6 +40,15 @@ def _js() -> str:
         "$('navUsers').classList.toggle('h',!rootAdmin());$('navActivity').classList.toggle('h',!admin());$('navContacts').classList.toggle('h',!admin());$('navAppearance').classList.toggle('h',!admin());applyTheme();",
         "$('navUsers').classList.toggle('h',!rootAdmin());$('navActivity').classList.toggle('h',!admin());$('navContacts').classList.toggle('h',!admin());$('navAppearance').classList.toggle('h',!admin());if($('navSuperAdmin'))$('navSuperAdmin').classList.toggle('h',!rootAdmin());applyTheme();",
     )
+
+    # The base dashboard used to rebuild nearly every active view every 8 seconds.
+    # Keep live updates, but only refresh counters, request/conversation lists and the
+    # message box of an open chat. Editors and administrative screens stay untouched.
+    js = js.replace(
+        "async function liveRefresh(){if(LIVE_REFRESH_BUSY||!localStorage.getItem(TK)||$('app')?.classList.contains('h'))return;LIVE_REFRESH_BUSY=true;try{await liveStats();if(LIVE_VIEW==='chat'){await liveChat();return}if(liveEditorBusy())return;const y=window.scrollY;if(LIVE_VIEW==='help')await help();else if(LIVE_VIEW==='conv')await conv();else if(LIVE_VIEW==='contacts')await _contacts();else if(LIVE_VIEW==='companies')await _companies();else if(LIVE_VIEW==='users')await users();else if(LIVE_VIEW==='activity')await activity($('activityUser')?.value||'');window.scrollTo(0,y)}catch(_){}finally{LIVE_REFRESH_BUSY=false}}",
+        "async function liveRefresh(){if(LIVE_REFRESH_BUSY||!localStorage.getItem(TK)||$('app')?.classList.contains('h'))return;LIVE_REFRESH_BUSY=true;try{await liveStats();if(LIVE_VIEW==='chat'){await liveChat();return}if(liveEditorBusy())return;const y=window.scrollY;if(LIVE_VIEW==='help')await help();else if(LIVE_VIEW==='conv')await conv();window.scrollTo(0,y)}catch(_){}finally{LIVE_REFRESH_BUSY=false}}",
+    )
+    js = js.replace('setInterval(liveRefresh,8000);', 'setInterval(liveRefresh,10000);')
 
     flow_code = r'''
 help=async function(){

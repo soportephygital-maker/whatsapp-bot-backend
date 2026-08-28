@@ -4,12 +4,12 @@ from fastapi.responses import HTMLResponse, Response
 from .routing_dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-global-entry'])
-UI_VERSION = '2026.08.28-33'
+UI_VERSION = '2026.08.28-34'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.28-32', '2026.08.28-31', '2026.08.21-30', '2026.08.28-30'):
+    for old in ('2026.08.28-33', '2026.08.28-32', '2026.08.28-31', '2026.08.21-30', '2026.08.28-30'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     html = html.replace(
@@ -79,9 +79,12 @@ function addEmptyCompanyDeleteButtons(){
     if(!admin())return;
     const list=$('companiesList');
     if(!list)return;
-    list.querySelectorAll(':scope > [data-company-key]').forEach(openButton=>{
-        const key=openButton.dataset.companyKey;
-        const name=(openButton.querySelector('b')?.textContent||key).trim();
+    const rows=Array.from(list.querySelectorAll(':scope > [data-company-key]'));
+    rows.forEach((openButton,index)=>{
+        const key=openButton.dataset.companyKey||'';
+        const company=COMPANY_ROWS.find(c=>String(c.empresa_id||'')===key) || COMPANY_ROWS[index] || null;
+        const companyId=company?.id;
+        const name=(openButton.querySelector('b')?.textContent||company?.nombre||key||'Cadena sin nombre').trim();
         const wrap=document.createElement('div');
         wrap.className='company-list-row';
         openButton.parentNode.insertBefore(wrap,openButton);
@@ -93,10 +96,11 @@ function addEmptyCompanyDeleteButtons(){
         del.onclick=async e=>{
             e.preventDefault();
             e.stopPropagation();
+            if(!companyId)return err('No pude identificar internamente esta cadena. Recarga la página e inténtalo de nuevo.');
             if(!confirm(`¿Eliminar la cadena "${name}"?\n\nSolo se eliminará si está vacía. Esta acción no se puede deshacer.`))return;
             try{
-                await api('/api/empresas/eliminar-vacia/'+encodeURIComponent(key),{method:'DELETE'});
-                if(COMPANY_CONTEXT.key===key){
+                await api('/api/empresas/eliminar-vacia-id/'+encodeURIComponent(companyId),{method:'DELETE'});
+                if(COMPANY_CONTEXT.id===companyId||COMPANY_CONTEXT.key===key){
                     COMPANY_CONTEXT={key:'',id:null,name:'Todas las empresas'};
                     localStorage.removeItem(COMPANY_CONTEXT_KEY);
                 }
@@ -110,7 +114,7 @@ function addEmptyCompanyDeleteButtons(){
 }
 
 const _companiesWithGlobalEntry=companies;
-companies=async function(){await _companiesWithGlobalEntry();LIVE_VIEW='companies';await loadGlobalEntryEditor();addEmptyCompanyDeleteButtons()};
+companies=async function(){await _companiesWithGlobalEntry();LIVE_VIEW='companies';await loadCompanyContext();await loadGlobalEntryEditor();addEmptyCompanyDeleteButtons()};
 '''
     js = js.replace("document.addEventListener('DOMContentLoaded'", patch + "\ndocument.addEventListener('DOMContentLoaded'")
     return js

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_operator
 from ..database import get_db
-from ..models import Company, Conversation, ConversationChannel, Store, User
+from ..models import Company, Conversation, ConversationChannel, Message, Store, User
 from ..services.ticketing import ensure_ticket
 from . import local_bridge
 
@@ -27,6 +27,20 @@ def ticketed_local_inbound(
     channel = db.query(ConversationChannel).filter(ConversationChannel.conversation_id == conversation.id).first()
     store = db.get(Store, channel.store_id) if channel and channel.store_id else None
     if company:
+        routing = result.get('routing') or {}
+        action = str(result.get('action') or '')
+        tree = company.decision_tree or {}
+        root = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
+        root_message = str((tree.get('nodos') or {}).get(root, {}).get('mensaje') or '').strip()
+        if routing.get('matched') and action.startswith('no_match') and conversation.state == root and root_message:
+            outbound_id = result.get('outbound_message_id')
+            outbound = db.get(Message, outbound_id) if outbound_id else None
+            if outbound:
+                outbound.body = root_message
+            result['action'] = 'company_welcome'
+            if data.can_reply:
+                result['reply_text'] = root_message
+                result['should_reply'] = True
         ticket = ensure_ticket(
             db,
             company=company,

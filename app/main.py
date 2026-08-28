@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, Store
-from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, local_bridge, manager_patch, mobile_update, routing_dashboard_patch, settings as settings_router, super_admin, tree_editor_patch, whatsapp
+from .routers import auth, companies, company_resources, contacts, conversation_admin, dashboard, dashboard_patch, dashboard_ui, global_entry, global_entry_dashboard_patch, local_bridge, manager_patch, mobile_update, routing_dashboard_patch, settings as settings_router, super_admin, tree_editor_patch, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -25,6 +25,8 @@ app.include_router(contacts.router)
 app.include_router(conversation_admin.router)
 app.include_router(dashboard.router)
 app.include_router(settings_router.router)
+app.include_router(global_entry.router)
+app.include_router(global_entry_dashboard_patch.router)
 app.include_router(routing_dashboard_patch.router)
 app.include_router(tree_editor_patch.router)
 app.include_router(manager_patch.router)
@@ -148,11 +150,6 @@ def root():
         'status': 'running',
         'health': '/health',
         'dashboard': '/dashboard',
-        'docs': '/docs',
-        'local_bridge': '/api/local-bridge/inbound',
-        'legacy_whatsapp_webhook': '/webhooks/whatsapp',
-        'mobile_update': '/api/mobile/update',
-        'privacy': '/privacy',
-        'terms': '/terms',
-        'data_deletion': '/data-deletion',
+        'primary_transport': 'android_notification',
+        'webhook': '/webhook',
     }

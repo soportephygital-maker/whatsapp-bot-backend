@@ -13,6 +13,7 @@ def iqos_decision_tree() -> dict:
             'inicio': {
                 'mensaje': 'Hola, bienvenido a soporte IQOS. Con gusto te ayudo. Para comenzar, indícame si el problema se presenta en un Corner o en una Isla.',
                 'opciones': [
+                    {'comando': 'iqos, seven cck, seven-cck', 'respuesta': 'Hola, bienvenido a soporte IQOS. Con gusto te ayudo. Para comenzar, indícame si el problema se presenta en un Corner o en una Isla.', 'siguiente': 'inicio'},
                     {'comando': 'corner, corners', 'respuesta': 'Perfecto, revisemos el Corner. ¿Con qué necesitas apoyo?\n1) Pantalla\n2) Tableta\n3) Audio\n4) Sensores / interacciones', 'siguiente': 'corner_equipo'},
                     {'comando': 'isla, islas', 'respuesta': 'Perfecto, revisemos la Isla. ¿Con qué necesitas apoyo?\n1) Pantalla\n2) Tableta\n3) Audio\n4) Sensores / interacciones', 'siguiente': 'isla_equipo'},
                     human,

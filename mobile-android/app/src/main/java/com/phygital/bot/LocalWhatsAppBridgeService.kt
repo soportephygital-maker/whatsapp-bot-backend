@@ -12,8 +12,6 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.text.Normalizer
 
@@ -319,24 +317,6 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         request("POST", "/api/local-bridge/delivery", body.toString(), token)
     }
 
-    private fun request(method: String, path: String, body: String?, bearer: String): String {
-        val connection = (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = 20000
-            readTimeout = 20000
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("Authorization", "Bearer $bearer")
-            if (body != null) {
-                doOutput = true
-                outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            }
-        }
-        val code = connection.responseCode
-        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
-        connection.disconnect()
-        if (code !in 200..299) throw IllegalStateException("HTTP $code $text")
-        return text
-    }
+    private fun request(method: String, path: String, body: String?, bearer: String): String =
+        NetworkClient.request(method, path, body, bearer)
 }

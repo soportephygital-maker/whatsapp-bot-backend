@@ -4,17 +4,17 @@ from fastapi.responses import HTMLResponse, Response
 from .routing_dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-global-entry'])
-UI_VERSION = '2026.08.28-32'
+UI_VERSION = '2026.08.28-33'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.28-31', '2026.08.21-30', '2026.08.28-30'):
+    for old in ('2026.08.28-32', '2026.08.28-31', '2026.08.21-30', '2026.08.28-30'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     html = html.replace(
         '</style></head>',
-        '<style>.global-entry-card{border:1px solid rgba(76,182,255,.38);background:rgba(6,19,34,.78)}.global-entry-card h3{margin-bottom:4px}.global-entry-card textarea{min-height:92px;resize:vertical}.global-entry-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.global-entry-toggle{display:flex;align-items:center;gap:10px;margin:10px 0}.global-entry-toggle input{width:auto}.global-entry-flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 16px}.global-entry-flow .badge{font-size:12px}@media(max-width:800px){.global-entry-grid{grid-template-columns:1fr}}</style></head>',
+        '<style>.global-entry-card{border:1px solid rgba(76,182,255,.38);background:rgba(6,19,34,.78)}.global-entry-card h3{margin-bottom:4px}.global-entry-card textarea{min-height:92px;resize:vertical}.global-entry-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.global-entry-toggle{display:flex;align-items:center;gap:10px;margin:10px 0}.global-entry-toggle input{width:auto}.global-entry-flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 16px}.global-entry-flow .badge{font-size:12px}.company-list-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:stretch;margin:8px 0}.company-list-row>[data-company-key]{margin:0}.company-list-row .delete-empty-company{width:auto;min-width:160px;margin:0}@media(max-width:800px){.global-entry-grid{grid-template-columns:1fr}.company-list-row{grid-template-columns:1fr}.company-list-row .delete-empty-company{width:100%}}</style></head>',
     )
     return html
 
@@ -75,8 +75,42 @@ async function loadGlobalEntryEditor(){
     }catch(x){err(x.message)}
 }
 
+function addEmptyCompanyDeleteButtons(){
+    if(!admin())return;
+    const list=$('companiesList');
+    if(!list)return;
+    list.querySelectorAll(':scope > [data-company-key]').forEach(openButton=>{
+        const key=openButton.dataset.companyKey;
+        const name=(openButton.querySelector('b')?.textContent||key).trim();
+        const wrap=document.createElement('div');
+        wrap.className='company-list-row';
+        openButton.parentNode.insertBefore(wrap,openButton);
+        wrap.appendChild(openButton);
+        const del=document.createElement('button');
+        del.type='button';
+        del.className='delete-empty-company danger';
+        del.textContent='Eliminar cadena';
+        del.onclick=async e=>{
+            e.preventDefault();
+            e.stopPropagation();
+            if(!confirm(`¿Eliminar la cadena "${name}"?\n\nSolo se eliminará si está vacía. Esta acción no se puede deshacer.`))return;
+            try{
+                await api('/api/empresas/eliminar-vacia/'+encodeURIComponent(key),{method:'DELETE'});
+                if(COMPANY_CONTEXT.key===key){
+                    COMPANY_CONTEXT={key:'',id:null,name:'Todas las empresas'};
+                    localStorage.removeItem(COMPANY_CONTEXT_KEY);
+                }
+                err(`Cadena "${name}" eliminada.`);
+                await companies();
+                await loadCompanyContext();
+            }catch(x){err(x.message)}
+        };
+        wrap.appendChild(del);
+    });
+}
+
 const _companiesWithGlobalEntry=companies;
-companies=async function(){await _companiesWithGlobalEntry();LIVE_VIEW='companies';await loadGlobalEntryEditor()};
+companies=async function(){await _companiesWithGlobalEntry();LIVE_VIEW='companies';await loadGlobalEntryEditor();addEmptyCompanyDeleteButtons()};
 '''
     js = js.replace("document.addEventListener('DOMContentLoaded'", patch + "\ndocument.addEventListener('DOMContentLoaded'")
     return js

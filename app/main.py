@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, Store
-from .routers import auth, companies, company_delete_safe, company_resources, contacts, conversation_admin, coppel_support, dashboard, dashboard_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, iqos_support, local_bridge, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, whatsapp
+from .routers import auth, companies, company_delete_safe, company_resources, contacts, conversation_admin, coppel_support, dashboard, dashboard_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, iqos_support, local_bridge, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, tree_zoom_dashboard_patch, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -31,6 +31,7 @@ app.include_router(conversation_admin.router)
 app.include_router(dashboard.router)
 app.include_router(settings_router.router)
 app.include_router(global_entry.router)
+app.include_router(tree_zoom_dashboard_patch.router)
 app.include_router(report_download_dashboard_patch.router)
 app.include_router(operations_dashboard_patch.router)
 app.include_router(flow_simulator_dashboard_patch.router)

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .database import get_db
 from .models import RolePolicy, User
+from .services.user_access import has_permission, permissions_for_user
 
 SUPER_ADMIN_USERNAME = 'admin'
 
@@ -52,6 +53,16 @@ DEFAULT_ROLE_PERMISSIONS = {
     },
 }
 
+LEGACY_PERMISSION_MAP = {
+    'operate': 'reply_conversations',
+    'admin_access': 'manage_company_tree',
+    'appearance_edit': 'manage_appearance',
+    'activity_view': 'view_activity',
+    'manage_companies': 'manage_company_tree',
+    'manage_users': 'manage_users',
+    'manage_roles': 'manage_user_permissions',
+}
+
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
@@ -93,29 +104,38 @@ def effective_permissions(db: Session, role: str) -> dict[str, bool]:
     return defaults
 
 
+def effective_user_permissions(db: Session, user: User) -> dict[str, bool]:
+    return permissions_for_user(db, user)
+
+
+def _permission_allowed(db: Session, user: User, permission: str) -> bool:
+    granular = LEGACY_PERMISSION_MAP.get(permission, permission)
+    return has_permission(db, user, granular)
+
+
 def require_permission(permission: str):
     def dependency(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
-        if not effective_permissions(db, current_user.role).get(permission, False):
-            raise HTTPException(status_code=403, detail=f'El rol {current_user.role} no tiene el permiso {permission}')
+        if not _permission_allowed(db, current_user, permission):
+            raise HTTPException(status_code=403, detail=f'El usuario no tiene el permiso {permission}')
         return current_user
     return dependency
 
 
 def require_operator(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
-    if not effective_permissions(db, current_user.role).get('operate', False):
-        raise HTTPException(status_code=403, detail='Este rol no puede responder ni modificar conversaciones')
+    if not has_permission(db, current_user, 'reply_conversations'):
+        raise HTTPException(status_code=403, detail='No tienes permiso para responder conversaciones')
     return current_user
 
 
 def require_admin(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
-    if not effective_permissions(db, current_user.role).get('admin_access', False):
-        raise HTTPException(status_code=403, detail='Se requieren permisos administrativos')
+    if not has_permission(db, current_user, 'manage_company_tree'):
+        raise HTTPException(status_code=403, detail='No tienes permiso para administrar empresas')
     return current_user
 
 
-def require_case_closer(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role not in ('admin', 'gerente'):
-        raise HTTPException(status_code=403, detail='Solo Administrador o Gerente pueden cerrar un caso')
+def require_case_closer(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+    if not has_permission(db, current_user, 'close_cases'):
+        raise HTTPException(status_code=403, detail='No tienes permiso para cerrar casos')
     return current_user
 
 

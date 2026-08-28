@@ -31,6 +31,14 @@ class RolePolicy(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class UserPermission(Base):
+    __tablename__ = 'user_permissions'
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+    permissions: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Company(Base):
     __tablename__ = 'companies'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -42,6 +50,14 @@ class Company(Base):
     stores: Mapped[list['Store']] = relationship(back_populates='company', cascade='all, delete-orphan')
     files: Mapped[list['CompanyFile']] = relationship(back_populates='company', cascade='all, delete-orphan')
     support_contacts: Mapped[list['SupportContact']] = relationship(back_populates='company', cascade='all, delete-orphan')
+
+
+class UserCompanyAccess(Base):
+    __tablename__ = 'user_company_access'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Store(Base):

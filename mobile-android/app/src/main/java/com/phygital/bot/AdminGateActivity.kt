@@ -2,6 +2,7 @@ package com.phygital.bot
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
@@ -49,6 +50,7 @@ class AdminGateActivity : Activity() {
         val prefs = getSharedPreferences(sessionPrefsName, MODE_PRIVATE)
         val savedToken = prefs.getString("token", null)
         if (!savedToken.isNullOrBlank()) {
+            startBridgeKeepAlive()
             openMain()
             return
         }
@@ -62,6 +64,12 @@ class AdminGateActivity : Activity() {
                 login(user, pass)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null)
+        if (!token.isNullOrBlank()) startBridgeKeepAlive()
     }
 
     private fun login(userName: String, password: String) {
@@ -88,7 +96,10 @@ class AdminGateActivity : Activity() {
                     .putString("username", username)
                     .apply()
 
-                runOnUiThread { openMain() }
+                runOnUiThread {
+                    startBridgeKeepAlive()
+                    openMain()
+                }
             } catch (e: Exception) {
                 runOnUiThread {
                     loginButton.isEnabled = true
@@ -98,6 +109,15 @@ class AdminGateActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun startBridgeKeepAlive() {
+        val intent = Intent(this, BridgeKeepAliveService::class.java)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
+            else startService(intent)
+        } catch (_: Exception) {
+        }
     }
 
     private fun openMain() {

@@ -11,9 +11,16 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.CheckBox
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Switch
+import android.widget.TextView
 import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,6 +31,7 @@ import java.net.URL
 class MainActivity : Activity() {
     private val baseUrl = "https://whatsapp-bot-backend-142e.onrender.com"
     private val sessionPrefsName = "phygital_session"
+    private val bridgePrefsName = "phygital_local_bridge"
     private val notificationPrefsName = "phygital_notifications"
     private val notificationChannelId = "phygital_support_alerts"
 
@@ -33,14 +41,40 @@ class MainActivity : Activity() {
     private var tokenInjected = false
     private var updatePromptVisible = false
     private var pendingUpdateFile: File? = null
+    private var canManageBridge = false
     @Volatile private var notificationPolling = false
 
     private lateinit var webView: WebView
+    private lateinit var settingsButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         createNotificationChannel()
         requestNotificationPermissionIfNeeded()
+
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(12, 10, 12, 10)
+        }
+
+        val dashboardButton = Button(this).apply {
+            text = "Dashboard"
+            setOnClickListener { openDashboard() }
+        }
+        settingsButton = Button(this).apply {
+            text = "Configuración"
+            visibility = View.GONE
+            setOnClickListener { showBridgeSettings() }
+        }
+        val logoutButton = Button(this).apply {
+            text = "Salir"
+            setOnClickListener { confirmLogout() }
+        }
+
+        toolbar.addView(dashboardButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        toolbar.addView(settingsButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        toolbar.addView(logoutButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         webView = WebView(this).apply {
             visibility = View.VISIBLE
@@ -63,7 +97,10 @@ class MainActivity : Activity() {
                 }
             }
         }
-        setContentView(webView)
+
+        root.addView(toolbar)
+        root.addView(webView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        setContentView(root)
 
         restoreSavedSession()
         checkForUpdate(false)
@@ -98,6 +135,7 @@ class MainActivity : Activity() {
         Thread {
             try {
                 request("GET", "/api/stats", null, savedToken)
+                loadNativeAccess(savedToken)
                 runOnUiThread { openDashboard() }
                 startNotificationPolling()
             } catch (e: Exception) {
@@ -105,11 +143,19 @@ class MainActivity : Activity() {
                     getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit().clear().apply()
                     runOnUiThread { openLogin() }
                 } else {
+                    try { loadNativeAccess(savedToken) } catch (_: Exception) {}
                     runOnUiThread { openDashboard() }
                     startNotificationPolling()
                 }
             }
         }.start()
+    }
+
+    private fun loadNativeAccess(auth: String) {
+        val access = JSONObject(request("GET", "/api/access-control/me", null, auth))
+        val permissions = access.optJSONObject("permissions") ?: JSONObject()
+        canManageBridge = permissions.optBoolean("manage_mobile_bridge", false)
+        runOnUiThread { settingsButton.visibility = if (canManageBridge) View.VISIBLE else View.GONE }
     }
 
     private fun openLogin() {
@@ -120,6 +166,131 @@ class MainActivity : Activity() {
     private fun openDashboard() {
         tokenInjected = false
         webView.loadUrl("$baseUrl/dashboard?embedded=1")
+    }
+
+    private fun confirmLogout() {
+        AlertDialog.Builder(this)
+            .setTitle("Cerrar sesión")
+            .setMessage("¿Quieres salir de Phygital Bot?")
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Salir") { _, _ -> logout() }
+            .show()
+    }
+
+    private fun logout() {
+        notificationPolling = false
+        token = null
+        role = null
+        username = null
+        getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit().clear().apply()
+        webView.clearCache(true)
+        webView.evaluateJavascript("localStorage.removeItem('phygital_token');localStorage.removeItem('phygital_role');", null)
+        openLogin()
+    }
+
+    private fun showBridgeSettings() {
+        if (!canManageBridge) return
+        val auth = token ?: return
+        Thread {
+            try {
+                val companies = JSONArray(request("GET", "/api/empresas/listar", null, auth))
+                runOnUiThread { buildBridgeSettingsDialog(companies) }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    AlertDialog.Builder(this)
+                        .setTitle("Configuración")
+                        .setMessage("No se pudieron cargar las empresas y tiendas.\n${e.message ?: ""}")
+                        .setPositiveButton("Aceptar", null)
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    private fun buildBridgeSettingsDialog(companies: JSONArray) {
+        val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        val selected = prefs.getStringSet("selected_store_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 16, 32, 16)
+        }
+
+        val waSwitch = Switch(this).apply {
+            text = "WhatsApp"
+            isChecked = prefs.getBoolean("app_enabled_com_whatsapp", false)
+        }
+        val businessSwitch = Switch(this).apply {
+            text = "WhatsApp Business"
+            isChecked = prefs.getBoolean("app_enabled_com_whatsapp_w4b", false)
+        }
+        content.addView(waSwitch)
+        content.addView(businessSwitch)
+
+        content.addView(TextView(this).apply {
+            text = "\nTiendas que atenderá este teléfono"
+            textSize = 16f
+        })
+
+        val checks = mutableListOf<Pair<Int, CheckBox>>()
+        for (i in 0 until companies.length()) {
+            val company = companies.optJSONObject(i) ?: continue
+            val companyName = company.optString("nombre", company.optString("name", "Empresa"))
+            content.addView(TextView(this).apply {
+                text = "\n$companyName"
+                textSize = 15f
+            })
+            val stores = company.optJSONArray("tiendas") ?: JSONArray()
+            for (j in 0 until stores.length()) {
+                val store = stores.optJSONObject(j) ?: continue
+                val storeId = store.optInt("id", 0)
+                if (storeId <= 0) continue
+                val storeName = store.optString("nombre", store.optString("name", "Tienda $storeId"))
+                val check = CheckBox(this).apply {
+                    text = storeName
+                    isChecked = selected.contains(storeId.toString())
+                }
+                checks.add(storeId to check)
+                content.addView(check)
+            }
+        }
+
+        val notificationAccess = Button(this).apply {
+            text = "Acceso a notificaciones"
+            setOnClickListener { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
+        }
+        val appSettings = Button(this).apply {
+            text = "Ajustes de la aplicación"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            }
+        }
+        content.addView(notificationAccess)
+        content.addView(appSettings)
+
+        val scroll = ScrollView(this).apply { addView(content) }
+        AlertDialog.Builder(this)
+            .setTitle("Configuración del puente")
+            .setView(scroll)
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Guardar") { _, _ ->
+                val selectedIds = checks.filter { it.second.isChecked }.map { it.first.toString() }.toSet()
+                prefs.edit()
+                    .putBoolean("app_enabled_com_whatsapp", waSwitch.isChecked)
+                    .putBoolean("app_enabled_com_whatsapp_w4b", businessSwitch.isChecked)
+                    .putStringSet("selected_store_ids", selectedIds)
+                    .apply()
+                startBridgeKeepAlive()
+            }
+            .show()
+    }
+
+    private fun startBridgeKeepAlive() {
+        val intent = Intent(this, BridgeKeepAliveService::class.java)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
+            else startService(intent)
+        } catch (_: Exception) {}
     }
 
     private fun createNotificationChannel() {
@@ -238,7 +409,7 @@ class MainActivity : Activity() {
     private fun requestInstallOrOpen(apk: File) {
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
             pendingUpdateFile = apk
-            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
             return
         }
         installApk(apk)

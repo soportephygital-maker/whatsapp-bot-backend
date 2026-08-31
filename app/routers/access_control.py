@@ -25,6 +25,18 @@ class AccessUpdate(BaseModel):
     company_ids: list[int] = Field(default_factory=list)
 
 
+@router.get('/api/access-control/me')
+def my_access(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    allowed = allowed_company_ids(db, user)
+    return {
+        'username': user.username,
+        'role': user.role,
+        'dashboard': True,
+        'permissions': permissions_for_user(db, user),
+        'company_ids': None if allowed is None else sorted(allowed),
+    }
+
+
 @router.get('/api/access-control/catalog')
 def access_catalog(_: User = Depends(require_primary_admin), db: Session = Depends(get_db)):
     companies = db.query(Company).order_by(Company.name.asc()).all()
@@ -108,8 +120,6 @@ def update_access(
     return {'status': 'ok'}
 
 
-# These read routes intentionally precede the legacy routers in main.py so company
-# scoping is enforced server-side rather than only hidden in the dashboard.
 @router.get('/api/empresas/listar')
 def scoped_companies(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     companies = visible_companies_query(db, user).order_by(Company.name.asc()).all()

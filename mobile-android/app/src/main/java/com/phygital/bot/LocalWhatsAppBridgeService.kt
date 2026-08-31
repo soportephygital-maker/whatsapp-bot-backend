@@ -228,7 +228,13 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val sentText = prefs.getString(guardKey(packageName, "reply_text"), null) ?: return false
         val sentAt = prefs.getLong(guardKey(packageName, "reply_time"), 0L)
         val age = System.currentTimeMillis() - sentAt
-        return age in 0..30_000 && sentText == normalizedMessage(text)
+        if (age !in 0..30_000) return false
+        val candidate = normalizedMessage(text)
+        if (candidate == sentText) return true
+        // WhatsApp can update one notification with the previous customer text
+        // plus the inline reply sent by this app. That accumulated notification
+        // is not a new customer message and must never be reinjected as inbound.
+        return sentText.length >= 12 && candidate.contains(sentText)
     }
 
     private fun isRapidDuplicate(packageName: String, sender: String, text: String): Boolean {
@@ -278,8 +284,6 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     private fun isSavedContact(sender: String): Boolean {
         if (sender.isBlank()) return false
-        // Missing contacts permission must never disable the entire bridge.
-        // When unavailable we simply cannot apply the saved-contact exclusion.
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return false
         val senderName = normalizeName(sender)
         val senderDigits = digits(sender)

@@ -134,16 +134,21 @@ class MainActivity : Activity() {
         username = prefs.getString("username", null)
         Thread {
             try {
-                request("GET", "/api/stats", null, savedToken)
-                loadNativeAccess(savedToken)
+                val access = JSONObject(request("GET", "/api/access-control/me", null, savedToken))
+                role = access.optString("role", role ?: "")
+                username = access.optString("username", username ?: "")
+                prefs.edit()
+                    .putString("role", role)
+                    .putString("username", username)
+                    .apply()
+                applyNativeAccess(access)
                 runOnUiThread { openDashboard() }
                 startNotificationPolling()
             } catch (e: Exception) {
                 if ((e.message ?: "").contains("HTTP 401")) {
-                    getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit().clear().apply()
+                    prefs.edit().clear().apply()
                     runOnUiThread { openLogin() }
                 } else {
-                    try { loadNativeAccess(savedToken) } catch (_: Exception) {}
                     runOnUiThread { openDashboard() }
                     startNotificationPolling()
                 }
@@ -153,6 +158,10 @@ class MainActivity : Activity() {
 
     private fun loadNativeAccess(auth: String) {
         val access = JSONObject(request("GET", "/api/access-control/me", null, auth))
+        applyNativeAccess(access)
+    }
+
+    private fun applyNativeAccess(access: JSONObject) {
         val permissions = access.optJSONObject("permissions") ?: JSONObject()
         canManageBridge = permissions.optBoolean("manage_mobile_bridge", false)
         runOnUiThread { settingsButton.visibility = View.VISIBLE }

@@ -26,6 +26,7 @@ PERMISSION_CATALOG = {
     'manage_users': 'Crear y modificar usuarios',
     'manage_user_permissions': 'Configurar permisos de usuarios',
     'manage_user_companies': 'Configurar empresas por usuario',
+    'manage_mobile_bridge': 'Configurar puente móvil de WhatsApp',
 }
 
 ROLE_TEMPLATES = {

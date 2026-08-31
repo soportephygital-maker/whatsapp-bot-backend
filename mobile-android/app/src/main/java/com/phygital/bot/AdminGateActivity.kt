@@ -29,7 +29,7 @@ class AdminGateActivity : Activity() {
 
         usernameInput = EditText(this).apply {
             hint = "Usuario"
-            setText("admin")
+            setText("")
         }
         passwordInput = EditText(this).apply {
             hint = "Contraseña"

@@ -30,6 +30,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         manualPollRunning = false
+        try { requestRebind(android.content.ComponentName(this, LocalWhatsAppBridgeService::class.java)) } catch (_: Exception) {}
         super.onListenerDisconnected()
     }
 
@@ -90,6 +91,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("metadata", JSONObject()
                             .put("category", notification.category ?: "")
                             .put("saved_contact", false)
+                            .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
                             .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp"))
 
                     val response = JSONObject(request("POST", "/api/local-bridge/inbound", payload.toString(), token))
@@ -276,7 +278,9 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     private fun isSavedContact(sender: String): Boolean {
         if (sender.isBlank()) return false
-        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return true
+        // Missing contacts permission must never disable the entire bridge.
+        // When unavailable we simply cannot apply the saved-contact exclusion.
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return false
         val senderName = normalizeName(sender)
         val senderDigits = digits(sender)
         val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)

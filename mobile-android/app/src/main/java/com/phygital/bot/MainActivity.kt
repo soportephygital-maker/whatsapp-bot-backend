@@ -64,7 +64,7 @@ class MainActivity : Activity() {
         }
         settingsButton = Button(this).apply {
             text = "Configuración"
-            visibility = View.GONE
+            visibility = View.VISIBLE
             setOnClickListener { showBridgeSettings() }
         }
         val logoutButton = Button(this).apply {
@@ -155,7 +155,12 @@ class MainActivity : Activity() {
         val access = JSONObject(request("GET", "/api/access-control/me", null, auth))
         val permissions = access.optJSONObject("permissions") ?: JSONObject()
         canManageBridge = permissions.optBoolean("manage_mobile_bridge", false)
-        runOnUiThread { settingsButton.visibility = if (canManageBridge) View.VISIBLE else View.GONE }
+        runOnUiThread { settingsButton.visibility = View.VISIBLE }
+    }
+
+    private fun isAdminUser(): Boolean {
+        val normalized = role.orEmpty().trim().lowercase().replace('-', '_').replace(' ', '_')
+        return normalized == "admin" || normalized == "super_admin" || normalized == "superadmin"
     }
 
     private fun openLogin() {
@@ -189,7 +194,10 @@ class MainActivity : Activity() {
     }
 
     private fun showBridgeSettings() {
-        if (!canManageBridge) return
+        if (!isAdminUser()) {
+            showNotificationOnlySettings()
+            return
+        }
         val auth = token ?: return
         Thread {
             try {
@@ -205,6 +213,30 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun showNotificationOnlySettings() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 20, 32, 20)
+        }
+        content.addView(TextView(this).apply {
+            text = "Notificaciones"
+            textSize = 17f
+        })
+        content.addView(TextView(this).apply {
+            text = "Desde aquí puedes permitir que Phygital Bot reciba y muestre las notificaciones necesarias."
+        })
+        content.addView(Button(this).apply {
+            text = "Acceso a notificaciones"
+            setOnClickListener { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
+        })
+
+        AlertDialog.Builder(this)
+            .setTitle("Configuración")
+            .setView(content)
+            .setPositiveButton("Cerrar", null)
+            .show()
     }
 
     private fun buildBridgeSettingsDialog(companies: JSONArray) {

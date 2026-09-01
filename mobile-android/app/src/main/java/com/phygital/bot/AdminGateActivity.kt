@@ -12,7 +12,6 @@ import org.json.JSONObject
 
 class AdminGateActivity : Activity() {
     private val sessionPrefsName = "phygital_session"
-    private val serverLabel = "https://whatsapp-bot-backend-142e.onrender.com"
 
     private lateinit var status: TextView
     private lateinit var usernameInput: EditText
@@ -37,7 +36,7 @@ class AdminGateActivity : Activity() {
         }
         loginButton = Button(this).apply { text = "Entrar" }
         status = TextView(this).apply {
-            text = "Phygital Bot ${BuildConfig.VERSION_NAME}\nServidor: $serverLabel"
+            text = "Phygital Bot ${BuildConfig.VERSION_NAME}"
             setPadding(0, 16, 0, 0)
         }
 
@@ -59,7 +58,7 @@ class AdminGateActivity : Activity() {
             val user = usernameInput.text.toString().trim()
             val pass = passwordInput.text.toString()
             if (user.isBlank() || pass.isBlank()) {
-                status.text = "Escribe usuario y contraseña.\nServidor: $serverLabel"
+                status.text = "Escribe usuario y contraseña."
             } else {
                 login(user, pass)
             }
@@ -77,7 +76,7 @@ class AdminGateActivity : Activity() {
         loginButton.isEnabled = false
         usernameInput.isEnabled = false
         passwordInput.isEnabled = false
-        status.text = "Iniciando sesión...\nServidor: $serverLabel\nEndpoint: /api/auth/login"
+        status.text = "Iniciando sesión..."
 
         Thread {
             try {
@@ -106,7 +105,7 @@ class AdminGateActivity : Activity() {
                     loginButton.isEnabled = true
                     usernameInput.isEnabled = true
                     passwordInput.isEnabled = true
-                    status.text = "No se pudo iniciar sesión.\nVersión: ${BuildConfig.VERSION_NAME}\nServidor: $serverLabel\nDetalle: ${e.message}"
+                    status.text = "No se pudo iniciar sesión.\nVersión: ${BuildConfig.VERSION_NAME}\nDetalle: ${e.message}"
                 }
             }
         }.start()

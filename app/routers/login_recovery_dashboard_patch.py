@@ -4,12 +4,13 @@ from fastapi.responses import HTMLResponse, Response
 from .report_download_dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-login-recovery'])
-UI_VERSION = '2026.09.02-45'
+UI_VERSION = '2026.09.02-46'
 
 
 def _html() -> str:
     html = base_html()
     for old in (
+        '2026.09.02-45',
         '2026.09.02-44',
         '2026.08.31-43',
         '2026.08.31-42',

@@ -10,12 +10,12 @@ class BridgeBootReceiver : BroadcastReceiver() {
         val action = intent?.action ?: return
         if (action != Intent.ACTION_BOOT_COMPLETED &&
             action != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
-            action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+            action != Intent.ACTION_MY_PACKAGE_REPLACED &&
+            action != Intent.ACTION_USER_UNLOCKED) return
 
-        val token = context.getSharedPreferences("phygital_session", Context.MODE_PRIVATE)
-            .getString("token", null)
-        if (token.isNullOrBlank()) return
-
+        // El keep-alive no necesita esperar a que la actividad esté abierta. Se inicia
+        // incluso antes de recuperar la sesión para mantener enlazado el listener de
+        // notificaciones cuando el teléfono esté bloqueado.
         val service = Intent(context, BridgeKeepAliveService::class.java)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(service)

@@ -7,11 +7,11 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user, require_admin
+from ..auth import get_current_user, require_admin, require_operator
 from ..database import get_db
 from ..models import AuditLog, Company, Conversation, Message, Store, SupportEmailRecipient, SupportTicket, User
 from ..services.coppel_tree import coppel_decision_tree
-from ..services.ticketing import ticket_dict
+from ..services.ticketing import add_ticket_followup, ticket_code, ticket_dict, ticket_tracking
 
 router = APIRouter(prefix='/api', tags=['tickets-reports'])
 
@@ -21,11 +21,22 @@ class EmailRecipientCreate(BaseModel):
     email: str = Field(min_length=5, max_length=254)
 
 
+class TicketFollowupCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    status_label: str = Field(default='En atención', min_length=1, max_length=80)
+
+
 def _company(company_key: str, db: Session) -> Company:
     company = db.query(Company).filter(Company.company_key == company_key).first()
     if not company:
         raise HTTPException(status_code=404, detail='Empresa no encontrada')
     return company
+
+
+def _ticket_context(ticket: SupportTicket, db: Session):
+    company = db.get(Company, ticket.company_id)
+    store = db.get(Store, ticket.store_id) if ticket.store_id else None
+    return company, store
 
 
 @router.post('/empresas/{company_key}/plantilla-coppel')
@@ -94,7 +105,35 @@ def list_tickets(company_id: int | None = Query(default=None), status: str | Non
     rows = query.order_by(SupportTicket.opened_at.desc()).limit(500).all()
     companies = {c.id: c for c in db.query(Company).all()}
     stores = {s.id: s for s in db.query(Store).all()}
-    return [ticket_dict(t, companies.get(t.company_id), stores.get(t.store_id)) for t in rows]
+    return [ticket_dict(t, companies.get(t.company_id), stores.get(t.store_id), db=db) for t in rows]
+
+
+@router.get('/tickets/{ticket_id}')
+def get_ticket(ticket_id: int, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    ticket = db.get(SupportTicket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail='Ticket no encontrado')
+    company, store = _ticket_context(ticket, db)
+    return ticket_dict(ticket, company, store, db=db)
+
+
+@router.post('/tickets/{ticket_id}/seguimiento')
+def add_followup(ticket_id: int, data: TicketFollowupCreate, operator: User = Depends(require_operator), db: Session = Depends(get_db)):
+    ticket = db.get(SupportTicket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail='Ticket no encontrado')
+    add_ticket_followup(db, ticket=ticket, username=operator.username, message=data.message, status_label=data.status_label)
+    db.commit()
+    company, store = _ticket_context(ticket, db)
+    return ticket_dict(ticket, company, store, db=db)
+
+
+@router.get('/tickets/{ticket_id}/seguimiento')
+def get_followup(ticket_id: int, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    ticket = db.get(SupportTicket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail='Ticket no encontrado')
+    return ticket_tracking(db, ticket)
 
 
 @router.get('/tickets/{ticket_id}/reporte.csv')
@@ -106,12 +145,16 @@ def ticket_report(ticket_id: int, _: User = Depends(get_current_user), db: Sessi
     store = db.get(Store, ticket.store_id) if ticket.store_id else None
     conversation = db.get(Conversation, ticket.conversation_id)
     messages = db.query(Message).filter(Message.conversation_id == ticket.conversation_id).order_by(Message.created_at.asc()).all()
+    code = ticket_code(ticket, company, store)
+    tracking = ticket_tracking(db, ticket)
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(['ticket', f'TKT-{ticket.id:06d}'])
+    writer.writerow(['ticket', code])
     writer.writerow(['empresa', company.name if company else ''])
     writer.writerow(['tienda', store.name if store else 'Tienda sin identificar'])
     writer.writerow(['estado', ticket.status])
+    writer.writerow(['seguimiento', tracking['status_label']])
+    writer.writerow(['mensaje_seguimiento', tracking['message']])
     writer.writerow(['contacto', conversation.wa_user_id if conversation else ''])
     writer.writerow(['abierto', ticket.opened_at.isoformat() if ticket.opened_at else ''])
     writer.writerow(['cerrado', ticket.closed_at.isoformat() if ticket.closed_at else ''])
@@ -122,7 +165,7 @@ def ticket_report(ticket_id: int, _: User = Depends(get_current_user), db: Sessi
     for msg in messages:
         writer.writerow([msg.created_at.isoformat() if msg.created_at else '', msg.direction, msg.sender or '', msg.body])
     data = out.getvalue().encode('utf-8-sig')
-    return Response(data, media_type='text/csv; charset=utf-8', headers={'Content-Disposition': f'attachment; filename="TKT-{ticket.id:06d}.csv"'})
+    return Response(data, media_type='text/csv; charset=utf-8', headers={'Content-Disposition': f'attachment; filename="{code}.csv"'})
 
 
 @router.get('/reportes/resumen')

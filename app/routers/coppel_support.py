@@ -8,8 +8,8 @@ from ..services.company_routing import normalize
 from ..services.coppel_tree import coppel_decision_tree
 
 router = APIRouter(prefix='/api/empresas', tags=['coppel-support'])
-COPPEL_TEMPLATE_MARKER = 'coppel_support_tree_v3_applied'
-COPPEL_TEMPLATE_VERSION = 3
+COPPEL_TEMPLATE_MARKER = 'coppel_support_tree_v4_applied'
+COPPEL_TEMPLATE_VERSION = 4
 COPPEL_DEFAULT_KEY = 'coppel'
 COPPEL_DEFAULT_NAME = 'Coppel'
 
@@ -39,17 +39,13 @@ def _ensure_coppel_company(db: Session) -> tuple[Company, bool]:
         action='crear_empresa_coppel_automatica',
         entity='company',
         entity_id=str(company.id),
-        details={'company_key': company.company_key, 'template': 'coppel_support_v3'},
+        details={'company_key': company.company_key, 'template': 'coppel_support_v4'},
     ))
     return company, True
 
 
 def ensure_coppel_template(db: Session) -> bool:
-    """Ensure Coppel exists and receives the current support tree once.
-
-    Existing Coppel companies are not overwritten again after this template
-    version has been applied, so later dashboard edits remain intact.
-    """
+    """Ensure Coppel exists and receives this template version once."""
     marker = db.get(GlobalSetting, COPPEL_TEMPLATE_MARKER)
     marker_value = marker.value if marker and isinstance(marker.value, dict) else {}
     applied_ids = {int(value) for value in marker_value.get('company_ids', []) if str(value).isdigit()}
@@ -71,7 +67,7 @@ def ensure_coppel_template(db: Session) -> bool:
             action='aplicar_plantilla_coppel_automatica',
             entity='company',
             entity_id=str(company.id),
-            details={'company_key': company.company_key, 'template': 'coppel_support_v3'},
+            details={'company_key': company.company_key, 'template': 'coppel_support_v4'},
         ))
 
     if coppel_company.id not in applied_ids:
@@ -103,6 +99,6 @@ def apply_coppel_template(
     if not company:
         raise HTTPException(status_code=404, detail='Empresa no encontrada')
     company.decision_tree = coppel_decision_tree()
-    db.add(AuditLog(username=admin.username, action='aplicar_plantilla_coppel', entity='company', entity_id=company_key, details={'template': 'coppel_support_v3'}))
+    db.add(AuditLog(username=admin.username, action='aplicar_plantilla_coppel', entity='company', entity_id=company_key, details={'template': 'coppel_support_v4'}))
     db.commit()
     return {'status': 'ok', 'structure': company.decision_tree}

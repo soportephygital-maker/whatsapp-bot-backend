@@ -4,12 +4,12 @@ from fastapi.responses import HTMLResponse, Response
 from .operations_dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-report-downloads'])
-UI_VERSION = '2026.08.28-37'
+UI_VERSION = '2026.09.02-49'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.08.28-36', '2026.08.28-35'):
+    for old in ('2026.08.28-37', '2026.08.28-36', '2026.08.28-35'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     return html
@@ -37,6 +37,41 @@ reportsView=async function(){
         document.querySelectorAll('.ticketReport').forEach(b=>b.onclick=()=>downloadAuthenticatedText('/api/tickets/'+b.dataset.ticket+'/reporte.csv',(b.dataset.code||'ticket')+'.csv'));
     }catch(x){err(x.message)}
 };
+
+/* Restaurar borrado de conversaciones sin reescribir las vistas actuales. */
+async function forgetConversationFromUi(id){
+    if(!confirm('¿Eliminar esta conversación definitivamente? También se eliminarán sus mensajes y solicitudes relacionadas.'))return;
+    try{
+        await api('/api/conversaciones/'+id+'/olvidar',{method:'DELETE'});
+        if(typeof invalidateUiCache==='function'){
+            invalidateUiCache('/api/conversaciones');
+            invalidateUiCache('/api/tickets');
+        }
+        err('Conversación eliminada.');
+        if(typeof conv==='function')await conv(typeof currentCompanyId==='function'?currentCompanyId():null);
+    }catch(x){err(x.message)}
+}
+function installConversationDeleteButtons(){
+    const host=$('content');if(!host)return;
+    host.querySelectorAll('[data-conv]').forEach(row=>{
+        const id=Number(row.dataset.conv);if(!id||row.querySelector('.delete-conversation'))return;
+        const b=document.createElement('button');b.className='delete-conversation danger';b.textContent='Eliminar conversación';b.style.width='auto';
+        b.onclick=e=>{e.stopPropagation();forgetConversationFromUi(id)};
+        const toolbar=row.querySelector('.toolbar');if(toolbar)toolbar.appendChild(b);else row.appendChild(b);
+    });
+    if(typeof LIVE_CHAT_ID!=='undefined'&&LIVE_CHAT_ID&&!host.querySelector('#deleteCurrentConversation')){
+        const back=host.querySelector('#backChats');if(back){
+            const b=document.createElement('button');b.id='deleteCurrentConversation';b.className='danger';b.textContent='Eliminar conversación';b.style.width='auto';b.style.marginLeft='8px';
+            b.onclick=()=>forgetConversationFromUi(Number(LIVE_CHAT_ID));back.insertAdjacentElement('afterend',b);
+        }
+    }
+}
+let DELETE_BUTTON_TIMER=null;
+function scheduleConversationDeleteButtons(){clearTimeout(DELETE_BUTTON_TIMER);DELETE_BUTTON_TIMER=setTimeout(installConversationDeleteButtons,40)}
+document.addEventListener('DOMContentLoaded',()=>{
+    const host=$('content');if(host)new MutationObserver(scheduleConversationDeleteButtons).observe(host,{childList:true,subtree:true});
+    scheduleConversationDeleteButtons();
+});
 '''
     js = js.replace("document.addEventListener('DOMContentLoaded'", patch + "\ndocument.addEventListener('DOMContentLoaded'", 1)
     return js
@@ -49,4 +84,4 @@ def dashboard_report_downloads():
 
 @router.get('/dashboard.js')
 def dashboard_report_downloads_js():
-    return Response(_js(), media_type='application/javascript', headers={'Cache-Control': 'no-store'})
+    return Response(_js(), media_type='application/javascript', headers={'Cache-Control': 'public, max-age=31536000, immutable'})

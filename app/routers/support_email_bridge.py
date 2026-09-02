@@ -38,19 +38,49 @@ def support_people_emails(company_key: str, _: User = Depends(get_current_user),
     recipients = db.query(SupportEmailRecipient).filter(
         SupportEmailRecipient.company_id == company.id,
         SupportEmailRecipient.is_active.is_(True),
-    ).all()
+    ).order_by(SupportEmailRecipient.name.asc()).all()
+
     by_name = {r.name.strip().lower(): r for r in recipients}
-    return [
-        {
+    linked_names = set()
+    rows = []
+
+    for row in contacts:
+        key = row.name.strip().lower()
+        recipient = by_name.get(key)
+        if recipient:
+            linked_names.add(key)
+        rows.append({
             'support_id': row.id,
+            'recipient_id': recipient.id if recipient else None,
             'name': row.name,
             'phone': row.phone,
             'role': row.role,
             'priority': row.priority,
-            'email': by_name.get(row.name.strip().lower()).email if by_name.get(row.name.strip().lower()) else '',
-        }
-        for row in contacts
-    ]
+            'email': recipient.email if recipient else '',
+            'linked': bool(recipient),
+            'source': 'support_contact',
+        })
+
+    # Los correos creados anteriormente en "Correos para incidencias" también son
+    # destinatarios reales de soporte. Mostrarlos en la misma vista evita dos listas
+    # aparentemente desconectadas aunque todavía no tengan teléfono/contacto asociado.
+    for recipient in recipients:
+        key = recipient.name.strip().lower()
+        if key in linked_names:
+            continue
+        rows.append({
+            'support_id': None,
+            'recipient_id': recipient.id,
+            'name': recipient.name,
+            'phone': '',
+            'role': 'email',
+            'priority': 999,
+            'email': recipient.email,
+            'linked': True,
+            'source': 'incident_email',
+        })
+
+    return rows
 
 
 @router.put('/{company_key}/personal-soporte-correos/{support_id}')

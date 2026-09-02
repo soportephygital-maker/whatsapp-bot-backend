@@ -36,6 +36,7 @@ class Settings:
     smtp_from_email: str = os.getenv('SMTP_FROM_EMAIL', '')
     smtp_from_name: str = os.getenv('SMTP_FROM_NAME', 'Phygital Bot')
     smtp_use_tls: bool = _env_bool('SMTP_USE_TLS', True)
+    smtp_use_ssl: bool = _env_bool('SMTP_USE_SSL', False)
     allowed_origins: tuple[str, ...] = tuple(
         x.strip() for x in os.getenv('ALLOWED_ORIGINS', '*').split(',') if x.strip()
     ) or ('*',)

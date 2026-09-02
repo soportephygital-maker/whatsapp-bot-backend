@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: android-local-bridge-apk
+  group: android-local-whatsapp-bridge-apk
   cancel-in-progress: true
 
 jobs:
@@ -106,6 +106,6 @@ jobs:
             version_code=${{ env.VERSION_CODE }}
             version_name=${{ env.VERSION_NAME }}
             transport=android_notification
-            message=Versión 0.6.9: inicia el puente de segundo plano al recuperar o crear sesión y usa el flujo general del servidor antes de entrar a IQOS o Coppel cuando la empresa aún no está identificada.
+            message=Versión 0.6.17: mantiene el puente de WhatsApp activo con la pantalla bloqueada, refuerza el foreground service y el wake lock, y vuelve a enlazar el listener después de reinicios o actualizaciones.
           files: phygital-bot-latest.apk
           make_latest: true

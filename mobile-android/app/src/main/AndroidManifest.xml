@@ -29,7 +29,8 @@
             android:name=".LocalWhatsAppBridgeService"
             android:label="Phygital Bot - acceso a WhatsApp"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-            android:exported="true">
+            android:exported="true"
+            android:directBootAware="true">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
@@ -38,6 +39,7 @@
         <service
             android:name=".BridgeKeepAliveService"
             android:exported="false"
+            android:directBootAware="true"
             android:foregroundServiceType="specialUse"
             android:stopWithTask="false">
             <property
@@ -48,9 +50,12 @@
         <receiver
             android:name=".BridgeBootReceiver"
             android:enabled="true"
-            android:exported="true">
+            android:exported="true"
+            android:directBootAware="true">
             <intent-filter>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.USER_UNLOCKED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>

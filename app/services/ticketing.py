@@ -35,13 +35,6 @@ def _store_ticket_code(store: Store | None) -> str:
 
 
 def ticket_code(ticket: SupportTicket, company: Company | None = None, store: Store | None = None) -> str:
-    """Public ticket identifier.
-
-    Format requested for operations:
-    EDM-(CPP|PMI)-(YYYYMMDD)-(# tienda)-(# consulta)
-    The ticket database id is used as the consultation number so the code is
-    deterministic and remains unique without adding a migration-only column.
-    """
     opened = ticket.opened_at or datetime.utcnow()
     return f'EDM-{_company_ticket_code(company)}-{opened:%Y%m%d}-{_store_ticket_code(store)}-{ticket.id:06d}'
 
@@ -103,9 +96,12 @@ def _send_email(subject: str, body: str, recipients: list[str]) -> tuple[bool, s
     msg['To'] = ', '.join(recipients)
     msg.set_content(body)
     try:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
-            if settings.smtp_use_tls:
+        smtp_class = smtplib.SMTP_SSL if settings.smtp_use_ssl else smtplib.SMTP
+        with smtp_class(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
+            if settings.smtp_use_tls and not settings.smtp_use_ssl:
+                smtp.ehlo()
                 smtp.starttls()
+                smtp.ehlo()
             if settings.smtp_username:
                 smtp.login(settings.smtp_username, settings.smtp_password)
             smtp.send_message(msg)

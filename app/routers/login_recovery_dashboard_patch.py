@@ -4,12 +4,13 @@ from fastapi.responses import HTMLResponse, Response
 from .report_download_dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-login-recovery'])
-UI_VERSION = '2026.09.02-46'
+UI_VERSION = '2026.09.02-47'
 
 
 def _html() -> str:
     html = base_html()
     for old in (
+        '2026.09.02-46',
         '2026.09.02-45',
         '2026.09.02-44',
         '2026.08.31-43',
@@ -32,12 +33,12 @@ def _html() -> str:
         '''<style>
 /* El árbol nunca debe ensanchar el dashboard. Su lienzo se desplaza dentro de su propia zona. */
 #decisionFlow,.live-tree-wrap{width:100%!important;max-width:100%!important;min-width:0!important;overflow:auto!important;overscroll-behavior:contain;scrollbar-gutter:stable both-edges}
-.live-tree-wrap{max-height:72vh;padding:18px 12px 34px!important;border:1px solid rgba(76,182,255,.12);border-radius:14px}
-.live-tree{width:max-content!important;min-width:100%!important;max-width:none!important;margin:0 auto!important}
-#content,.card,.two,.three{min-width:0}
+.live-tree-wrap{height:62vh;max-height:62vh;padding:18px 12px 34px!important;border:1px solid rgba(76,182,255,.12);border-radius:14px;position:relative}
+.live-tree{width:max-content!important;min-width:100%!important;max-width:none!important;margin:0!important;text-align:center}
+#content,.card,.two,.three{min-width:0;max-width:100%}
 .ticket-status-card{border:1px solid rgba(121,240,179,.28);border-radius:12px;padding:10px 12px;margin:9px 0;background:rgba(10,35,31,.35)}
 .ticket-status-open{color:#ffd08a}.ticket-status-closed{color:#79f0b3}.ticket-followup{display:grid;grid-template-columns:180px 1fr auto;gap:8px;align-items:center}.ticket-followup button{width:auto}.ticket-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all}
-@media(max-width:800px){.ticket-followup{grid-template-columns:1fr}.live-tree-wrap{max-height:65vh}}
+@media(max-width:800px){.ticket-followup{grid-template-columns:1fr}.live-tree-wrap{height:56vh;max-height:56vh}}
 </style></head>''',
     )
     return html
@@ -65,6 +66,28 @@ async function loadMyAccess(){
 }
 const _showPermissionAware=show;
 show=async function(){await _showPermissionAware();await loadMyAccess()};
+
+/* Mantener siempre visible el nodo raíz del árbol, incluso cuando el flujo es muy ancho. */
+function centerDecisionTreeRoot(){
+    const host=$('decisionFlow');
+    if(!host)return;
+    const rootKey=treeDraft?.nodo_raiz||Object.keys(treeDraft?.nodos||{})[0];
+    const boxes=[...host.querySelectorAll('[data-flow-node]')];
+    const root=boxes.find(x=>x.dataset.flowNode===rootKey)||boxes[0];
+    if(!root)return;
+    requestAnimationFrame(()=>{
+        const left=Math.max(0,root.offsetLeft-(host.clientWidth-root.offsetWidth)/2);
+        host.scrollLeft=left;
+        host.scrollTop=Math.max(0,root.offsetTop-18);
+    });
+}
+if(typeof renderDecisionFlow==='function'){
+    const _renderDecisionFlowViewport=renderDecisionFlow;
+    renderDecisionFlow=function(){
+        _renderDecisionFlowViewport();
+        centerDecisionTreeRoot();
+    };
+}
 
 function ticketStateHtml(t){
     if(!t)return '<div class="muted">Ticket en preparación.</div>';

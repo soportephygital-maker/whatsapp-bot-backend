@@ -1,3 +1,4 @@
+import re
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -10,8 +11,80 @@ from ..models import AuditLog, Company, Conversation, Store, SupportEmailRecipie
 from .notifications import emit_notification
 
 
-def _ticket_code(ticket: SupportTicket) -> str:
-    return f'TKT-{ticket.id:06d}'
+def _company_ticket_code(company: Company | None) -> str:
+    if not company:
+        return 'EDM'
+    text = f'{company.company_key} {company.name}'.lower()
+    if 'coppel' in text or 'cpp' in text:
+        return 'CPP'
+    if 'iqos' in text or 'pmi' in text or 'philip morris' in text:
+        return 'PMI'
+    clean = re.sub(r'[^A-Z0-9]', '', (company.company_key or company.name or 'EDM').upper())
+    return (clean[:3] or 'EDM')
+
+
+def _store_ticket_code(store: Store | None) -> str:
+    if not store:
+        return 'SIN-TIENDA'
+    digits = re.findall(r'\d+', store.name or '')
+    if digits:
+        return digits[0]
+    clean = re.sub(r'[^A-Z0-9]', '-', (store.name or '').upper()).strip('-')
+    clean = re.sub(r'-+', '-', clean)
+    return clean[:18] or 'SIN-TIENDA'
+
+
+def ticket_code(ticket: SupportTicket, company: Company | None = None, store: Store | None = None) -> str:
+    """Public ticket identifier.
+
+    Format requested for operations:
+    EDM-(CPP|PMI)-(YYYYMMDD)-(# tienda)-(# consulta)
+    The ticket database id is used as the consultation number so the code is
+    deterministic and remains unique without adding a migration-only column.
+    """
+    opened = ticket.opened_at or datetime.utcnow()
+    return f'EDM-{_company_ticket_code(company)}-{opened:%Y%m%d}-{_store_ticket_code(store)}-{ticket.id:06d}'
+
+
+def _ticket_code(ticket: SupportTicket, company: Company | None = None, store: Store | None = None) -> str:
+    return ticket_code(ticket, company, store)
+
+
+def ticket_tracking(db: Session, ticket: SupportTicket) -> dict:
+    rows = db.query(AuditLog).filter(
+        AuditLog.entity == 'support_ticket',
+        AuditLog.entity_id == str(ticket.id),
+        AuditLog.action == 'ticket_followup',
+    ).order_by(AuditLog.id.desc()).limit(1).all()
+    latest = rows[0] if rows else None
+    details = latest.details if latest and isinstance(latest.details, dict) else {}
+    if ticket.status == 'closed':
+        default_status = 'Cerrado'
+        default_message = 'La atención de este ticket fue cerrada. Si el problema continúa, indícalo para retomar la revisión.'
+    else:
+        default_status = 'En atención'
+        default_message = 'Tu caso está siendo atendido por nuestro equipo. Puedes consultar este ticket nuevamente para conocer cualquier actualización.'
+    return {
+        'status_label': str(details.get('status_label') or default_status),
+        'message': str(details.get('message') or default_message),
+        'updated_at': latest.created_at if latest else (ticket.closed_at or ticket.opened_at),
+        'updated_by': latest.username if latest else None,
+    }
+
+
+def add_ticket_followup(db: Session, *, ticket: SupportTicket, username: str, message: str, status_label: str = 'En atención') -> AuditLog:
+    row = AuditLog(
+        username=username,
+        action='ticket_followup',
+        entity='support_ticket',
+        entity_id=str(ticket.id),
+        details={
+            'status_label': (status_label or 'En atención')[:80],
+            'message': message.strip()[:2000],
+        },
+    )
+    db.add(row)
+    return row
 
 
 def _smtp_ready() -> bool:
@@ -50,7 +123,7 @@ def _recipient_emails(db: Session, company_id: int) -> list[str]:
 
 
 def _ticket_message(ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation, event: str) -> tuple[str, str]:
-    code = _ticket_code(ticket)
+    code = ticket_code(ticket, company, store)
     store_name = store.name if store else 'Tienda sin identificar'
     if event == 'closed':
         subject = f'[{code}] Caso cerrado - {company.name} / {store_name}'
@@ -70,7 +143,7 @@ def _ticket_message(ticket: SupportTicket, company: Company, store: Store | None
 
 
 def notify_ticket(db: Session, ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation, event: str) -> None:
-    code = _ticket_code(ticket)
+    code = ticket_code(ticket, company, store)
     store_name = store.name if store else 'Tienda sin identificar'
     if event == 'closed':
         title = f'{code} cerrado - {store_name}'
@@ -121,6 +194,8 @@ def ensure_ticket(db: Session, *, company: Company, store: Store | None, convers
             ticket.close_result = None
             ticket.description = description[:4000]
             notify_ticket(db, ticket, company, store, conversation, 'opened')
+        if store and ticket.store_id != store.id:
+            ticket.store_id = store.id
         return ticket
     ticket = SupportTicket(
         company_id=company.id,
@@ -157,10 +232,10 @@ def close_ticket(db: Session, *, conversation: Conversation, username: str, resu
     return ticket
 
 
-def ticket_dict(ticket: SupportTicket, company: Company | None, store: Store | None) -> dict:
-    return {
+def ticket_dict(ticket: SupportTicket, company: Company | None, store: Store | None, db: Session | None = None) -> dict:
+    data = {
         'id': ticket.id,
-        'code': _ticket_code(ticket),
+        'code': ticket_code(ticket, company, store),
         'company_id': ticket.company_id,
         'company_name': company.name if company else 'Sin empresa',
         'store_id': ticket.store_id,
@@ -174,3 +249,6 @@ def ticket_dict(ticket: SupportTicket, company: Company | None, store: Store | N
         'closed_by': ticket.closed_by,
         'close_result': ticket.close_result,
     }
+    if db is not None:
+        data['tracking'] = ticket_tracking(db, ticket)
+    return data

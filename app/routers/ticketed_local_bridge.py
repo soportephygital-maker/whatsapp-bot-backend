@@ -109,6 +109,13 @@ def ticketed_local_inbound(data: local_bridge.LocalInbound, operator: User = Dep
     if not conversation or not conversation.company_id:
         return result
 
+    # Invariantes de atención humana: mientras el caso esté en pausa humana el bot
+    # no modifica, sustituye ni genera ninguna respuesta, ni siquiera estado de ticket.
+    if result.get('status') == 'human_support_paused' or conversation.status in ('help_pending', 'human_active'):
+        result['should_reply'] = False
+        result['reply_text'] = ''
+        return result
+
     channel = db.query(ConversationChannel).filter(ConversationChannel.conversation_id == conversation.id).first()
     routing = result.get('routing') or {}
     if not routing.get('matched'):
@@ -144,14 +151,11 @@ def ticketed_local_inbound(data: local_bridge.LocalInbound, operator: User = Dep
     elif routing.get('matched'):
         result['company_identified'] = True
 
-    # Once the company is identified, every support conversation owns a ticket.
     ticket = ensure_ticket(db, company=company, store=store, conversation=conversation, description=effective_data.text)
     code = ticket_code(ticket, company, store)
     result['ticket_id'] = ticket.id
     result['ticket_code'] = code
 
-    # Ticket is only shown to the customer at explicit ticket/status steps or
-    # where the decision-tree copy intentionally contains [NUMERO_TICKET].
     current_reply = str(result.get('reply_text') or '')
     outbound_id = result.get('outbound_message_id')
     outbound = db.get(Message, outbound_id) if outbound_id else None

@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 
@@ -23,11 +24,14 @@ class BridgeKeepAliveService : Service() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    private var persistentWakeLock: PowerManager.WakeLock? = null
+
     private val heartbeat = object : Runnable {
         override fun run() {
             markAlive(true)
+            ensureWakeLock()
             requestListenerRebind()
-            handler.postDelayed(this, 60_000L)
+            handler.postDelayed(this, 20_000L)
         }
     }
 
@@ -35,24 +39,54 @@ class BridgeKeepAliveService : Service() {
         super.onCreate()
         createChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
+        ensureWakeLock()
         markAlive(true)
         requestListenerRebind()
-        handler.postDelayed(heartbeat, 60_000L)
+        handler.postDelayed(heartbeat, 20_000L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        ensureWakeLock()
         markAlive(true)
         requestListenerRebind()
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // El servicio es independiente de la actividad. Mantener el listener enlazado
+        // aunque el usuario quite la app de recientes o la pantalla esté bloqueada.
+        ensureWakeLock()
+        requestListenerRebind()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        try {
+            if (persistentWakeLock?.isHeld == true) persistentWakeLock?.release()
+        } catch (_: Exception) {
+        }
+        persistentWakeLock = null
         markAlive(false)
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun ensureWakeLock() {
+        try {
+            if (persistentWakeLock?.isHeld == true) return
+            val power = getSystemService(PowerManager::class.java) ?: return
+            persistentWakeLock = power.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "PhygitalBot:BridgeKeepAlive"
+            ).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (_: Exception) {
+        }
+    }
 
     private fun createChannel() {
         val manager = getSystemService(NotificationManager::class.java)
@@ -80,7 +114,7 @@ class BridgeKeepAliveService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
             .setContentTitle("Phygital Bot activo")
-            .setContentText("Puente de WhatsApp funcionando en segundo plano")
+            .setContentText("Puente de WhatsApp funcionando incluso con pantalla bloqueada")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(pending)

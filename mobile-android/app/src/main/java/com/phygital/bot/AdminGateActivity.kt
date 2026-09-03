@@ -49,7 +49,7 @@ class AdminGateActivity : Activity() {
         val prefs = getSharedPreferences(sessionPrefsName, MODE_PRIVATE)
         val savedToken = prefs.getString("token", null)
         if (!savedToken.isNullOrBlank()) {
-            if (isBridgeRole(prefs.getString("role", null))) startBridgeKeepAlive()
+            startBridgeKeepAlive()
             openMain()
             return
         }
@@ -67,9 +67,8 @@ class AdminGateActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        val prefs = getSharedPreferences(sessionPrefsName, MODE_PRIVATE)
-        val token = prefs.getString("token", null)
-        if (!token.isNullOrBlank() && isBridgeRole(prefs.getString("role", null))) startBridgeKeepAlive()
+        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null)
+        if (!token.isNullOrBlank()) startBridgeKeepAlive()
     }
 
     private fun login(userName: String, password: String) {
@@ -97,7 +96,7 @@ class AdminGateActivity : Activity() {
                     .apply()
 
                 runOnUiThread {
-                    if (isBridgeRole(role)) startBridgeKeepAlive()
+                    startBridgeKeepAlive()
                     openMain()
                 }
             } catch (e: Exception) {
@@ -109,11 +108,6 @@ class AdminGateActivity : Activity() {
                 }
             }
         }.start()
-    }
-
-    private fun isBridgeRole(value: String?): Boolean {
-        val normalized = value.orEmpty().trim().lowercase().replace('-', '_').replace(' ', '_')
-        return normalized in setOf("admin", "super_admin", "superadmin", "gerente", "operador")
     }
 
     private fun startBridgeKeepAlive() {

@@ -80,19 +80,44 @@ def add_ticket_followup(db: Session, *, ticket: SupportTicket, username: str, me
     return row
 
 
+def smtp_status() -> dict:
+    sender = (settings.smtp_from_email or settings.smtp_username or '').strip()
+    missing = []
+    if not settings.smtp_host:
+        missing.append('SMTP_HOST')
+    if not sender:
+        missing.append('SMTP_FROM_EMAIL/SMTP_USERNAME')
+    if settings.smtp_username and not settings.smtp_password:
+        missing.append('SMTP_PASSWORD')
+    return {
+        'ready': not missing,
+        'missing': missing,
+        'host_configured': bool(settings.smtp_host),
+        'port': settings.smtp_port,
+        'username_configured': bool(settings.smtp_username),
+        'password_configured': bool(settings.smtp_password),
+        'from_email_configured': bool(settings.smtp_from_email),
+        'sender': sender,
+        'use_tls': settings.smtp_use_tls,
+        'use_ssl': settings.smtp_use_ssl,
+    }
+
+
 def _smtp_ready() -> bool:
-    return bool(settings.smtp_host and settings.smtp_from_email)
+    return bool(smtp_status()['ready'])
 
 
 def _send_email(subject: str, body: str, recipients: list[str]) -> tuple[bool, str]:
     recipients = sorted({str(x).strip() for x in recipients if str(x).strip()})
     if not recipients:
         return False, 'sin_destinatarios'
-    if not _smtp_ready():
-        return False, 'smtp_no_configurado'
+    status = smtp_status()
+    if not status['ready']:
+        return False, 'smtp_no_configurado: faltan ' + ', '.join(status['missing'])
+    sender = status['sender']
     msg = EmailMessage()
     msg['Subject'] = subject
-    msg['From'] = formataddr((settings.smtp_from_name, settings.smtp_from_email))
+    msg['From'] = formataddr((settings.smtp_from_name, sender))
     msg['To'] = ', '.join(recipients)
     msg.set_content(body)
     try:

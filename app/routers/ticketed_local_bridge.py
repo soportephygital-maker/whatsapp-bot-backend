@@ -101,6 +101,22 @@ def _explicit_company_match(db: Session, text: str) -> tuple[Company | None, dic
     return detect_company(db, text, fallback=None)
 
 
+def _previous_explicit_company(db: Session, conversation_id: int, current_message_id: int | None) -> Company | None:
+    query = db.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.direction == 'inbound',
+    )
+    if current_message_id:
+        query = query.filter(Message.id < current_message_id)
+    rows = query.order_by(Message.id.asc()).all()
+    identified = None
+    for row in rows:
+        company, routing = _explicit_company_match(db, row.body or '')
+        if company and routing.get('matched'):
+            identified = company
+    return identified
+
+
 @router.post('/inbound')
 def ticketed_local_inbound(data: local_bridge.LocalInbound, operator: User = Depends(require_operator), db: Session = Depends(get_db)):
     effective_data = _sticky_company_input(data, db)
@@ -118,26 +134,61 @@ def ticketed_local_inbound(data: local_bridge.LocalInbound, operator: User = Dep
         result['reply_text'] = ''
         return result
 
-    inbound_count = db.query(func.count(Message.id)).filter(Message.conversation_id == conversation.id, Message.direction == 'inbound').scalar() or 0
-    is_first_message = inbound_count == 1
+    current_inbound = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.direction == 'inbound',
+    ).order_by(Message.id.desc()).first()
+    current_inbound_id = current_inbound.id if current_inbound else None
 
-    # A first contact must always begin with the intake unless the message explicitly
-    # identifies a company. Generic issue words such as etiquetas/accesorios must not
-    # skip name/store/problem collection just because they exist in a company tree.
     explicit_company, explicit_routing = _explicit_company_match(db, effective_data.text)
-    if is_first_message and not explicit_routing.get('matched'):
+    previous_company = _previous_explicit_company(db, conversation.id, current_inbound_id)
+
+    # Mientras el usuario no haya identificado explícitamente una empresa, siempre
+    # permanece en la entrada global. El fallback de tienda de la app nunca cuenta
+    # como identificación del cliente.
+    if previous_company is None and not explicit_routing.get('matched'):
         welcome = _global_welcome(db)
         if welcome:
             _replace_queued_reply(db, result, welcome, effective_data.can_reply)
-            conversation.state = local_bridge._root_state(db.get(Company, conversation.company_id).decision_tree or {})
-            result['action'] = 'global_entry'
-            result['company_identified'] = False
-            result['ticket_id'] = None
-            result['ticket_code'] = None
+        result['action'] = 'global_entry'
+        result['company_identified'] = False
+        result['ticket_id'] = None
+        result['ticket_code'] = None
         db.commit()
         return result
 
     channel = db.query(ConversationChannel).filter(ConversationChannel.conversation_id == conversation.id).first()
+
+    # En el primer mensaje que identifica una empresa, responder siempre con el saludo
+    # / nodo raíz de ESA empresa; no saltar directamente a una falla técnica aunque el
+    # mismo texto también contenga palabras como etiquetas, preciador, accesorio, etc.
+    if previous_company is None and explicit_routing.get('matched') and explicit_company:
+        conversation.company_id = explicit_company.id
+        conversation.state = local_bridge._root_state(explicit_company.decision_tree or {})
+        if channel:
+            channel.company_id = explicit_company.id
+            selected_store = _selected_context_store(effective_data, db)
+            if selected_store and selected_store.company_id == explicit_company.id:
+                channel.store_id = selected_store.id
+        company = explicit_company
+        store = db.get(Store, channel.store_id) if channel and channel.store_id else None
+        tree = company.decision_tree or {}
+        root = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
+        root_message = str((tree.get('nodos') or {}).get(root, {}).get('mensaje') or '').strip()
+        if root_message:
+            _replace_queued_reply(db, result, root_message, effective_data.can_reply)
+        result['routing'] = explicit_routing
+        result['company_key'] = company.company_key
+        result['company_name'] = company.name
+        result['company_identified'] = True
+        result['action'] = 'company_welcome'
+
+        ticket = ensure_ticket(db, company=company, store=store, conversation=conversation, description=effective_data.text)
+        result['ticket_id'] = ticket.id
+        result['ticket_code'] = ticket_code(ticket, company, store)
+        db.commit()
+        return result
+
     routing = result.get('routing') or {}
     if explicit_routing.get('matched') and explicit_company:
         if conversation.company_id != explicit_company.id:
@@ -148,6 +199,11 @@ def ticketed_local_inbound(data: local_bridge.LocalInbound, operator: User = Dep
         result['routing'] = explicit_routing
         result['company_key'] = explicit_company.company_key
         result['company_name'] = explicit_company.name
+    elif previous_company:
+        company = previous_company
+        if conversation.company_id != company.id:
+            conversation.company_id = company.id
+        store = db.get(Store, channel.store_id) if channel and channel.store_id else None
     elif not routing.get('matched'):
         company, store = _align_unmatched_conversation_context(db, data=effective_data, conversation=conversation, channel=channel, result=result)
     else:
@@ -156,17 +212,8 @@ def ticketed_local_inbound(data: local_bridge.LocalInbound, operator: User = Dep
     if not company:
         return result
 
+    result['company_identified'] = True
     action = str(result.get('action') or '')
-    tree = company.decision_tree or {}
-    root = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
-    root_message = str((tree.get('nodos') or {}).get(root, {}).get('mensaje') or '').strip()
-    if is_first_message and explicit_routing.get('matched') and action.startswith('no_match') and root_message:
-        _replace_queued_reply(db, result, root_message, effective_data.can_reply)
-        result['action'] = 'company_welcome'
-        result['company_identified'] = True
-    elif explicit_routing.get('matched'):
-        result['company_identified'] = True
-
     ticket = ensure_ticket(db, company=company, store=store, conversation=conversation, description=effective_data.text)
     code = ticket_code(ticket, company, store)
     result['ticket_id'] = ticket.id

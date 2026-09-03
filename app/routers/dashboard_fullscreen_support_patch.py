@@ -4,12 +4,12 @@ from fastapi.responses import HTMLResponse, Response
 from .login_recovery_dashboard_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-fullscreen-support'])
-UI_VERSION = '2026.09.02-52'
+UI_VERSION = '2026.09.02-53'
 
 
 def _html() -> str:
     html = base_html()
-    for old in ('2026.09.02-51','2026.09.02-50','2026.09.02-49','2026.09.02-48','2026.09.02-47','2026.09.02-46'):
+    for old in ('2026.09.02-52','2026.09.02-51','2026.09.02-50','2026.09.02-49','2026.09.02-48','2026.09.02-47','2026.09.02-46'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     html = html.replace('</style></head>', '''<style>

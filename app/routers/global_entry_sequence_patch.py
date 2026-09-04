@@ -12,7 +12,8 @@ router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-global-entry-
 
 GLOBAL_ENTRY_WAITING_STATE = '__global_entry_waiting_company__'
 GLOBAL_ENTRY_RETRY_STATE = '__global_entry_retry_company__'
-BOT_ECHO_WINDOW_SECONDS = 15
+BOT_ECHO_WINDOW_SECONDS = 30
+SELF_SENDER_LABELS = {'tu', 'you', 'me', 'yo'}
 
 
 def _safe_rapid_multi_message_state(
@@ -21,13 +22,7 @@ def _safe_rapid_multi_message_state(
     current_message_id: int,
     current_post_time: int,
 ) -> tuple[bool, bool]:
-    """Detect a real multi-message burst without blocking a normal reply to the bot.
-
-    A second inbound message is considered part of a burst only when it arrives
-    within the configured window AND the bot has not sent any outbound message
-    after the previous inbound. If the previous inbound was already marked as a
-    burst, keep suppressing additional messages in that same rapid sequence.
-    """
+    """Detect a real multi-message burst without blocking a normal reply to the bot."""
     if current_post_time <= 0:
         return False, False
 
@@ -66,8 +61,6 @@ def _safe_rapid_multi_message_state(
     return True, False
 
 
-# local_bridge.local_inbound resolves this helper at request time, so replacing it
-# here keeps the existing endpoint intact while correcting the false-positive case.
 local_bridge._rapid_multi_message_state = _safe_rapid_multi_message_state
 
 
@@ -76,35 +69,53 @@ def _active_before(db: Session, data: local_bridge.LocalInbound) -> Conversation
     return ticketed_local_bridge._active_conversation(db, local_user_id)
 
 
-def _is_recent_bot_echo(db: Session, conversation: Conversation | None, text: str) -> tuple[bool, int | None]:
-    """Detect WhatsApp notification echoes of a reply that the bot just sent.
+def _same_device(payload: dict, data: local_bridge.LocalInbound) -> bool:
+    return str(payload.get('device_id') or '') == str(data.device_id or '')
 
-    Some WhatsApp/Android combinations repost an inline RemoteInput reply as a new
-    notification. If that notification is ingested again, the bot answers itself and
-    can enter a loop. We compare the candidate against recent outbound bot messages
-    from the same conversation before the inbound is handed to the normal router.
+
+def _is_recent_bot_echo_any_conversation(
+    db: Session,
+    data: local_bridge.LocalInbound,
+) -> tuple[bool, Message | None]:
+    """Catch WhatsApp echoes even when Android reports the sender as 'Tú'.
+
+    Inline replies may be reposted by WhatsApp with a different notification title.
+    That changes the local user id, so a same-conversation echo guard is not enough.
+    We therefore compare the incoming text with recent bot output from the same
+    Android device before any conversation routing happens.
     """
-    if not conversation:
-        return False, None
-    candidate = local_bridge._normalize_text(text)
+    candidate = local_bridge._normalize_text(data.text)
     if not candidate:
         return False, None
+
     cutoff = datetime.utcnow() - timedelta(seconds=BOT_ECHO_WINDOW_SECONDS)
     rows = db.query(Message).filter(
-        Message.conversation_id == conversation.id,
         Message.direction == 'outbound',
         Message.sender == 'bot',
         Message.created_at >= cutoff,
-    ).order_by(Message.id.desc()).limit(8).all()
+    ).order_by(Message.id.desc()).limit(30).all()
+
+    sender_label = local_bridge._normalize_text(data.sender)
+    sender_is_self = sender_label in SELF_SENDER_LABELS
+
     for row in rows:
+        payload = row.raw_payload or {}
+        if not _same_device(payload, data):
+            continue
         sent = local_bridge._normalize_text(row.body or '')
         if not sent:
             continue
-        if candidate == sent:
-            return True, row.id
-        # WhatsApp may prepend/append a short label when rebuilding the notification.
-        if len(sent) >= 40 and (candidate.endswith(sent) or sent.endswith(candidate)):
-            return True, row.id
+        exact = candidate == sent
+        rebuilt = len(sent) >= 40 and (candidate.endswith(sent) or sent.endswith(candidate))
+        if exact or rebuilt:
+            return True, row
+
+    # A notification explicitly titled "Tú/You/Me" is an outgoing WhatsApp
+    # notification, not a customer message. Ignore it even if WhatsApp altered the
+    # visible body enough that exact echo comparison is no longer possible.
+    if sender_is_self:
+        return True, None
+
     return False, None
 
 
@@ -114,34 +125,27 @@ def global_entry_sequence_inbound(
     operator: User = Depends(require_operator),
     db: Session = Depends(get_db),
 ):
-    """Keep the global intake sequence stable until company/store are identified.
-
-    Sequence:
-    1. First unidentified interaction -> generic greeting.
-    2. Next unidentified reply -> unmatched-company/store guidance.
-    3. Every later unidentified reply -> keep repeating that guidance; never greet again.
-    4. Company/store identified -> continue through the normal ticketed bridge.
-    """
-    before = _active_before(db, data)
-
-    is_echo, echoed_message_id = _is_recent_bot_echo(db, before, data.text)
+    """Keep global intake stable and reject WhatsApp self-notification echoes."""
+    is_echo, echoed = _is_recent_bot_echo_any_conversation(db, data)
     if is_echo:
+        conversation_id = echoed.conversation_id if echoed else None
         db.add(AuditLog(
             username=operator.username,
             action='local_bridge_bot_echo_ignored',
-            entity='conversation',
-            entity_id=str(before.id),
+            entity='conversation' if conversation_id else 'local_bridge',
+            entity_id=str(conversation_id or data.device_id),
             details={
-                'echoed_outbound_message_id': echoed_message_id,
+                'echoed_outbound_message_id': echoed.id if echoed else None,
                 'sender': data.sender,
                 'package': data.package_name,
+                'device_id': data.device_id,
                 'window_seconds': BOT_ECHO_WINDOW_SECONDS,
             },
         ))
         db.commit()
         return {
             'status': 'duplicate',
-            'conversation_id': before.id,
+            'conversation_id': conversation_id,
             'action': 'bot_echo_ignored',
             'reply_text': '',
             'should_reply': False,
@@ -149,6 +153,7 @@ def global_entry_sequence_inbound(
             'chatbot_paused': False,
         }
 
+    before = _active_before(db, data)
     previous_state = before.state if before else None
     already_greeted = previous_state in {GLOBAL_ENTRY_WAITING_STATE, GLOBAL_ENTRY_RETRY_STATE}
 
@@ -156,8 +161,6 @@ def global_entry_sequence_inbound(
     if not isinstance(result, dict):
         return result
 
-    # Never interfere with duplicate suppression, ignored groups, known support
-    # contacts, or the mandatory silence while a human operator owns the chat.
     if result.get('status') in {'duplicate', 'ignored_group', 'known_support_skipped', 'human_support_paused'}:
         return result
     if result.get('chatbot_paused') or result.get('action') in {'multi_message_warning', 'multi_message_burst_suppressed'}:
@@ -181,9 +184,6 @@ def global_entry_sequence_inbound(
         stores = ticketed_local_bridge._selected_company_stores(data, company.id, db)
         store = stores[0] if stores else None
 
-    # Once the greeting has been sent, every unidentified response must use the
-    # configured retry message. We keep a dedicated retry state so the bot cannot
-    # fall back to the greeting again on the third, fourth, etc. attempt.
     retry = already_greeted
     message = ticketed_local_bridge._global_welcome(db, retry=retry)
     if message:

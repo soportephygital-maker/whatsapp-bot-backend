@@ -61,6 +61,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         if (text.isBlank()) return
         if (looksLikeGroup(notification, title)) return
         if (isSavedContact(title)) return
+        if (isSelfAuthoredNotification(title, extras)) return
 
         if (isRecentBotReply(sbn.packageName, text)) return
         if (isRapidDuplicate(sbn.packageName, title, text)) return
@@ -111,6 +112,21 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                 }
             }
         }.start()
+    }
+
+    private fun isSelfAuthoredNotification(title: String, extras: android.os.Bundle): Boolean {
+        val normalizedTitle = normalizeName(title)
+        if (normalizedTitle in setOf("tu", "tú", "you", "me", "yo")) return true
+
+        val people = extras.getParcelableArray(Notification.EXTRA_PEOPLE_LIST)
+        if (!people.isNullOrEmpty()) {
+            people.forEach { item ->
+                val bundle = item as? android.os.Bundle ?: return@forEach
+                val name = normalizeName(bundle.getCharSequence("name")?.toString().orEmpty())
+                if (name in setOf("tu", "tú", "you", "me", "yo")) return true
+            }
+        }
+        return false
     }
 
     private fun withWakeLock(tag: String, timeoutMs: Long, block: () -> Unit) {
@@ -231,9 +247,6 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         if (age !in 0..30_000) return false
         val candidate = normalizedMessage(text)
         if (candidate == sentText) return true
-        // WhatsApp can update one notification with the previous customer text
-        // plus the inline reply sent by this app. That accumulated notification
-        // is not a new customer message and must never be reinjected as inbound.
         return sentText.length >= 12 && candidate.contains(sentText)
     }
 
@@ -245,7 +258,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val previous = prefs.getString(key, null)
         val previousAt = prefs.getLong(timeKey, 0L)
         val now = System.currentTimeMillis()
-        if (previous == fingerprint && now - previousAt in 0..5_000) return true
+        if (previous == fingerprint && now - previousAt in 0..10_000) return true
         prefs.edit().putString(key, fingerprint).putLong(timeKey, now).apply()
         return false
     }

@@ -3,13 +3,69 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_operator
 from ..database import get_db
-from ..models import Company, Conversation, Store, User
+from ..models import Company, Conversation, Message, Store, User
 from . import local_bridge, ticketed_local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-global-entry-sequence'])
 
 GLOBAL_ENTRY_WAITING_STATE = '__global_entry_waiting_company__'
 GLOBAL_ENTRY_RETRY_STATE = '__global_entry_retry_company__'
+
+
+def _safe_rapid_multi_message_state(
+    db: Session,
+    conversation_id: int,
+    current_message_id: int,
+    current_post_time: int,
+) -> tuple[bool, bool]:
+    """Detect a real multi-message burst without blocking a normal reply to the bot.
+
+    A second inbound message is considered part of a burst only when it arrives
+    within the configured window AND the bot has not sent any outbound message
+    after the previous inbound. If the previous inbound was already marked as a
+    burst, keep suppressing additional messages in that same rapid sequence.
+    """
+    if current_post_time <= 0:
+        return False, False
+
+    previous = db.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.direction == 'inbound',
+        Message.id < current_message_id,
+    ).order_by(Message.id.desc()).first()
+    if not previous:
+        return False, False
+
+    payload = previous.raw_payload or {}
+    try:
+        previous_post_time = int(payload.get('post_time') or 0)
+    except (TypeError, ValueError):
+        previous_post_time = 0
+    if previous_post_time <= 0:
+        return False, False
+
+    delta = current_post_time - previous_post_time
+    if delta < 0 or delta > local_bridge.MULTI_MESSAGE_WINDOW_MS:
+        return False, False
+
+    if payload.get('multi_message_burst'):
+        return True, True
+
+    bot_replied_between = db.query(Message.id).filter(
+        Message.conversation_id == conversation_id,
+        Message.direction == 'outbound',
+        Message.id > previous.id,
+        Message.id < current_message_id,
+    ).first() is not None
+    if bot_replied_between:
+        return False, False
+
+    return True, False
+
+
+# local_bridge.local_inbound resolves this helper at request time, so replacing it
+# here keeps the existing endpoint intact while correcting the false-positive case.
+local_bridge._rapid_multi_message_state = _safe_rapid_multi_message_state
 
 
 def _active_before(db: Session, data: local_bridge.LocalInbound) -> Conversation | None:

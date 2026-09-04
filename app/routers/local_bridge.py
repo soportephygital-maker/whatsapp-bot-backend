@@ -22,6 +22,11 @@ ALLOWED_PACKAGES = {'com.whatsapp', 'com.whatsapp.w4b'}
 DEFAULT_NO_MATCH_FIRST = 'No pude identificar una opción válida. Por favor describe nuevamente lo que necesitas o usa alguna de las opciones disponibles.'
 DEFAULT_NO_MATCH_REPEAT = 'Sigo sin poder identificar tu solicitud. Revisa las opciones disponibles o escribe humano si necesitas atención de una persona.'
 HUMAN_PAUSE_MINUTES = 60
+MULTI_MESSAGE_WINDOW_MS = 5000
+MULTI_MESSAGE_WARNING = (
+    '💬 Para poder darte una atención más clara, envía por favor un solo mensaje a la vez y espera mi respuesta antes de enviar el siguiente.\n\n'
+    'Procura que cada mensaje sea breve y concreto; así podré guiarte paso a paso sin perder información. 😊'
+)
 
 
 class LocalInbound(BaseModel):
@@ -92,6 +97,41 @@ def _previous_message_was_unmatched(db: Session, conversation_id: int, current_m
     if not row:
         return False
     return bool((row.raw_payload or {}).get('tree_unmatched'))
+
+
+def _rapid_multi_message_state(
+    db: Session,
+    conversation_id: int,
+    current_message_id: int,
+    current_post_time: int,
+) -> tuple[bool, bool]:
+    """Return (is_burst, warning_already_sent_for_burst).
+
+    WhatsApp may deliver several short messages as separate notifications. We only
+    treat them as a burst when the client timestamps are within five seconds. This
+    keeps normal menu replies working while discouraging fragmented multi-message
+    input that can advance the decision tree more than once.
+    """
+    if current_post_time <= 0:
+        return False, False
+    previous = db.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.direction == 'inbound',
+        Message.id < current_message_id,
+    ).order_by(Message.id.desc()).first()
+    if not previous:
+        return False, False
+    payload = previous.raw_payload or {}
+    try:
+        previous_post_time = int(payload.get('post_time') or 0)
+    except (TypeError, ValueError):
+        previous_post_time = 0
+    if previous_post_time <= 0:
+        return False, False
+    delta = current_post_time - previous_post_time
+    if delta < 0 or delta > MULTI_MESSAGE_WINDOW_MS:
+        return False, False
+    return True, bool(payload.get('multi_message_burst'))
 
 
 def _human_pause_deadline(db: Session, conversation_id: int) -> tuple[HelpRequest | None, datetime | None]:
@@ -267,6 +307,58 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         conversation.status = 'open'
         conversation.state = root_state
         db.add(AuditLog(username=operator.username, action='chatbot_auto_resumed_after_human_timeout', entity='conversation', entity_id=str(conversation.id), details={'help_request_id': request_row.id if request_row else None, 'pause_minutes': HUMAN_PAUSE_MINUTES}))
+
+    is_burst, warning_already_sent = _rapid_multi_message_state(
+        db,
+        conversation.id,
+        inbound_message.id,
+        data.post_time,
+    )
+    if is_burst:
+        inbound_payload['multi_message_burst'] = True
+        inbound_payload['multi_message_warning_sent'] = not warning_already_sent
+        inbound_message.raw_payload = dict(inbound_payload)
+        db.add(AuditLog(
+            username=operator.username,
+            action='local_bridge_multi_message_burst',
+            entity='conversation',
+            entity_id=str(conversation.id),
+            details={'sender': data.sender, 'warning_sent': not warning_already_sent, 'window_ms': MULTI_MESSAGE_WINDOW_MS},
+        ))
+        if warning_already_sent:
+            db.commit()
+            return {
+                'status': 'duplicate',
+                'conversation_id': conversation.id,
+                'company_key': company.company_key,
+                'company_name': company.name,
+                'store_name': store.name,
+                'routing': routing,
+                'action': 'multi_message_burst_suppressed',
+                'reply_text': '',
+                'should_reply': False,
+                'outbound_message_id': None,
+                'chatbot_paused': False,
+            }
+        outbound = _queue_outbound(db, conversation=conversation, text=MULTI_MESSAGE_WARNING, data=data, company=company, store=store)
+        if not data.can_reply:
+            payload = dict(outbound.raw_payload or {})
+            payload['delivery_status'] = 'not_reply_capable'
+            outbound.raw_payload = payload
+        db.commit()
+        return {
+            'status': 'duplicate',
+            'conversation_id': conversation.id,
+            'company_key': company.company_key,
+            'company_name': company.name,
+            'store_name': store.name,
+            'routing': routing,
+            'action': 'multi_message_warning',
+            'reply_text': MULTI_MESSAGE_WARNING if data.can_reply else '',
+            'should_reply': bool(data.can_reply),
+            'outbound_message_id': outbound.id,
+            'chatbot_paused': False,
+        }
 
     matched, response_text, next_state, action = match_response_with_action(tree, conversation.state, data.text)
     matched_from_root = False

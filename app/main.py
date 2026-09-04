@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, Store
-from .routers import access_control, auth, companies, company_delete_safe, company_resources, contacts, conversation_admin, conversation_visibility_patch, coppel_support, dashboard, dashboard_fullscreen_support_patch, dashboard_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, iqos_support, local_bridge, login_recovery_dashboard_patch, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, support_email_bridge, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, tree_zoom_dashboard_patch, whatsapp
+from .routers import access_control, auth, companies, company_delete_safe, company_resources, contacts, conversation_admin, conversation_visibility_patch, coppel_support, dashboard, dashboard_fullscreen_support_patch, dashboard_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, global_entry_sequence_patch, iqos_support, local_bridge, login_recovery_dashboard_patch, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, support_email_bridge, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, tree_zoom_dashboard_patch, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -48,6 +48,10 @@ app.include_router(tree_editor_patch.router)
 app.include_router(manager_patch.router)
 app.include_router(dashboard_patch.router)
 app.include_router(dashboard_ui.router)
+# This wrapper owns /api/local-bridge/inbound so the first unidentified contact
+# always receives the greeting; the unmatched-company message is only used after
+# the greeting has already been sent and the next client response is still unclear.
+app.include_router(global_entry_sequence_patch.router)
 app.include_router(ticketed_local_bridge.router)
 app.include_router(local_bridge.router)
 app.include_router(mobile_update.router)

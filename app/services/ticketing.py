@@ -1,5 +1,6 @@
 import re
 import smtplib
+from html import escape
 from email.message import EmailMessage
 from email.utils import formataddr
 from datetime import datetime
@@ -107,7 +108,7 @@ def _smtp_ready() -> bool:
     return bool(smtp_status()['ready'])
 
 
-def _send_email(subject: str, body: str, recipients: list[str]) -> tuple[bool, str]:
+def _send_email(subject: str, body: str, recipients: list[str], html_body: str | None = None) -> tuple[bool, str]:
     recipients = sorted({str(x).strip() for x in recipients if str(x).strip()})
     if not recipients:
         return False, 'sin_destinatarios'
@@ -120,6 +121,8 @@ def _send_email(subject: str, body: str, recipients: list[str]) -> tuple[bool, s
     msg['From'] = formataddr((settings.smtp_from_name, sender))
     msg['To'] = ', '.join(recipients)
     msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype='html')
     try:
         smtp_class = smtplib.SMTP_SSL if settings.smtp_use_ssl else smtplib.SMTP
         with smtp_class(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
@@ -143,7 +146,64 @@ def _recipient_emails(db: Session, company_id: int) -> list[str]:
     return [row.email for row in rows]
 
 
-def _ticket_message(ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation, event: str) -> tuple[str, str]:
+def _ticket_email_html(ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation, event: str) -> str:
+    code = escape(ticket_code(ticket, company, store))
+    company_name = escape(company.name or 'Empresa sin identificar')
+    store_name = escape(store.name if store else 'Tienda sin identificar')
+    contact = escape(conversation.wa_user_id or 'Sin contacto')
+    description = escape(ticket.description or 'Sin descripción').replace('\n', '<br>')
+    is_closed = event == 'closed'
+    status_label = 'Cerrado' if is_closed else 'Abierto'
+    status_bg = '#dff3e4' if is_closed else '#f8dda0'
+    status_fg = '#226b3a' if is_closed else '#7a5210'
+    detail_title = 'Resultado del cierre' if is_closed else 'Descripción inicial'
+    detail_value = escape(ticket.close_result or ticket.description or 'Sin detalle').replace('\n', '<br>') if is_closed else description
+    closed_by = escape(ticket.closed_by or 'sistema') if is_closed else ''
+    extra_closed = f'''
+      <tr><td style="padding:12px 0 4px;color:#6b7280;font-size:14px;">Cerrado por</td><td style="padding:12px 0 4px;text-align:right;font-size:15px;color:#111827;font-weight:600;">{closed_by}</td></tr>
+    ''' if is_closed else ''
+    return f'''<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#f6f7f9;font-family:Arial,Helvetica,sans-serif;color:#202124;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:28px 28px 18px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                  <tr>
+                    <td>
+                      <div style="font-size:14px;color:#5f6368;margin-bottom:6px;">Ticket de soporte</div>
+                      <div style="font-size:18px;font-weight:700;color:#111827;letter-spacing:.1px;">{code}</div>
+                    </td>
+                    <td align="right" valign="top">
+                      <span style="display:inline-block;background:{status_bg};color:{status_fg};font-size:14px;font-weight:600;padding:7px 16px;border-radius:999px;">{status_label}</span>
+                    </td>
+                  </tr>
+                </table>
+                <div style="height:1px;background:#e5e7eb;margin:22px 0 10px;"></div>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                  <tr><td style="padding:10px 0;color:#6b7280;font-size:15px;">🏬&nbsp; Empresa</td><td style="padding:10px 0;text-align:right;font-size:16px;color:#111827;font-weight:600;">{company_name}</td></tr>
+                  <tr><td style="padding:10px 0;color:#6b7280;font-size:15px;">📍&nbsp; Tienda</td><td style="padding:10px 0;text-align:right;font-size:16px;color:#111827;font-weight:600;">{store_name}</td></tr>
+                  <tr><td style="padding:10px 0;color:#6b7280;font-size:15px;">☎&nbsp; Contacto</td><td style="padding:10px 0;text-align:right;font-size:16px;color:#1769aa;font-weight:600;">{contact}</td></tr>
+                  {extra_closed}
+                </table>
+                <div style="height:1px;background:#e5e7eb;margin:10px 0 18px;"></div>
+                <div style="font-size:14px;color:#5f6368;margin-bottom:8px;">{detail_title}</div>
+                <div style="font-size:16px;line-height:1.55;color:#111827;">{detail_value}</div>
+                <div style="margin-top:22px;background:#f7f7f7;border-radius:12px;padding:14px 16px;color:#5f6368;font-size:14px;line-height:1.45;">ⓘ&nbsp; Este caso puede revisarse desde el dashboard de Phygital Bot.</div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>'''
+
+
+def _ticket_message(ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation, event: str) -> tuple[str, str, str]:
     code = ticket_code(ticket, company, store)
     store_name = store.name if store else 'Tienda sin identificar'
     if event == 'closed':
@@ -160,7 +220,7 @@ def _ticket_message(ticket: SupportTicket, company: Company, store: Store | None
             f'Contacto: {conversation.wa_user_id}\nDescripción inicial: {ticket.description}\n'
             'El caso puede revisarse desde el dashboard de Phygital Bot.\n'
         )
-    return subject, body
+    return subject, body, _ticket_email_html(ticket, company, store, conversation, event)
 
 
 def notify_ticket(db: Session, ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation, event: str) -> None:
@@ -194,8 +254,8 @@ def notify_ticket(db: Session, ticket: SupportTicket, company: Company, store: S
             event_key=f'ticket:{ticket.id}:{audience}:{event}:{ticket.opened_at.isoformat() if ticket.opened_at else "0"}',
             details=details,
         )
-    subject, email_body = _ticket_message(ticket, company, store, conversation, event)
-    sent, result = _send_email(subject, email_body, _recipient_emails(db, company.id))
+    subject, email_body, email_html = _ticket_message(ticket, company, store, conversation, event)
+    sent, result = _send_email(subject, email_body, _recipient_emails(db, company.id), html_body=email_html)
     db.add(AuditLog(
         action='ticket_email_sent' if sent else 'ticket_email_not_sent',
         entity='support_ticket',

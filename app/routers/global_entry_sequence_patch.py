@@ -1,15 +1,18 @@
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..auth import require_operator
 from ..database import get_db
-from ..models import Company, Conversation, Message, Store, User
+from ..models import AuditLog, Company, Conversation, Message, Store, User
 from . import local_bridge, ticketed_local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-global-entry-sequence'])
 
 GLOBAL_ENTRY_WAITING_STATE = '__global_entry_waiting_company__'
 GLOBAL_ENTRY_RETRY_STATE = '__global_entry_retry_company__'
+BOT_ECHO_WINDOW_SECONDS = 15
 
 
 def _safe_rapid_multi_message_state(
@@ -73,6 +76,38 @@ def _active_before(db: Session, data: local_bridge.LocalInbound) -> Conversation
     return ticketed_local_bridge._active_conversation(db, local_user_id)
 
 
+def _is_recent_bot_echo(db: Session, conversation: Conversation | None, text: str) -> tuple[bool, int | None]:
+    """Detect WhatsApp notification echoes of a reply that the bot just sent.
+
+    Some WhatsApp/Android combinations repost an inline RemoteInput reply as a new
+    notification. If that notification is ingested again, the bot answers itself and
+    can enter a loop. We compare the candidate against recent outbound bot messages
+    from the same conversation before the inbound is handed to the normal router.
+    """
+    if not conversation:
+        return False, None
+    candidate = local_bridge._normalize_text(text)
+    if not candidate:
+        return False, None
+    cutoff = datetime.utcnow() - timedelta(seconds=BOT_ECHO_WINDOW_SECONDS)
+    rows = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.direction == 'outbound',
+        Message.sender == 'bot',
+        Message.created_at >= cutoff,
+    ).order_by(Message.id.desc()).limit(8).all()
+    for row in rows:
+        sent = local_bridge._normalize_text(row.body or '')
+        if not sent:
+            continue
+        if candidate == sent:
+            return True, row.id
+        # WhatsApp may prepend/append a short label when rebuilding the notification.
+        if len(sent) >= 40 and (candidate.endswith(sent) or sent.endswith(candidate)):
+            return True, row.id
+    return False, None
+
+
 @router.post('/inbound')
 def global_entry_sequence_inbound(
     data: local_bridge.LocalInbound,
@@ -88,6 +123,32 @@ def global_entry_sequence_inbound(
     4. Company/store identified -> continue through the normal ticketed bridge.
     """
     before = _active_before(db, data)
+
+    is_echo, echoed_message_id = _is_recent_bot_echo(db, before, data.text)
+    if is_echo:
+        db.add(AuditLog(
+            username=operator.username,
+            action='local_bridge_bot_echo_ignored',
+            entity='conversation',
+            entity_id=str(before.id),
+            details={
+                'echoed_outbound_message_id': echoed_message_id,
+                'sender': data.sender,
+                'package': data.package_name,
+                'window_seconds': BOT_ECHO_WINDOW_SECONDS,
+            },
+        ))
+        db.commit()
+        return {
+            'status': 'duplicate',
+            'conversation_id': before.id,
+            'action': 'bot_echo_ignored',
+            'reply_text': '',
+            'should_reply': False,
+            'outbound_message_id': None,
+            'chatbot_paused': False,
+        }
+
     previous_state = before.state if before else None
     already_greeted = previous_state in {GLOBAL_ENTRY_WAITING_STATE, GLOBAL_ENTRY_RETRY_STATE}
 

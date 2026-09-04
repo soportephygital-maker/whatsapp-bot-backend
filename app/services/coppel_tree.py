@@ -1,320 +1,174 @@
+"""Coppel support tree generated from the approved three-level conversation script.
+
+The payload is compressed to keep this production module small and deterministic.
+Edit the active tree from the dashboard, or regenerate this module from the approved
+source document when publishing a new template version.
+"""
+
+import base64
+import json
+import zlib
+
+TREE_VERSION = 5
+TREE_SOURCE = 'Flujo_Completo_Chatbot_Coppel_3_Niveles_PDA_Emoticones_v2'
+
+_TREE_PAYLOAD = (
+    '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'
+    'n/5/XVcdTQ=='
+)
+
+
 def coppel_decision_tree() -> dict:
-    human = {'comando': '0, asesor, humano, persona, soporte', 'respuesta': 'Voy a canalizarte con un integrante del equipo de soporte. Ticket: [NUMERO_TICKET]\nEstado: ABIERTO\nConservaré la información que ya me proporcionaste para que no tengas que repetirla.', 'siguiente': 'humano', 'accion': 'human_help'}
-    menu = {
-        'mensaje': 'Gracias. ¿En qué puedo ayudarte?\n1) Reportar un problema\n2) Vincular o desvincular un preciador\n3) Consultar un ticket\n4) Consultar una visita o servicio\n5) Guías y videos de apoyo\n6) Preguntas frecuentes\n7) Hablar con soporte\nTambién puedes escribir directamente lo que está sucediendo.',
-        'opciones': [
-            {'comando': '1, reportar, problema, falla', 'respuesta': '', 'siguiente': 'reportar'},
-            {'comando': '2, vincular, desvincular, assign, unassign', 'respuesta': '', 'siguiente': 'vinculacion_menu'},
-            {'comando': '3, ticket, reporte, estatus, status', 'respuesta': '', 'siguiente': 'consulta_ticket', 'accion': 'ticket_status'},
-            {'comando': '4, visita, servicio', 'respuesta': 'Para consultar una visita o servicio necesito el número de ticket. Escríbelo a continuación.', 'siguiente': 'consulta_ticket', 'accion': 'ticket_status'},
-            {'comando': '5, guia, guía, video, videos, guias, guías', 'respuesta': '', 'siguiente': 'guias'},
-            {'comando': '6, preguntas, frecuentes, faq', 'respuesta': '', 'siguiente': 'faq'},
-            {'comando': '7, asesor, humano, persona, soporte', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-        ],
-    }
-    return {
-        'identificacion': {
-            'aliases': ['Coppel'],
-            'keywords': ['coppel', 'tienda coppel', 'departamento coppel'],
-            'tags': ['coppel', 'preciadores', 'aims'],
-        },
-        'nodo_raiz': 'inicio',
-        'respuesta_sin_sentido_1': 'No entendí bien tu respuesta. Puedes seleccionar una de las opciones disponibles o escribir nuevamente lo que sucede.',
-        'respuesta_sin_sentido_2': 'Todavía no logro identificar correctamente tu solicitud. Escribe MENU para regresar al menú o ASESOR para hablar con una persona.',
-        'nodos': {
-            'inicio': {
-                'mensaje': 'Bienvenido al canal de atención de Phygital para Coppel. Estoy aquí para ayudarte con dudas, solicitudes o problemas relacionados con los equipos de tu tienda. Para continuar, indícame tu nombre. Si lo deseas, también puedes escribir tu puesto. Ejemplo: Juan Pérez - Gerente.',
-                'opciones': [
-                    {'comando': 'menu, menú, inicio', 'respuesta': menu['mensaje'], 'siguiente': 'menu'},
-                    {'comando': 'asesor, humano, persona, soporte', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                ],
-                'tipo': 'router',
-                'rutas': [{'palabras': [], 'coincidencia': 'contains', 'prioridad': 1, 'siguiente': 'menu', 'respuesta': menu['mensaje']}],
-                'fallback': {'siguiente': 'menu', 'respuesta': menu['mensaje']},
-            },
-            'menu': menu,
-            'reportar': {
-                'mensaje': 'Claro. ¿Qué está sucediendo?\n1) Un preciador está apagado o en blanco\n2) El precio no cambia o está incorrecto\n3) Aparece un producto equivocado\n4) Varios preciadores tienen problemas\n5) Hay problema de señal o comunicación\n6) Un preciador está roto o golpeado\n7) Una base, soporte o accesorio está dañado\n8) AIMS muestra un error\n9) Tengo otro problema\n0) Hablar con una persona',
-                'opciones': [
-                    {'comando': '1, apagado, blanco, no prende, no enciende', 'respuesta': '', 'siguiente': 'apagado_dano'},
-                    {'comando': '2, precio, precio incorrecto, no cambia, precio viejo', 'respuesta': '', 'siguiente': 'precio_tipo'},
-                    {'comando': '3, producto equivocado, producto incorrecto', 'respuesta': '', 'siguiente': 'producto_equivocado'},
-                    {'comando': '4, varios, muchos, varios preciadores', 'respuesta': '', 'siguiente': 'varios_cantidad'},
-                    {'comando': '5, señal, senal, comunicacion, comunicación, offline', 'respuesta': '', 'siguiente': 'comunicacion'},
-                    {'comando': '6, roto, golpeado, daño fisico, daño físico, pantalla rota', 'respuesta': '', 'siguiente': 'dano_fisico'},
-                    {'comando': '7, base, soporte, accesorio, accesorio dañado', 'respuesta': '', 'siguiente': 'accesorio'},
-                    {'comando': '8, aims, error aims, error', 'respuesta': '', 'siguiente': 'aims_error'},
-                    {'comando': '9, otro, otro problema', 'respuesta': '', 'siguiente': 'otro_problema'},
-                    human,
-                ],
-            },
-            'apagado_dano': {
-                'mensaje': 'Entendido. Vamos a hacer una revisión sencilla. Primero dime si el preciador tiene algún daño visible.\n1) No tiene golpes ni daños visibles\n2) Tiene un golpe, pantalla rota o daño físico\n3) No estoy seguro',
-                'opciones': [
-                    {'comando': '1, no, sin daño, sin dano', 'respuesta': 'Perfecto. Antes de generar un reporte vamos a intentar activarlo. Presiona el botón del preciador y revisa si la pantalla responde. Si tu modelo cuenta con Botón 1 y no responde, mantenlo presionado aproximadamente 3 segundos.', 'siguiente': 'apagado_prueba'},
-                    {'comando': '2, golpe, roto, daño, dano', 'respuesta': '', 'siguiente': 'dano_fisico'},
-                    {'comando': '3, no estoy seguro, no se, no sé', 'respuesta': 'Si puedes, envíame una fotografía del preciador completo. La fotografía se utilizará como evidencia del reporte.', 'siguiente': 'apagado_evidencia'},
-                    human,
-                ],
-            },
-            'apagado_prueba': {
-                'mensaje': 'Después dime qué ocurrió:\n1) Ya encendió y funciona\n2) Sigue apagado o en blanco\n3) No sé cuál botón utilizar\n4) No pude hacerlo\n0) Hablar con soporte',
-                'opciones': [
-                    {'comando': '1, ya encendio, ya encendió, funciona, solucionado', 'respuesta': 'Perfecto. El preciador volvió a funcionar. Tu atención quedó registrada.\nTicket: [NUMERO_TICKET]\nEstado: CERRADO\nMotivo: Preciador apagado\nResultado: Solucionado', 'siguiente': 'cierre_resuelto', 'accion': 'ticket_close'},
-                    {'comando': '2, sigue apagado, blanco, no funciona', 'respuesta': 'Entendido. El preciador continúa sin funcionar después de la revisión. No lo abras ni intentes cambiar la batería. Si puedes, envíame una fotografía del preciador completo como evidencia.', 'siguiente': 'apagado_evidencia'},
-                    {'comando': '3, no se, no sé, boton, botón, 4, no pude', 'respuesta': 'No hay problema. Te comparto la guía de activación. Cuando termines dime si ya funciona, sigue apagado o no pudiste realizarlo.', 'siguiente': 'apagado_prueba'},
-                    human,
-                ],
-            },
-            'apagado_evidencia': {
-                'mensaje': 'Gracias. La evidencia quedará asociada al reporte. Voy a registrar el caso para que soporte continúe con la revisión.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Preciador no enciende\nNuestro equipo continuará con la atención.',
-                'opciones': [human],
-            },
-            'precio_tipo': {
-                'mensaje': 'Entendido. ¿Qué está sucediendo con el precio?\n1) El precio no cambia\n2) El precio mostrado es incorrecto\n3) Aparece un precio anterior\n4) La información está incompleta\n5) No estoy seguro',
-                'opciones': [
-                    {'comando': '1, 2, 3, 4, 5, no cambia, incorrecto, anterior, incompleta, no estoy seguro', 'respuesta': '¿Cuántos preciadores presentan el problema?\n1) Solo uno\n2) De 2 a 5\n3) De 6 a 20\n4) Más de 20\n5) Una zona completa\n6) Varias áreas de la tienda', 'siguiente': 'precio_cantidad'},
-                    human,
-                ],
-            },
-            'precio_cantidad': {
-                'mensaje': 'Indica la cantidad afectada.',
-                'opciones': [
-                    {'comando': '1, solo uno, uno', 'respuesta': 'Vamos a revisar el preciador en AIMS Manager. Abre AIMS Manager, selecciona la tienda correspondiente y entra a Search. Puedes buscar utilizando el código del producto, nombre del producto o código del preciador. Cuando lo encuentres, revisa el estado: Success, Processing, Timeout o no encontrado.', 'siguiente': 'aims_estado'},
-                    {'comando': '2, 3, 4, 5, 6, varios, zona, areas, áreas, mas de 20, más de 20', 'respuesta': '', 'siguiente': 'varios_cantidad'},
-                    human,
-                ],
-            },
-            'aims_estado': {
-                'mensaje': '¿Qué estado aparece?\n1) Success\n2) Processing\n3) Timeout\n4) No encuentro el preciador\n5) No puedo realizar esta revisión\n0) Hablar con soporte',
-                'opciones': [
-                    {'comando': '1, success', 'respuesta': 'El sistema indica que la información fue enviada correctamente. Ahora necesitamos comprobar que el preciador esté relacionado con el producto correcto. ¿El producto que aparece en AIMS corresponde al producto físico?\n1) Sí\n2) No\n3) No estoy seguro', 'siguiente': 'success_producto'},
-                    {'comando': '2, processing, 3, timeout', 'respuesta': '', 'siguiente': 'refresh_nfc'},
-                    {'comando': '4, no encuentro, no aparece', 'respuesta': 'El preciador no fue localizado. Si puedes, envíame una fotografía del identificador o una captura de AIMS. Voy a registrar el caso para soporte.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Preciador no reconocido en AIMS', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '5, no puedo', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'success_producto': {
-                'mensaje': '¿El producto mostrado corresponde al producto físico?',
-                'opciones': [
-                    {'comando': '1, si, sí, correcto', 'respuesta': 'Si AIMS muestra Success y el producto es correcto, revisa nuevamente la pantalla. Si la información continúa incorrecta, registraremos el caso para soporte.', 'siguiente': 'verificar_resuelto'},
-                    {'comando': '2, no, otro producto', 'respuesta': 'Entendido. Necesitamos corregir la vinculación. ¿Qué deseas hacer?\n1) Realizar la vinculación ahora\n2) Ver una guía o video\n3) Hablar con soporte', 'siguiente': 'vinculacion_menu'},
-                    {'comando': '3, no estoy seguro', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'refresh_nfc': {
-                'mensaje': 'La actualización todavía no se completó correctamente. Si tu teléfono y AIMS Manager tienen NFC habilitado, podemos intentar actualizar el preciador.\n1) Sí\n2) Ver video\n3) No tengo NFC\n4) Hablar con soporte',
-                'opciones': [
-                    {'comando': '1, si, sí', 'respuesta': 'Abre AIMS Manager, verifica que NFC esté activado, entra a Beeper, selecciona Refresh, acerca el teléfono al preciador y espera a que se complete la acción. ¿Qué ocurrió?\n1) Ya actualizó correctamente\n2) Sigue sin actualizar\n3) No pude realizarlo', 'siguiente': 'refresh_resultado'},
-                    {'comando': '2, video', 'respuesta': 'Te comparto la guía de Refresh con NFC. Después vuelve y dime si actualizó correctamente.', 'siguiente': 'refresh_resultado'},
-                    {'comando': '3, no tengo nfc, 4, soporte', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'refresh_resultado': {
-                'mensaje': 'Indica el resultado del Refresh.',
-                'opciones': [
-                    {'comando': '1, actualizo, actualizó, funciona', 'respuesta': 'Perfecto. La actualización se realizó correctamente.\nTicket: [NUMERO_TICKET]\nEstado: CERRADO\nMotivo: Preciador no actualizaba\nResultado: Solucionado', 'siguiente': 'cierre_resuelto', 'accion': 'ticket_close'},
-                    {'comando': '2, sigue sin actualizar, 3, no pude', 'respuesta': 'Entendido. La actualización continúa sin completarse. Si puedes, envíame una captura donde aparezca el estado o mensaje de AIMS.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Preciador no actualiza', 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'vinculacion_menu': {
-                'mensaje': '¿Qué deseas hacer?\n1) Vincular un preciador\n2) Desvincular un preciador\n0) Hablar con soporte',
-                'opciones': [
-                    {'comando': '1, vincular, assign', 'respuesta': 'Abre AIMS Manager y selecciona la tienda correcta. Selecciona Assign, escanea o escribe el código del producto, confirma el producto correcto y luego escanea o escribe el código del preciador. ¿Qué ocurrió?\n1) Assign Complete\n2) No encuentra el producto\n3) No reconoce el preciador\n4) Dice que ya está asignado\n5) Apareció otro error\n6) No pude realizarlo', 'siguiente': 'assign_resultado'},
-                    {'comando': '2, desvincular, unassign', 'respuesta': 'Abre AIMS Manager, selecciona la tienda correspondiente, elige Unassign, escanea o escribe el código del preciador y confirma la operación. ¿Qué ocurrió?\n1) Unassign Complete\n2) Apareció un error\n3) No reconoce el preciador\n4) No pude realizarlo', 'siguiente': 'unassign_resultado'},
-                    human,
-                ],
-            },
-            'assign_resultado': {
-                'mensaje': 'Indica el resultado de Assign.',
-                'opciones': [
-                    {'comando': '1, assign complete, completo', 'respuesta': 'Perfecto. El preciador quedó relacionado correctamente con el producto. Revisa ahora si muestra la información correcta.\n1) Sí, ya está correcto\n2) No, continúa incorrecto', 'siguiente': 'verificar_resuelto'},
-                    {'comando': '2, no encuentra producto, producto no encontrado', 'respuesta': 'Verifica una vez más que el código capturado sea correcto. Si es correcto y el producto sigue sin aparecer, no sigas intentando crear o modificar el producto. Envíame una captura de AIMS.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Producto no disponible para vinculación', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '3, no reconoce preciador', 'respuesta': 'Escanea nuevamente el código, escríbelo manualmente o utiliza la cámara de AIMS Manager si tu dispositivo lo permite. Si sigue sin reconocerlo, envíame una foto del identificador o una captura.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Preciador no reconocido en AIMS', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '4, ya esta asignado, ya está asignado', 'respuesta': 'AIMS indica que el preciador ya tiene una asignación. ¿El producto mostrado corresponde al producto correcto?\n1) Sí\n2) No, está relacionado con otro producto\n3) AIMS indica que pertenece a otra tienda\n4) No estoy seguro', 'siguiente': 'ya_asignado'},
-                    {'comando': '5, otro error, 6, no pude', 'respuesta': '', 'siguiente': 'aims_error'},
-                    human,
-                ],
-            },
-            'ya_asignado': {
-                'mensaje': 'Confirma la situación de la asignación.',
-                'opciones': [
-                    {'comando': '1, si, sí, correcto', 'respuesta': 'La asignación ya es correcta. Si la pantalla también muestra la información correcta, registraré la atención como solucionada.', 'siguiente': 'verificar_resuelto'},
-                    {'comando': '2, otro producto', 'respuesta': 'Primero vamos a desvincular el preciador y después podremos relacionarlo con el producto correcto.', 'siguiente': 'vinculacion_menu'},
-                    {'comando': '3, otra tienda', 'respuesta': 'AIMS indica que el preciador está relacionado con otra tienda. ¿Fue trasladado intencionalmente?\n1) Sí\n2) No\n3) No estoy seguro', 'siguiente': 'otra_tienda'},
-                    {'comando': '4, no estoy seguro', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'otra_tienda': {
-                'mensaje': '¿El preciador fue trasladado intencionalmente de otra tienda?',
-                'opciones': [
-                    {'comando': '1, si, sí', 'respuesta': 'Si tienes autorización para trasladarlo, confirma la reasignación en AIMS. Si la reasignación fue exitosa escribe LISTO.', 'siguiente': 'reasignacion_resultado'},
-                    {'comando': '2, no, 3, no estoy seguro', 'respuesta': 'No continúes con la reasignación. Voy a registrar el caso para evitar modificar por error la información de otra tienda.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Conflicto de asignación entre tiendas', 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'reasignacion_resultado': {
-                'mensaje': 'Indica si la reasignación fue exitosa o apareció un error.',
-                'opciones': [
-                    {'comando': 'listo, exitosa, correcto', 'respuesta': 'Perfecto. La reasignación quedó completada.\nTicket: [NUMERO_TICKET]\nEstado: CERRADO\nMotivo: Reasignación de preciador\nResultado: Solucionado', 'siguiente': 'cierre_resuelto', 'accion': 'ticket_close'},
-                    {'comando': 'error, fallo, no pude', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'unassign_resultado': {
-                'mensaje': 'Indica el resultado de Unassign.',
-                'opciones': [
-                    {'comando': '1, unassign complete, completo', 'respuesta': 'Perfecto. El preciador quedó desvinculado. ¿Qué deseas hacer ahora?\n1) Vincularlo con otro producto\n2) Ya terminé', 'siguiente': 'unassign_despues'},
-                    {'comando': '2, error, 3, no reconoce, 4, no pude', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'unassign_despues': {
-                'mensaje': '¿Qué deseas hacer ahora?',
-                'opciones': [
-                    {'comando': '1, vincular', 'respuesta': '', 'siguiente': 'vinculacion_menu'},
-                    {'comando': '2, termine, terminé, listo', 'respuesta': 'Perfecto. Voy a registrar la atención como solucionada.\nTicket: [NUMERO_TICKET]\nEstado: CERRADO\nMotivo: Desvinculación de preciador\nResultado: Solucionado', 'siguiente': 'cierre_resuelto', 'accion': 'ticket_close'},
-                    human,
-                ],
-            },
-            'producto_equivocado': {
-                'mensaje': 'Vamos a comprobar la relación del producto en AIMS Manager. Busca el preciador por su código y revisa el producto relacionado. ¿Qué observas?\n1) Está relacionado con otro producto\n2) El producto es correcto pero la pantalla muestra información incorrecta\n3) No encuentro el preciador\n4) No puedo realizar la revisión',
-                'opciones': [
-                    {'comando': '1, otro producto', 'respuesta': 'Primero utiliza Unassign y después vuelve a realizar Assign con el producto correcto.', 'siguiente': 'vinculacion_menu'},
-                    {'comando': '2, producto correcto, informacion incorrecta, información incorrecta', 'respuesta': '', 'siguiente': 'aims_estado'},
-                    {'comando': '3, no encuentro, 4, no puedo', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'aims_error': {
-                'mensaje': 'Entendido. ¿Qué problema tienes en AIMS?\n1) No puedo iniciar sesión\n2) No aparece mi tienda\n3) No encuentra un producto\n4) No reconoce un preciador\n5) No permite vincular\n6) No permite desvincular\n7) Aparece un mensaje de error\n8) No tengo permisos para realizar la operación\n0) Hablar con soporte',
-                'opciones': [
-                    {'comando': '1, login, iniciar sesion, iniciar sesión', 'respuesta': 'Verifica que estés utilizando las credenciales asignadas para AIMS Manager. Si son correctas y el acceso continúa fallando, envíame una captura del mensaje. No realices cambios en la configuración del servidor.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Acceso a AIMS Manager', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '2, no aparece tienda', 'respuesta': 'En AIMS Manager solo aparecen las tiendas asignadas al usuario. Busca nuevamente por nombre o código. Si no aparece, registraré el caso para validar la asignación y permisos.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Tienda no disponible en AIMS', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '3, producto', 'respuesta': 'Si el código es correcto y el producto sigue sin aparecer, no sigas intentando crear o modificarlo. Envíame una captura.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Producto no disponible para vinculación', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '4, preciador', 'respuesta': 'Vuelve a escanear o escribir el código. Si sigue sin reconocerlo, envíame una foto del identificador o captura de AIMS.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Preciador no reconocido en AIMS', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '5, vincular, 6, desvincular, 7, mensaje de error, error', 'respuesta': 'Si puedes, envíame una captura de pantalla del mensaje. La imagen se utilizará como evidencia.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Error en AIMS Manager', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '8, permisos, sin permisos', 'respuesta': 'La operación requiere permisos adicionales. No es necesario que intentes modificar la configuración.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Permisos de usuario', 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'dano_fisico': {
-                'mensaje': 'Como existe daño físico, no intentes abrir, reparar o desarmar el preciador. Envíame una fotografía completa del preciador y otra donde se vea el daño. Indica si se cayó, recibió un golpe, se dañó durante el uso normal, ya estaba dañado o no saben cómo ocurrió.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Daño físico en preciador',
-                'opciones': [human],
-            },
-            'bateria_baja': {
-                'mensaje': 'AIMS está indicando batería baja. No abras el preciador ni intentes cambiar la batería; debe hacerlo personal autorizado.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Batería baja en preciador',
-                'opciones': [human],
-            },
-            'varios_cantidad': {
-                'mensaje': 'Aproximadamente, ¿cuántos preciadores tienen el problema?\n1) De 2 a 5\n2) De 6 a 20\n3) Más de 20\n4) Una zona completa\n5) Varias zonas\n6) Casi toda la tienda',
-                'opciones': [
-                    {'comando': '1, 2, 3, 4, 5, 6, varios, zona, tienda', 'respuesta': '¿Qué ocurre con ellos?\n1) Están apagados\n2) No cambian los precios\n3) Muestran información incorrecta\n4) Aparecen como Offline\n5) Tienen diferentes problemas', 'siguiente': 'varios_tipo'},
-                    human,
-                ],
-            },
-            'varios_tipo': {
-                'mensaje': 'Si tienes acceso a AIMS Manager entra a Overview, revisa Warning Status y Gateway Status. ¿Qué observas?\n1) Aparecen varios Offline\n2) Aparece Bad Signal\n3) Hay un equipo de comunicación Offline\n4) Todo aparece normal\n5) No tengo acceso',
-                'opciones': [
-                    {'comando': '1, offline', 'respuesta': 'No es necesario reiniciar cada preciador. Si puedes, envíame una captura de AIMS donde aparezcan los equipos afectados.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Varios preciadores Offline', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '2, bad signal, señal debil, señal débil', 'respuesta': 'No modifiques configuraciones de red ni desconectes equipos. Envíame una captura del mensaje como evidencia.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Señal débil en preciadores', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '3, equipo offline, 4, normal, 5, no tengo acceso', 'respuesta': '', 'siguiente': 'comunicacion'},
-                    human,
-                ],
-            },
-            'comunicacion': {
-                'mensaje': 'No necesitas saber el nombre técnico del equipo. ¿Qué observas en la caja, receptor o equipo de comunicación?\n1) No tiene ninguna luz encendida\n2) Tiene luces, pero los preciadores no actualizan\n3) Tiene alguna luz roja o de alerta\n4) El equipo está físicamente dañado\n5) No estoy seguro',
-                'opciones': [
-                    {'comando': '1, 2, 3, 4, 5, sin luces, roja, alerta, dañado, danado', 'respuesta': 'Si puedes, envíame una fotografía del equipo. No desconectes cables ni modifiques la conexión de red.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Problema de comunicación en tienda', 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'accesorio': {
-                'mensaje': 'Entendido. ¿Qué ocurrió?\n1) La base se desprendió\n2) La base está rota\n3) El soporte está flojo\n4) Falta una pieza\n5) El preciador se cayó por el soporte\n6) Hay otra pieza dañada',
-                'opciones': [
-                    {'comando': '1, 2, 3, 4, 5, 6, base, soporte, pieza', 'respuesta': 'No intentes repararlo de forma improvisada. Envíame una fotografía donde se vea la pieza dañada y el lugar donde estaba instalada.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Accesorio o soporte dañado\n¿La pieza puede caer, tiene cables expuestos o representa algún riesgo? Responde SI o NO.', 'siguiente': 'accesorio_riesgo'},
-                    human,
-                ],
-            },
-            'accesorio_riesgo': {
-                'mensaje': '¿La pieza representa algún riesgo para clientes o personal?',
-                'opciones': [
-                    {'comando': 'si, sí, riesgo', 'respuesta': 'Por seguridad, no manipules la pieza y evita que clientes o personal permanezcan directamente debajo o junto al área afectada, si es posible hacerlo de forma segura.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO\nMotivo: Instalación con riesgo', 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': 'no, sin riesgo', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'otro_problema': {
-                'mensaje': 'Cuéntame brevemente qué sucede. No necesitas utilizar palabras técnicas. Ejemplos: “La pantallita no prende”, “El precio sigue viejo”, “La cajita que da señal está apagada”, “No puedo relacionar el producto”.',
-                'opciones': [
-                    {'comando': 'apagado, no prende', 'respuesta': '', 'siguiente': 'apagado_dano'},
-                    {'comando': 'precio, precio viejo', 'respuesta': '', 'siguiente': 'precio_tipo'},
-                    {'comando': 'vincular, relacionar, assign', 'respuesta': '', 'siguiente': 'vinculacion_menu'},
-                    {'comando': 'varios, muchos', 'respuesta': '', 'siguiente': 'varios_cantidad'},
-                    {'comando': 'señal, senal, cajita, comunicacion, comunicación', 'respuesta': '', 'siguiente': 'comunicacion'},
-                    {'comando': 'roto, golpeado, daño, dano', 'respuesta': '', 'siguiente': 'dano_fisico'},
-                    human,
-                ],
-                'fallback': {'siguiente': 'humano', 'respuesta': 'Todavía no logro identificar correctamente tu solicitud. Para evitar hacerte repetir más información, voy a canalizarte con soporte.\nTicket: [NUMERO_TICKET]\nEstado: ABIERTO', 'accion': 'human_help'},
-            },
-            'guias': {
-                'mensaje': '¿Qué guía quieres consultar?\n1) Activar un preciador\n2) Vincular un preciador\n3) Desvincular un preciador\n4) Precio que no actualiza\n5) Uso de AIMS Manager\n6) Bases y soportes\n7) Limpieza y cuidados\n8) Otra guía\n0) Regresar al menú',
-                'opciones': [
-                    {'comando': '1, activar', 'respuesta': 'Guía: Activar un preciador. Presiona el botón del preciador y, si tu modelo cuenta con Botón 1 y no responde, mantenlo presionado aproximadamente 3 segundos.', 'siguiente': 'verificar_resuelto'},
-                    {'comando': '2, vincular', 'respuesta': '', 'siguiente': 'vinculacion_menu'},
-                    {'comando': '3, desvincular', 'respuesta': '', 'siguiente': 'vinculacion_menu'},
-                    {'comando': '4, precio', 'respuesta': '', 'siguiente': 'precio_tipo'},
-                    {'comando': '5, aims', 'respuesta': '', 'siguiente': 'aims_error'},
-                    {'comando': '6, bases, soportes', 'respuesta': '', 'siguiente': 'accesorio'},
-                    {'comando': '7, limpieza', 'respuesta': 'Para limpiar el preciador utiliza un paño suave o de microfibra. Si es necesario usa una pequeña cantidad de limpiador suave sin alcohol, sin presionar ni golpear la pantalla. Deja secar el equipo y evita productos abrasivos.', 'siguiente': 'verificar_resuelto'},
-                    {'comando': '8, otra', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '0, menu, menú', 'respuesta': menu['mensaje'], 'siguiente': 'menu'},
-                    human,
-                ],
-            },
-            'faq': {
-                'mensaje': '¿Qué deseas consultar?\n1) Cómo identificar el código de un preciador\n2) Cómo limpiar un preciador\n3) Qué hacer si un preciador está apagado\n4) Qué hacer si un preciador está roto\n5) Qué hacer si aparece batería baja\n6) Cómo vincular o desvincular\n7) Otra pregunta\n0) Regresar al menú',
-                'opciones': [
-                    {'comando': '1, codigo, código', 'respuesta': 'Puedes localizar el código del preciador en la etiqueta o identificador del equipo. En AIMS Manager también puedes escanearlo, escribirlo manualmente o usar la cámara cuando la función esté disponible.', 'siguiente': 'verificar_resuelto'},
-                    {'comando': '2, limpiar, limpieza', 'respuesta': 'Usa un paño suave o de microfibra y, si es necesario, una pequeña cantidad de limpiador suave sin alcohol. Evita abrasivos.', 'siguiente': 'verificar_resuelto'},
-                    {'comando': '3, apagado', 'respuesta': '', 'siguiente': 'apagado_dano'},
-                    {'comando': '4, roto', 'respuesta': '', 'siguiente': 'dano_fisico'},
-                    {'comando': '5, bateria, batería', 'respuesta': '', 'siguiente': 'bateria_baja'},
-                    {'comando': '6, vincular, desvincular', 'respuesta': '', 'siguiente': 'vinculacion_menu'},
-                    {'comando': '7, otra', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    {'comando': '0, menu, menú', 'respuesta': menu['mensaje'], 'siguiente': 'menu'},
-                    human,
-                ],
-            },
-            'verificar_resuelto': {
-                'mensaje': '¿Se resolvió tu consulta o problema?\n1) Sí, quedó resuelto\n2) No, necesito continuar\n3) Hablar con soporte',
-                'opciones': [
-                    {'comando': '1, si, sí, resuelto, solucionado', 'respuesta': 'Perfecto. Voy a registrar esta atención como solucionada.\nTicket: [NUMERO_TICKET]\nEstado: CERRADO\nResultado: Solucionado', 'siguiente': 'cierre_resuelto', 'accion': 'ticket_close'},
-                    {'comando': '2, no, continuar', 'respuesta': menu['mensaje'], 'siguiente': 'menu'},
-                    {'comando': '3, soporte', 'respuesta': human['respuesta'], 'siguiente': 'humano', 'accion': 'human_help'},
-                    human,
-                ],
-            },
-            'consulta_ticket': {
-                'mensaje': 'Claro. Voy a consultar el ticket asociado a esta conversación.',
-                'opciones': [
-                    {'comando': 'menu, menú, regresar', 'respuesta': menu['mensaje'], 'siguiente': 'menu'},
-                    human,
-                ],
-            },
-            'cierre_resuelto': {
-                'mensaje': '¿Necesitas ayuda con algo más?\n1) Sí, tengo otra solicitud\n2) No, finalizar',
-                'opciones': [
-                    {'comando': '1, si, sí, otra, otra solicitud', 'respuesta': menu['mensaje'], 'siguiente': 'menu'},
-                    {'comando': '2, no, finalizar, salir', 'respuesta': 'Gracias por comunicarte con Phygital. Tu atención ha finalizado. Si necesitas ayuda nuevamente, puedes escribirnos por este mismo medio. Que tengas un excelente día.', 'siguiente': 'fin'},
-                ],
-            },
-            'fin': {'mensaje': 'Atención finalizada.', 'opciones': [{'comando': 'inicio, menu, menú', 'respuesta': menu['mensaje'], 'siguiente': 'menu'}]},
-            'humano': {'mensaje': '', 'opciones': []},
-        },
-    }
+    raw = zlib.decompress(base64.b64decode(_TREE_PAYLOAD.encode('ascii')))
+    return json.loads(raw.decode('utf-8'))

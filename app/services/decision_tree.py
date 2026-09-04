@@ -136,7 +136,9 @@ def _match_routed_node(node: dict, nodes: dict, state: str, text: str):
             action,
         )
 
-    return _fallback_result(node, nodes, state)
+    # Fallback is intentionally evaluated after normal options. A routed node can
+    # therefore keep numeric/menu options and still use a free-text fallback.
+    return None
 
 
 def match_response_with_action(tree: dict, state: str, text: str) -> tuple[bool, str, str, str | None]:
@@ -172,6 +174,11 @@ def match_response_with_action(tree: dict, state: str, text: str) -> tuple[bool,
                 action = option.get('accion') or option.get('action')
                 action_value = str(action) if action else None
                 return (True, _silence_human_handoff(response, action_value), str(next_state), action_value)
+
+        if is_router:
+            fallback = _fallback_result(node, nodes, state)
+            if fallback is not None:
+                return fallback
 
         return (False, '', state, None)
 

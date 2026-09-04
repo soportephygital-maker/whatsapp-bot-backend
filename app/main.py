@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, Store
-from .routers import access_control, auth, companies, company_delete_safe, company_resources, contacts, conversation_admin, conversation_visibility_patch, coppel_support, dashboard, dashboard_fullscreen_support_patch, dashboard_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, global_entry_sequence_patch, iqos_support, local_bridge, login_recovery_dashboard_patch, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, support_email_bridge, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, tree_zoom_dashboard_patch, whatsapp
+from .routers import access_control, auth, case_event_policy_patch, case_management_patch, companies, company_delete_safe, company_resources, contacts, conversation_admin, conversation_visibility_patch, coppel_support, dashboard, dashboard_fullscreen_support_patch, dashboard_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, global_entry_sequence_patch, iqos_support, local_bridge, login_recovery_dashboard_patch, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, support_email_bridge, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, tree_zoom_dashboard_patch, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -23,6 +23,9 @@ app.include_router(access_control.router)
 app.include_router(company_delete_safe.router)
 app.include_router(iqos_support.router)
 app.include_router(coppel_support.router)
+# Case management is registered before the legacy ticket router so the enhanced
+# seguimiento endpoint owns status-change email notifications.
+app.include_router(case_management_patch.router)
 app.include_router(support_tickets.router)
 app.include_router(support_email_bridge.router)
 app.include_router(companies.router)

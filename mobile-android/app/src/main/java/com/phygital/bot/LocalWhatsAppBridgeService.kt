@@ -5,6 +5,9 @@ import android.app.Notification
 import android.app.RemoteInput
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
+import android.net.Uri
 import android.os.PowerManager
 import android.provider.ContactsContract
 import android.provider.Settings
@@ -12,7 +15,9 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.text.Normalizer
 
 class LocalWhatsAppBridgeService : NotificationListenerService() {
@@ -24,7 +29,15 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     private val bounceWindowMs = 45_000L
     private val duplicateWindowMs = 12_000L
     private val maxReplyHistory = 8
+    private val maxMediaBytes = 15 * 1024 * 1024
     @Volatile private var manualPollRunning = false
+
+    private data class MediaCandidate(
+        val bytes: ByteArray,
+        val filename: String,
+        val contentType: String,
+        val source: String,
+    )
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -60,8 +73,13 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
         val extras = notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
-        val text = extractText(notification).trim()
-        if (text.isBlank()) return
+        val media = extractMediaCandidate(notification, sbn.postTime)
+        val rawText = extractText(notification).trim()
+        val text = when {
+            rawText.isNotBlank() -> rawText
+            media != null -> "[Imagen recibida]"
+            else -> return
+        }
         if (looksLikeGroup(notification, title)) return
         if (isSelfAuthoredNotification(title, extras)) return
         if (isRemoteInputHistoryBounce(notification, text)) return
@@ -82,6 +100,14 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                 try {
                     val storesJson = JSONArray()
                     selectedStoreIds.forEach { storesJson.put(it) }
+                    val metadata = JSONObject()
+                        .put("category", notification.category ?: "")
+                        .put("saved_contact", false)
+                        .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
+                        .put("bounce_filter", "v2")
+                        .put("media_capture", if (media != null) "available" else "none")
+                        .put("media_source", media?.source ?: "")
+                        .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp")
                     val payload = JSONObject()
                         .put("package_name", sbn.packageName)
                         .put("device_id", deviceId)
@@ -93,17 +119,18 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("selected_store_ids", storesJson)
                         .put("is_group", false)
                         .put("can_reply", replyAction != null)
-                        .put("metadata", JSONObject()
-                            .put("category", notification.category ?: "")
-                            .put("saved_contact", false)
-                            .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
-                            .put("bounce_filter", "v2")
-                            .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp"))
+                        .put("metadata", metadata)
 
                     val response = JSONObject(request("POST", "/api/local-bridge/inbound", payload.toString(), token))
                     val shouldReply = response.optBoolean("should_reply", false)
                     val replyText = response.optString("reply_text", "")
+                    val ticketId = response.optInt("ticket_id", 0)
                     outboundMessageId = response.optInt("outbound_message_id", 0)
+
+                    if (media != null && ticketId > 0) {
+                        tryUploadMedia(token, ticketId, media)
+                    }
+
                     if (shouldReply && replyText.isNotBlank() && replyAction != null && outboundMessageId > 0) {
                         rememberBotReply(sbn.packageName, replyText)
                         val sent = sendInlineReply(replyAction, replyText)
@@ -117,6 +144,100 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                 }
             }
         }.start()
+    }
+
+    private fun tryUploadMedia(token: String, ticketId: Int, media: MediaCandidate) {
+        if (media.bytes.isEmpty() || media.bytes.size > maxMediaBytes) return
+        val digest = MessageDigest.getInstance("SHA-256").digest(media.bytes).joinToString("") { "%02x".format(it) }
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        val key = "media_uploaded_${ticketId}_$digest"
+        if (prefs.getBoolean(key, false)) return
+        try {
+            NetworkClient.uploadFile(
+                path = "/api/tickets/$ticketId/adjuntos",
+                bearer = token,
+                bytes = media.bytes,
+                filename = media.filename,
+                contentType = media.contentType,
+                fields = emptyMap(),
+            )
+            prefs.edit().putBoolean(key, true).apply()
+        } catch (_: Exception) {
+            // The chat itself must continue even if WhatsApp does not grant access to media bytes.
+        }
+    }
+
+    private fun extractMediaCandidate(notification: Notification, postTime: Long): MediaCandidate? {
+        extractMessagingStyleMedia(notification, postTime)?.let { return it }
+        extractPictureExtra(notification, postTime)?.let { return it }
+        extractLargeIconPreview(notification, postTime)?.let { return it }
+        return null
+    }
+
+    private fun extractMessagingStyleMedia(notification: Notification, postTime: Long): MediaCandidate? {
+        val messaging = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
+        for (item in messaging.reversed()) {
+            val bundle = item as? android.os.Bundle ?: continue
+            val mime = bundle.getString("type")?.trim().orEmpty()
+            val uri = when (val raw = bundle.get("uri")) {
+                is Uri -> raw
+                is String -> runCatching { Uri.parse(raw) }.getOrNull()
+                else -> null
+            } ?: continue
+            if (!mime.startsWith("image/")) continue
+            readUriBytes(uri)?.let { bytes ->
+                val extension = extensionForMime(mime)
+                return MediaCandidate(bytes, "whatsapp-${postTime}.$extension", mime, "messaging_style_uri")
+            }
+        }
+        return null
+    }
+
+    private fun extractPictureExtra(notification: Notification, postTime: Long): MediaCandidate? {
+        @Suppress("DEPRECATION")
+        val bitmap = notification.extras.getParcelable(Notification.EXTRA_PICTURE) as? Bitmap ?: return null
+        val bytes = bitmapToJpeg(bitmap) ?: return null
+        return MediaCandidate(bytes, "whatsapp-${postTime}.jpg", "image/jpeg", "notification_picture")
+    }
+
+    private fun extractLargeIconPreview(notification: Notification, postTime: Long): MediaCandidate? {
+        val icon = notification.getLargeIcon() ?: return null
+        val drawable = runCatching { icon.loadDrawable(this) }.getOrNull() ?: return null
+        val bitmap = (drawable as? BitmapDrawable)?.bitmap ?: return null
+        if (bitmap.width < 96 || bitmap.height < 96) return null
+        val bytes = bitmapToJpeg(bitmap) ?: return null
+        return MediaCandidate(bytes, "whatsapp-preview-${postTime}.jpg", "image/jpeg", "large_icon_preview")
+    }
+
+    private fun readUriBytes(uri: Uri): ByteArray? {
+        return try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                val out = ByteArrayOutputStream()
+                val buffer = ByteArray(32 * 1024)
+                var total = 0
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    total += read
+                    if (total > maxMediaBytes) return null
+                    out.write(buffer, 0, read)
+                }
+                out.toByteArray()
+            }
+        } catch (_: Exception) { null }
+    }
+
+    private fun bitmapToJpeg(bitmap: Bitmap): ByteArray? = try {
+        val out = ByteArrayOutputStream()
+        if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)) null else out.toByteArray()
+    } catch (_: Exception) { null }
+
+    private fun extensionForMime(mime: String): String = when (mime.lowercase()) {
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        "image/gif" -> "gif"
+        "image/heic", "image/heif" -> "heic"
+        else -> "jpg"
     }
 
     private fun isSelfAuthoredNotification(title: String, extras: android.os.Bundle): Boolean {

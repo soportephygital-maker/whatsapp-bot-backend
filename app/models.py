@@ -152,6 +152,43 @@ class SupportTicket(Base):
     close_result: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
 
+class CaseAttachment(Base):
+    __tablename__ = 'case_attachments'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey('support_tickets.id', ondelete='CASCADE'), index=True)
+    message_id: Mapped[int | None] = mapped_column(ForeignKey('messages.id', ondelete='SET NULL'), nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120), default='application/octet-stream')
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    source: Mapped[str] = mapped_column(String(40), default='dashboard')
+    uploaded_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AILearningPoint(Base):
+    __tablename__ = 'ai_learning_points'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int | None] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), nullable=True, index=True)
+    ticket_id: Mapped[int | None] = mapped_column(ForeignKey('support_tickets.id', ondelete='SET NULL'), nullable=True, index=True)
+    problem: Mapped[str] = mapped_column(Text, default='')
+    solution: Mapped[str] = mapped_column(Text, default='')
+    confidence: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default='pending', index=True)
+    approved_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AIAdminMessage(Base):
+    __tablename__ = 'ai_admin_messages'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), index=True)
+    role: Mapped[str] = mapped_column(String(20), default='admin')
+    body: Mapped[str] = mapped_column(Text, default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class SupportEmailRecipient(Base):
     __tablename__ = 'support_email_recipients'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

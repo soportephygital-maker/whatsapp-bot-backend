@@ -9,6 +9,7 @@ from . import local_bridge, ticketed_local_bridge
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-global-entry-sequence'])
 
 GLOBAL_ENTRY_WAITING_STATE = '__global_entry_waiting_company__'
+GLOBAL_ENTRY_RETRY_STATE = '__global_entry_retry_company__'
 
 
 def _active_before(db: Session, data: local_bridge.LocalInbound) -> Conversation | None:
@@ -22,20 +23,17 @@ def global_entry_sequence_inbound(
     operator: User = Depends(require_operator),
     db: Session = Depends(get_db),
 ):
-    """Guarantee that the generic greeting is sent before the unmatched-company prompt.
+    """Keep the global intake sequence stable until company/store are identified.
 
-    The existing ticketed bridge decides between the greeting and the retry text by
-    counting inbound messages. That count can include older messages from an open
-    conversation, so a user's first message of a new interaction may incorrectly
-    receive the "empresa no identificada" response. This wrapper uses an explicit
-    waiting state instead:
-
+    Sequence:
     1. First unidentified interaction -> generic greeting.
-    2. Next unidentified reply -> unmatched-company guidance.
-    3. Company/store identified -> continue through the normal ticketed bridge.
+    2. Next unidentified reply -> unmatched-company/store guidance.
+    3. Every later unidentified reply -> keep repeating that guidance; never greet again.
+    4. Company/store identified -> continue through the normal ticketed bridge.
     """
     before = _active_before(db, data)
-    was_waiting_for_company = bool(before and before.state == GLOBAL_ENTRY_WAITING_STATE)
+    previous_state = before.state if before else None
+    already_greeted = previous_state in {GLOBAL_ENTRY_WAITING_STATE, GLOBAL_ENTRY_RETRY_STATE}
 
     result = ticketed_local_bridge.ticketed_local_inbound(data=data, operator=operator, db=db)
     if not isinstance(result, dict):
@@ -66,7 +64,11 @@ def global_entry_sequence_inbound(
         stores = ticketed_local_bridge._selected_company_stores(data, company.id, db)
         store = stores[0] if stores else None
 
-    message = ticketed_local_bridge._global_welcome(db, retry=was_waiting_for_company)
+    # Once the greeting has been sent, every unidentified response must use the
+    # configured retry message. We keep a dedicated retry state so the bot cannot
+    # fall back to the greeting again on the third, fourth, etc. attempt.
+    retry = already_greeted
+    message = ticketed_local_bridge._global_welcome(db, retry=retry)
     if message:
         ticketed_local_bridge._set_reply(
             db,
@@ -78,8 +80,8 @@ def global_entry_sequence_inbound(
             store=store,
         )
 
-    conversation.state = GLOBAL_ENTRY_WAITING_STATE
-    result['action'] = 'global_entry_retry' if was_waiting_for_company else 'global_entry'
+    conversation.state = GLOBAL_ENTRY_RETRY_STATE if retry else GLOBAL_ENTRY_WAITING_STATE
+    result['action'] = 'global_entry_retry' if retry else 'global_entry'
     result['company_identified'] = False
     result['ticket_id'] = None
     result['ticket_code'] = None

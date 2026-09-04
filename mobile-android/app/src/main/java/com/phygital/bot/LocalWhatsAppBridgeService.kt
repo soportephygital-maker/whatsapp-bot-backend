@@ -21,6 +21,9 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     private val sessionPrefsName = "phygital_session"
     private val bridgePrefsName = "phygital_local_bridge"
     private val loopGuardPrefsName = "phygital_loop_guard"
+    private val bounceWindowMs = 45_000L
+    private val duplicateWindowMs = 12_000L
+    private val maxReplyHistory = 8
     @Volatile private var manualPollRunning = false
 
     override fun onListenerConnected() {
@@ -60,10 +63,11 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val text = extractText(notification).trim()
         if (text.isBlank()) return
         if (looksLikeGroup(notification, title)) return
-        if (isSavedContact(title)) return
         if (isSelfAuthoredNotification(title, extras)) return
-
+        if (isRemoteInputHistoryBounce(notification, text)) return
         if (isRecentBotReply(sbn.packageName, text)) return
+        if (isBounceDuplicate(sbn.packageName, sbn.key, text)) return
+        if (isSavedContact(title)) return
         if (isRapidDuplicate(sbn.packageName, title, text)) return
 
         val replyAction = findReplyAction(notification)
@@ -93,6 +97,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                             .put("category", notification.category ?: "")
                             .put("saved_contact", false)
                             .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
+                            .put("bounce_filter", "v2")
                             .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp"))
 
                     val response = JSONObject(request("POST", "/api/local-bridge/inbound", payload.toString(), token))
@@ -116,17 +121,28 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     private fun isSelfAuthoredNotification(title: String, extras: android.os.Bundle): Boolean {
         val normalizedTitle = normalizeName(title)
-        if (normalizedTitle in setOf("tu", "tú", "you", "me", "yo")) return true
+        if (normalizedTitle in setOf("tu", "you", "me", "yo")) return true
 
         val people = extras.getParcelableArray(Notification.EXTRA_PEOPLE_LIST)
         if (!people.isNullOrEmpty()) {
             people.forEach { item ->
                 val bundle = item as? android.os.Bundle ?: return@forEach
                 val name = normalizeName(bundle.getCharSequence("name")?.toString().orEmpty())
-                if (name in setOf("tu", "tú", "you", "me", "yo")) return true
+                if (name in setOf("tu", "you", "me", "yo")) return true
             }
         }
         return false
+    }
+
+    private fun isRemoteInputHistoryBounce(notification: Notification, text: String): Boolean {
+        val candidate = normalizedMessage(text)
+        val history = notification.extras.getCharSequenceArray(Notification.EXTRA_REMOTE_INPUT_HISTORY) ?: return false
+        return history.any { item ->
+            val sent = normalizedMessage(item?.toString().orEmpty())
+            sent.isNotBlank() && (candidate == sent ||
+                (sent.length >= 12 && candidate.contains(sent)) ||
+                (candidate.length >= 12 && sent.contains(candidate)))
+        }
     }
 
     private fun withWakeLock(tag: String, timeoutMs: Long, block: () -> Unit) {
@@ -223,15 +239,33 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     private fun normalizedMessage(value: String): String = value.trim().replace("\\s+".toRegex(), " ")
 
     private fun rememberBotReply(packageName: String, text: String) {
-        getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE).edit()
-            .putString(guardKey(packageName, "reply_text"), normalizedMessage(text))
-            .putLong(guardKey(packageName, "reply_time"), System.currentTimeMillis())
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val normalized = normalizedMessage(text)
+        val historyKey = guardKey(packageName, "reply_history")
+        val history = try { JSONArray(prefs.getString(historyKey, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        val fresh = JSONArray()
+        fresh.put(JSONObject().put("text", normalized).put("time", now))
+        for (i in 0 until history.length()) {
+            if (fresh.length() >= maxReplyHistory) break
+            val row = history.optJSONObject(i) ?: continue
+            val rowText = row.optString("text", "")
+            val rowTime = row.optLong("time", 0L)
+            if (rowText.isBlank() || now - rowTime !in 0..bounceWindowMs) continue
+            if (rowText == normalized) continue
+            fresh.put(JSONObject().put("text", rowText).put("time", rowTime))
+        }
+        prefs.edit()
+            .putString(guardKey(packageName, "reply_text"), normalized)
+            .putLong(guardKey(packageName, "reply_time"), now)
+            .putString(historyKey, fresh.toString())
             .apply()
     }
 
     private fun clearRememberedBotReply(packageName: String, text: String) {
         val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
-        if (prefs.getString(guardKey(packageName, "reply_text"), null) == normalizedMessage(text)) {
+        val normalized = normalizedMessage(text)
+        if (prefs.getString(guardKey(packageName, "reply_text"), null) == normalized) {
             prefs.edit()
                 .remove(guardKey(packageName, "reply_text"))
                 .remove(guardKey(packageName, "reply_time"))
@@ -241,13 +275,50 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     private fun isRecentBotReply(packageName: String, text: String): Boolean {
         val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        val candidate = normalizedMessage(text)
+        val now = System.currentTimeMillis()
+        val historyKey = guardKey(packageName, "reply_history")
+        val history = try { JSONArray(prefs.getString(historyKey, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+
+        for (i in 0 until history.length()) {
+            val row = history.optJSONObject(i) ?: continue
+            val sent = row.optString("text", "")
+            val sentAt = row.optLong("time", 0L)
+            if (sent.isBlank() || now - sentAt !in 0..bounceWindowMs) continue
+            if (candidate == sent) return true
+            if (sent.length >= 12 && candidate.contains(sent)) return true
+            if (candidate.length >= 12 && sent.contains(candidate)) return true
+        }
+
         val sentText = prefs.getString(guardKey(packageName, "reply_text"), null) ?: return false
         val sentAt = prefs.getLong(guardKey(packageName, "reply_time"), 0L)
-        val age = System.currentTimeMillis() - sentAt
-        if (age !in 0..30_000) return false
+        if (now - sentAt !in 0..bounceWindowMs) return false
+        return candidate == sentText ||
+            (sentText.length >= 12 && candidate.contains(sentText)) ||
+            (candidate.length >= 12 && sentText.contains(candidate))
+    }
+
+    private fun isBounceDuplicate(packageName: String, notificationKey: String, text: String): Boolean {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        val now = System.currentTimeMillis()
         val candidate = normalizedMessage(text)
-        if (candidate == sentText) return true
-        return sentText.length >= 12 && candidate.contains(sentText)
+        val key = guardKey(packageName, "bounce_text")
+        val notificationKeyPref = guardKey(packageName, "bounce_notification_key")
+        val timeKey = guardKey(packageName, "bounce_time")
+        val previousText = prefs.getString(key, null)
+        val previousNotificationKey = prefs.getString(notificationKeyPref, null)
+        val previousAt = prefs.getLong(timeKey, 0L)
+        val recent = now - previousAt in 0..duplicateWindowMs
+        val sameText = previousText == candidate
+        val sameNotification = previousNotificationKey == notificationKey
+        if (recent && sameText && sameNotification) return true
+        if (recent && sameText) return true
+        prefs.edit()
+            .putString(key, candidate)
+            .putString(notificationKeyPref, notificationKey)
+            .putLong(timeKey, now)
+            .apply()
+        return false
     }
 
     private fun isRapidDuplicate(packageName: String, sender: String, text: String): Boolean {
@@ -258,7 +329,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val previous = prefs.getString(key, null)
         val previousAt = prefs.getLong(timeKey, 0L)
         val now = System.currentTimeMillis()
-        if (previous == fingerprint && now - previousAt in 0..10_000) return true
+        if (previous == fingerprint && now - previousAt in 0..duplicateWindowMs) return true
         prefs.edit().putString(key, fingerprint).putLong(timeKey, now).apply()
         return false
     }

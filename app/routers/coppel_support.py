@@ -5,18 +5,17 @@ from ..auth import require_admin
 from ..database import get_db
 from ..models import AuditLog, Company, GlobalSetting, Store, User
 from ..services.company_routing import normalize
-from ..services.coppel_tree import coppel_decision_tree
+from ..services.coppel_tree import TREE_SOURCE, TREE_VERSION, coppel_decision_tree
 
 router = APIRouter(prefix='/api/empresas', tags=['coppel-support'])
-COPPEL_TEMPLATE_MARKER = 'coppel_support_tree_v4_applied'
-COPPEL_TEMPLATE_VERSION = 4
+COPPEL_TEMPLATE_MARKER = f'coppel_support_tree_v{TREE_VERSION}_applied'
+COPPEL_TEMPLATE_VERSION = TREE_VERSION
 COPPEL_DEFAULT_KEY = 'coppel'
 COPPEL_DEFAULT_NAME = 'Coppel'
 
 
 def _looks_like_coppel(company: Company) -> bool:
-    text = normalize(f'{company.company_key} {company.name}')
-    return 'coppel' in text
+    return 'coppel' in normalize(f'{company.company_key} {company.name}')
 
 
 def _ensure_coppel_company(db: Session) -> tuple[Company, bool]:
@@ -39,16 +38,24 @@ def _ensure_coppel_company(db: Session) -> tuple[Company, bool]:
         action='crear_empresa_coppel_automatica',
         entity='company',
         entity_id=str(company.id),
-        details={'company_key': company.company_key, 'template': 'coppel_support_v4'},
+        details={
+            'company_key': company.company_key,
+            'template': f'coppel_support_v{TREE_VERSION}',
+            'source': TREE_SOURCE,
+        },
     ))
     return company, True
 
 
 def ensure_coppel_template(db: Session) -> bool:
-    """Ensure Coppel exists and receives this template version once."""
+    """Apply the current document-backed Coppel flow once per template version."""
     marker = db.get(GlobalSetting, COPPEL_TEMPLATE_MARKER)
     marker_value = marker.value if marker and isinstance(marker.value, dict) else {}
-    applied_ids = {int(value) for value in marker_value.get('company_ids', []) if str(value).isdigit()}
+    applied_ids = {
+        int(value)
+        for value in marker_value.get('company_ids', [])
+        if str(value).isdigit()
+    }
     changed = False
 
     coppel_company, created = _ensure_coppel_company(db)
@@ -67,22 +74,30 @@ def ensure_coppel_template(db: Session) -> bool:
             action='aplicar_plantilla_coppel_automatica',
             entity='company',
             entity_id=str(company.id),
-            details={'company_key': company.company_key, 'template': 'coppel_support_v4'},
+            details={
+                'company_key': company.company_key,
+                'template': f'coppel_support_v{TREE_VERSION}',
+                'source': TREE_SOURCE,
+                'nodes': len((company.decision_tree or {}).get('nodos') or {}),
+            },
         ))
 
-    if coppel_company.id not in applied_ids:
-        applied_ids.add(coppel_company.id)
-
+    applied_ids.add(coppel_company.id)
     value = {
-        'applied': bool(applied_ids),
+        'applied': True,
         'company_ids': sorted(applied_ids),
         'version': COPPEL_TEMPLATE_VERSION,
+        'source': TREE_SOURCE,
     }
     if marker:
         marker.value = value
         marker.updated_by = 'system'
     else:
-        db.add(GlobalSetting(key=COPPEL_TEMPLATE_MARKER, value=value, updated_by='system'))
+        db.add(GlobalSetting(
+            key=COPPEL_TEMPLATE_MARKER,
+            value=value,
+            updated_by='system',
+        ))
 
     if changed or not marker:
         db.commit()
@@ -99,6 +114,21 @@ def apply_coppel_template(
     if not company:
         raise HTTPException(status_code=404, detail='Empresa no encontrada')
     company.decision_tree = coppel_decision_tree()
-    db.add(AuditLog(username=admin.username, action='aplicar_plantilla_coppel', entity='company', entity_id=company_key, details={'template': 'coppel_support_v4'}))
+    db.add(AuditLog(
+        username=admin.username,
+        action='aplicar_plantilla_coppel',
+        entity='company',
+        entity_id=company_key,
+        details={
+            'template': f'coppel_support_v{TREE_VERSION}',
+            'source': TREE_SOURCE,
+            'nodes': len((company.decision_tree or {}).get('nodos') or {}),
+        },
+    ))
     db.commit()
-    return {'status': 'ok', 'structure': company.decision_tree}
+    return {
+        'status': 'ok',
+        'template_version': TREE_VERSION,
+        'source': TREE_SOURCE,
+        'structure': company.decision_tree,
+    }

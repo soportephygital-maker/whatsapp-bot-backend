@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from .config import settings
 from .database import Base, SessionLocal, engine
 from .models import Company, Store
-from .routers import access_control, auth, case_event_policy_patch, case_management_patch, companies, company_delete_safe, company_resources, contacts, conversation_admin, conversation_visibility_patch, coppel_support, dashboard, dashboard_fullscreen_support_patch, dashboard_patch, dashboard_role_redesign_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, global_entry_sequence_patch, iqos_support, local_bridge, login_recovery_dashboard_patch, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, support_email_bridge, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, tree_zoom_dashboard_patch, whatsapp
+from .routers import access_control, auth, case_event_policy_patch, case_management_patch, companies, company_delete_safe, company_resources, contacts, conversation_admin, conversation_visibility_patch, coppel_support, dashboard, dashboard_fullscreen_support_patch, dashboard_patch, dashboard_permission_visibility_patch, dashboard_role_redesign_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, global_entry_sequence_patch, iqos_support, local_bridge, login_recovery_dashboard_patch, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, support_email_bridge, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, tree_zoom_dashboard_patch, whatsapp
 from .services.escalation import process_help_escalations
 
 app = FastAPI(title=settings.app_name)
@@ -37,8 +37,9 @@ app.include_router(conversation_visibility_patch.router)
 app.include_router(dashboard.router)
 app.include_router(settings_router.router)
 app.include_router(global_entry.router)
-# Role-aware redesign owns /dashboard and /dashboard.js. It wraps the existing
-# dashboard functionality without changing backend authorization or permission rules.
+# Strict permission-aware redesign owns /dashboard and /dashboard.js.
+# Unauthorized controls are removed from view instead of left disabled/visible.
+app.include_router(dashboard_permission_visibility_patch.router)
 app.include_router(dashboard_role_redesign_patch.router)
 app.include_router(dashboard_fullscreen_support_patch.router)
 app.include_router(login_recovery_dashboard_patch.router)

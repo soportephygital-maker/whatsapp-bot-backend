@@ -40,6 +40,15 @@ class Settings:
     openai_api_key: str = os.getenv('OPENAI_API_KEY', '')
     openai_model: str = os.getenv('OPENAI_MODEL', 'gpt-5.6-luna')
     ai_learning_enabled: bool = _env_bool('AI_LEARNING_ENABLED', False)
+    # AI_PROVIDER: auto | openai | ollama | retrieval
+    # - auto: uses OpenAI when a key exists, otherwise Ollama when configured,
+    #   otherwise safe retrieval-only mode.
+    # - ollama: self-hosted/local generative model; no OpenAI API key required.
+    ai_provider: str = os.getenv('AI_PROVIDER', 'auto').strip().lower()
+    ai_local_base_url: str = os.getenv('AI_LOCAL_BASE_URL', '').rstrip('/')
+    ai_local_model: str = os.getenv('AI_LOCAL_MODEL', 'qwen2.5:7b-instruct')
+    ai_local_timeout_seconds: int = int(os.getenv('AI_LOCAL_TIMEOUT_SECONDS', '60'))
+    ai_retrieval_limit: int = int(os.getenv('AI_RETRIEVAL_LIMIT', '12'))
     allowed_origins: tuple[str, ...] = tuple(
         x.strip() for x in os.getenv('ALLOWED_ORIGINS', '*').split(',') if x.strip()
     ) or ('*',)

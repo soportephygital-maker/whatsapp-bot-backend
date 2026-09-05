@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_ai_neural_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-ai-neural-entry'])
-UI_VERSION = '2026.09.04-69'
+UI_VERSION = '2026.09.04-70'
 
 
 def _html() -> str:
@@ -34,8 +34,52 @@ const _entryRefresh=psRefreshRoleChrome;
 psRefreshRoleChrome=function(){_entryRefresh();forceAdminAiEntry();};
 const _entryApplyPermissions=applyPermissionNavigation;
 applyPermissionNavigation=function(){_entryApplyPermissions();forceAdminAiEntry();};
+
+// IMPORTANT: the inherited show() function always renders Solicitudes. Some
+// background refresh paths can call show() again after login, which was kicking
+// the user out of IA, Tickets, Empresas, etc. Run the full show() only once;
+// later refreshes update access/stats without changing the current content view.
 const _entryShow=show;
-show=async function(){await _entryShow();setTimeout(forceAdminAiEntry,0);};
+let _dashboardInitialShowDone=false;
+show=async function(){
+  if(!_dashboardInitialShowDone){
+    _dashboardInitialShowDone=true;
+    await _entryShow();
+    setTimeout(forceAdminAiEntry,0);
+    return;
+  }
+  try{
+    if(typeof loadMyAccess==='function')await loadMyAccess();
+    const s=await api('/api/stats');
+    const stats=document.getElementById('stats');
+    if(stats)stats.innerHTML=Object.entries(s).map(([k,v])=>`<div class="card"><b style="font-size:24px">${esc(v)}</b><div>${esc(k)}</div></div>`).join('');
+    if(typeof loadCompanyContext==='function')await loadCompanyContext();
+    if(typeof psRefreshRoleChrome==='function')psRefreshRoleChrome();
+    setTimeout(forceAdminAiEntry,0);
+  }catch(x){err(x.message)}
+};
+
+// Mark the active page so a background update can never replace it with the
+// default Solicitudes view.
+function rememberDashboardView(name){
+  try{sessionStorage.setItem('phygital_dashboard_view_v1',name||'help')}catch(_){}
+}
+function currentRememberedView(){
+  try{return sessionStorage.getItem('phygital_dashboard_view_v1')||'help'}catch(_){return 'help'}
+}
+const _entryHelp=help;
+help=async function(){rememberDashboardView('help');return _entryHelp()};
+const _entryConv=conv;
+conv=async function(...args){rememberDashboardView('conv');return _entryConv(...args)};
+const _entryCompanies=companies;
+companies=async function(...args){rememberDashboardView('companies');return _entryCompanies(...args)};
+if(typeof ticketsView==='function'){const _entryTickets=ticketsView;ticketsView=async function(...args){rememberDashboardView('tickets');return _entryTickets(...args)}}
+if(typeof reportsView==='function'){const _entryReports=reportsView;reportsView=async function(...args){rememberDashboardView('reports');return _entryReports(...args)}}
+if(typeof users==='function'){const _entryUsers=users;users=async function(...args){rememberDashboardView('users');return _entryUsers(...args)}}
+if(typeof activity==='function'){const _entryActivity=activity;activity=async function(...args){rememberDashboardView('activity');return _entryActivity(...args)}}
+const _entryRenderAi=renderSuperAdminAiNeural;
+renderSuperAdminAiNeural=async function(...args){rememberDashboardView('ai');return _entryRenderAi(...args)};
+
 let _aiEntryAttempts=0;
 const _aiEntryTimer=setInterval(()=>{
   forceAdminAiEntry();

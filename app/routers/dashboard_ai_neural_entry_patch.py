@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_ai_neural_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-ai-neural-entry'])
-UI_VERSION = '2026.09.04-71'
+UI_VERSION = '2026.09.04-72'
 
 
 def _html() -> str:
@@ -65,6 +65,11 @@ if(typeof users==='function'){const _entryUsers=users;users=async function(...ar
 if(typeof activity==='function'){const _entryActivity=activity;activity=async function(...args){rememberDashboardView('activity');return _entryActivity(...args)}}
 const _entryRenderAi=renderSuperAdminAiNeural;
 renderSuperAdminAiNeural=async function(...args){
+  // The inherited dashboard has an 8-second live refresh that refreshes whichever
+  // value is stored in LIVE_VIEW. The initial page sets LIVE_VIEW='help'. Without
+  // changing it here, the timer redraws Solicitudes over the AI screen every 8s.
+  if(typeof LIVE_VIEW!=='undefined')LIVE_VIEW='ai';
+  if(typeof LIVE_CHAT_ID!=='undefined')LIVE_CHAT_ID=null;
   rememberDashboardView('ai');
   const out=await _entryRenderAi(...args);
   try{
@@ -78,6 +83,21 @@ renderSuperAdminAiNeural=async function(...args){
   }catch(_){}
   return out;
 };
+
+// If the user is already inside IA, never let a generic background refresh leave
+// LIVE_VIEW pointing back to help. Stats still refresh; content remains untouched.
+const _entryLiveRefresh=typeof liveRefresh==='function'?liveRefresh:null;
+if(_entryLiveRefresh){
+  liveRefresh=async function(){
+    if(typeof LIVE_VIEW!=='undefined'&&LIVE_VIEW==='ai'){
+      if(LIVE_REFRESH_BUSY||!localStorage.getItem(TK)||$('app')?.classList.contains('h'))return;
+      LIVE_REFRESH_BUSY=true;
+      try{if(typeof liveStats==='function')await liveStats();forceAdminAiEntry()}catch(_){}finally{LIVE_REFRESH_BUSY=false}
+      return;
+    }
+    return _entryLiveRefresh();
+  };
+}
 
 let _aiEntryAttempts=0;
 const _aiEntryTimer=setInterval(()=>{forceAdminAiEntry();_aiEntryAttempts+=1;if(document.getElementById('navAINeural')||_aiEntryAttempts>20)clearInterval(_aiEntryTimer)},250);

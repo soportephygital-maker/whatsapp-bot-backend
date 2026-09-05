@@ -122,12 +122,7 @@ def human_was_required(db: Session, ticket: SupportTicket) -> bool:
 
 
 def create_learning_candidate(db: Session, ticket: SupportTicket) -> None:
-    from ..models import AILearningPoint
-    if ticket.status != 'closed':
-        return
-    existing = db.query(AILearningPoint).filter(AILearningPoint.ticket_id == ticket.id).first()
-    if existing:
-        return
-    solution = ticket.close_result or ''
-    row = AILearningPoint(company_id=ticket.company_id, ticket_id=ticket.id, problem=ticket.description or '', solution=solution, confidence=40 if solution else 20, status='pending')
-    db.add(row)
+    # Defer the extraction details to ai_learning so the same local learner can
+    # use the complete conversation, human replies and final outcome.
+    from .ai_learning import learn_from_conversation
+    learn_from_conversation(db, ticket)

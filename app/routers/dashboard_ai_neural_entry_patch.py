@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_ai_neural_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-ai-neural-entry'])
-UI_VERSION = '2026.09.04-70'
+UI_VERSION = '2026.09.04-71'
 
 
 def _html() -> str:
@@ -35,10 +35,6 @@ psRefreshRoleChrome=function(){_entryRefresh();forceAdminAiEntry();};
 const _entryApplyPermissions=applyPermissionNavigation;
 applyPermissionNavigation=function(){_entryApplyPermissions();forceAdminAiEntry();};
 
-// IMPORTANT: the inherited show() function always renders Solicitudes. Some
-// background refresh paths can call show() again after login, which was kicking
-// the user out of IA, Tickets, Empresas, etc. Run the full show() only once;
-// later refreshes update access/stats without changing the current content view.
 const _entryShow=show;
 let _dashboardInitialShowDone=false;
 show=async function(){
@@ -59,33 +55,32 @@ show=async function(){
   }catch(x){err(x.message)}
 };
 
-// Mark the active page so a background update can never replace it with the
-// default Solicitudes view.
-function rememberDashboardView(name){
-  try{sessionStorage.setItem('phygital_dashboard_view_v1',name||'help')}catch(_){}
-}
-function currentRememberedView(){
-  try{return sessionStorage.getItem('phygital_dashboard_view_v1')||'help'}catch(_){return 'help'}
-}
-const _entryHelp=help;
-help=async function(){rememberDashboardView('help');return _entryHelp()};
-const _entryConv=conv;
-conv=async function(...args){rememberDashboardView('conv');return _entryConv(...args)};
-const _entryCompanies=companies;
-companies=async function(...args){rememberDashboardView('companies');return _entryCompanies(...args)};
+function rememberDashboardView(name){try{sessionStorage.setItem('phygital_dashboard_view_v1',name||'help')}catch(_){}}
+const _entryHelp=help;help=async function(){rememberDashboardView('help');return _entryHelp()};
+const _entryConv=conv;conv=async function(...args){rememberDashboardView('conv');return _entryConv(...args)};
+const _entryCompanies=companies;companies=async function(...args){rememberDashboardView('companies');return _entryCompanies(...args)};
 if(typeof ticketsView==='function'){const _entryTickets=ticketsView;ticketsView=async function(...args){rememberDashboardView('tickets');return _entryTickets(...args)}}
 if(typeof reportsView==='function'){const _entryReports=reportsView;reportsView=async function(...args){rememberDashboardView('reports');return _entryReports(...args)}}
 if(typeof users==='function'){const _entryUsers=users;users=async function(...args){rememberDashboardView('users');return _entryUsers(...args)}}
 if(typeof activity==='function'){const _entryActivity=activity;activity=async function(...args){rememberDashboardView('activity');return _entryActivity(...args)}}
 const _entryRenderAi=renderSuperAdminAiNeural;
-renderSuperAdminAiNeural=async function(...args){rememberDashboardView('ai');return _entryRenderAi(...args)};
+renderSuperAdminAiNeural=async function(...args){
+  rememberDashboardView('ai');
+  const out=await _entryRenderAi(...args);
+  try{
+    const s=await api('/api/admin-ai/status');
+    const badge=document.querySelector('.ai-ai-badge');
+    if(badge){
+      const labels={openai:'OpenAI',ollama:'Modelo local',retrieval:'Memoria local'};
+      const provider=labels[s.provider]||s.provider||'IA local';
+      badge.textContent=`● ${provider} · ${s.model||'sin modelo'}`;
+    }
+  }catch(_){}
+  return out;
+};
 
 let _aiEntryAttempts=0;
-const _aiEntryTimer=setInterval(()=>{
-  forceAdminAiEntry();
-  _aiEntryAttempts+=1;
-  if(document.getElementById('navAINeural')||_aiEntryAttempts>20)clearInterval(_aiEntryTimer);
-},250);
+const _aiEntryTimer=setInterval(()=>{forceAdminAiEntry();_aiEntryAttempts+=1;if(document.getElementById('navAINeural')||_aiEntryAttempts>20)clearInterval(_aiEntryTimer)},250);
 document.addEventListener('DOMContentLoaded',()=>setTimeout(forceAdminAiEntry,50));
 '''
     marker='\n})();'

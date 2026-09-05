@@ -15,7 +15,40 @@ def _html() -> str:
 
 
 def _js() -> str:
-    return base_js()
+    js = base_js()
+    patch = r'''
+// The admin account may use a bootstrap username different from the literal
+// "admin". Role=admin is the reliable UI signal; API endpoints still enforce
+// primary-admin authorization server-side.
+psIsSuperAdmin=function(){
+  const u=USER_ACCESS||{};
+  return String(u.role||'').toLowerCase()==='admin';
+};
+function forceAdminAiEntry(){
+  if(!psIsSuperAdmin())return;
+  installSuperAdminAiNav();
+  const b=document.getElementById('navAINeural');
+  if(b){b.classList.remove('h','ps-permission-hidden');b.style.display='';}
+}
+const _entryRefresh=psRefreshRoleChrome;
+psRefreshRoleChrome=function(){_entryRefresh();forceAdminAiEntry();};
+const _entryApplyPermissions=applyPermissionNavigation;
+applyPermissionNavigation=function(){_entryApplyPermissions();forceAdminAiEntry();};
+const _entryShow=show;
+show=async function(){await _entryShow();setTimeout(forceAdminAiEntry,0);};
+let _aiEntryAttempts=0;
+const _aiEntryTimer=setInterval(()=>{
+  forceAdminAiEntry();
+  _aiEntryAttempts+=1;
+  if(document.getElementById('navAINeural')||_aiEntryAttempts>20)clearInterval(_aiEntryTimer);
+},250);
+document.addEventListener('DOMContentLoaded',()=>setTimeout(forceAdminAiEntry,50));
+'''
+    marker='\n})();'
+    if marker in js:
+        head,tail=js.rsplit(marker,1)
+        return head+'\n'+patch+marker+tail
+    return js+'\n'+patch
 
 
 @router.get('/dashboard', response_class=HTMLResponse)

@@ -3,6 +3,7 @@ import base64
 import hashlib
 import lzma
 from pathlib import Path
+import runpy
 import subprocess
 import tempfile
 
@@ -17,4 +18,6 @@ with tempfile.TemporaryDirectory(prefix='phygital-revision-') as tmp:
     target.write_bytes(patch)
     subprocess.run(['git', 'apply', '--check', str(target)], check=True)
     subprocess.run(['git', 'apply', str(target)], check=True)
+if (folder / 'ajustes.py').exists():
+    runpy.run_path(str(folder / 'ajustes.py'))
 print('Revision 79 aplicada al entorno de validacion; el despliegue no se modifica.')

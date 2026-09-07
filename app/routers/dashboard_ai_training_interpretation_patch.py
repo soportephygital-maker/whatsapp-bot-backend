@@ -4,15 +4,15 @@ from fastapi.responses import HTMLResponse, Response
 from .dashboard_ai_neural_entry_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-ai-training-interpretation'])
-UI_VERSION = '2026.09.04-75'
+UI_VERSION = '2026.09.04-76'
 
 
 def _html() -> str:
     html = base_html()
     html = html.replace('UI 2026.09.04-73', f'UI {UI_VERSION}')
     html = html.replace('/dashboard.js?v=2026.09.04-73', f'/dashboard.js?v={UI_VERSION}')
-    html = html.replace('</head>', '''<style id="dashboardGeneralNavigation75">
-#navGeneral{font-weight:700!important}.dash-action{cursor:pointer;transition:transform .16s ease,filter .16s ease,box-shadow .16s ease}.dash-action:hover{transform:translateY(-2px);filter:brightness(1.08);box-shadow:0 10px 26px rgba(0,0,0,.18)}.dash-action:focus{outline:2px solid #53aaff;outline-offset:2px}.dash-general-welcome{padding:16px 18px;margin-bottom:14px}.dash-general-welcome h2{margin:0 0 5px;font-size:24px}.dash-general-welcome p{margin:0;color:#8eacc8}
+    html = html.replace('</head>', '''<style id="dashboardGeneralNavigation76">
+#navGeneral{font-weight:700!important}.dash-action{cursor:pointer;transition:transform .16s ease,filter .16s ease,box-shadow .16s ease}.dash-action:hover{transform:translateY(-2px);filter:brightness(1.08);box-shadow:0 10px 26px rgba(0,0,0,.18)}.dash-action:focus{outline:2px solid #53aaff;outline-offset:2px}.dash-general-welcome{padding:16px 18px;margin-bottom:14px}.dash-general-welcome h2{margin:0 0 5px;font-size:24px}.dash-general-welcome p{margin:0;color:#8eacc8}.ai-node-editor{display:grid;gap:9px;margin-top:12px;padding:12px;border:1px solid #62431f;border-radius:12px;background:#0b0907}.ai-node-editor label{font-size:11px;color:#c9ad8d}.ai-node-editor textarea{min-height:88px}.ai-node-editor input[type=number]{max-width:130px}.ai-node-danger{background:#4a1920!important;border-color:#9d3e4c!important;color:#ffdce2!important}
 </style></head>''')
     return html
 
@@ -71,10 +71,39 @@ function wireOverviewShortcuts(){
 function wireSidebarNavigation(){
   const map={navHelp:'help',navConv:'conv',navCompanies:'companies',navTickets:'ticketsView',navReports:'reportsView',navUsers:'users',navActivity:'activity',navAINeural:'renderSuperAdminAiNeural'};
   Object.entries(map).forEach(([id,fn])=>{
-    const b=document.getElementById(id);if(!b||b.dataset.nav75==='1')return;b.dataset.nav75='1';
+    const b=document.getElementById(id);if(!b||b.dataset.nav76==='1')return;b.dataset.nav76='1';
     b.addEventListener('click',()=>setTimeout(()=>markDashboardNavActive(id),0));
   });
 }
+
+function renderEditableNeuronDetail(point){
+  const box=document.getElementById('aiNeuronDetail');if(!box||!point)return;
+  const growth=typeof aiNeuralGrowth==='function'?aiNeuralGrowth(point):Number(point.confidence||0);
+  const phase=typeof aiNeuralPhase==='function'?aiNeuralPhase(point):point.status;
+  box.innerHTML=`<h4>Neurona N${point.id} · ${esc(phase)}</h4><span class="badge status">${esc(point.status)}</span><div><b>Problema aprendido</b><div>${esc(point.problem||'Sin problema registrado')}</div></div><div style="margin-top:8px"><b>Respuesta / solución</b><div>${esc(point.solution||'Sin solución registrada')}</div></div><div style="margin-top:10px;display:flex;justify-content:space-between"><span>Desarrollo</span><b>${growth}%</b></div><div class="ai-growth"><i style="width:${growth}%"></i></div><div class="ai-neural-note">Confianza registrada: ${Number(point.confidence||0)}% · Ticket: ${point.ticket_id||'sin ticket'} · Empresa ID: ${point.company_id||'general'}</div><div class="toolbar" style="margin-top:10px"><button class="aiEditNode">Editar</button>${point.status!=='approved'?`<button class="aiApproveSelected" data-id="${point.id}">Aprobar</button>`:''}${point.status!=='rejected'?`<button class="aiRejectSelected danger" data-id="${point.id}">Rechazar</button>`:''}<button class="aiDeleteNode ai-node-danger">Eliminar nodo</button></div><div class="ai-node-editor" style="display:none"><label>Problema<textarea class="aiEditProblem">${esc(point.problem||'')}</textarea></label><label>Solución / procedimiento<textarea class="aiEditSolution">${esc(point.solution||'')}</textarea></label><label>Confianza<input class="aiEditConfidence" type="number" min="0" max="100" value="${Number(point.confidence||0)}"></label><div class="toolbar"><button class="aiSaveNode">Guardar cambios</button><button class="aiCancelEdit">Cancelar</button></div></div>`;
+  const edit=box.querySelector('.aiEditNode'),editor=box.querySelector('.ai-node-editor'),cancel=box.querySelector('.aiCancelEdit'),save=box.querySelector('.aiSaveNode'),del=box.querySelector('.aiDeleteNode'),approve=box.querySelector('.aiApproveSelected'),reject=box.querySelector('.aiRejectSelected');
+  if(edit)edit.onclick=()=>editor.style.display='grid';
+  if(cancel)cancel.onclick=()=>editor.style.display='none';
+  if(approve)approve.onclick=()=>updateNeuralLearning(point.id,'approved');
+  if(reject)reject.onclick=()=>updateNeuralLearning(point.id,'rejected');
+  if(save)save.onclick=async()=>{
+    const problem=box.querySelector('.aiEditProblem').value.trim();
+    const solution=box.querySelector('.aiEditSolution').value.trim();
+    const confidence=Number(box.querySelector('.aiEditConfidence').value||0);
+    if(!problem||!solution)return err('Problema y solución no pueden quedar vacíos.');
+    try{
+      await api('/api/admin-ai/learning/'+point.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:point.status,problem,solution,confidence})});
+      await renderSuperAdminAiNeural();
+    }catch(x){err(x.message)}
+  };
+  if(del)del.onclick=async()=>{
+    if(!confirm(`Eliminar definitivamente la neurona N${point.id}? Esta acción quita este conocimiento del aprendizaje.`))return;
+    try{await api('/api/admin-ai/learning/'+point.id,{method:'DELETE'});await renderSuperAdminAiNeural()}catch(x){err(x.message)}
+  };
+}
+const _nodeDetailOriginal=typeof showNeuronDetail==='function'?showNeuronDetail:null;
+if(_nodeDetailOriginal){showNeuronDetail=function(point){if(!point)return _nodeDetailOriginal(point);renderEditableNeuronDetail(point)}}
+
 const _generalDecorate=typeof decorateDashboardView==='function'?decorateDashboardView:null;
 if(_generalDecorate){
   decorateDashboardView=function(){

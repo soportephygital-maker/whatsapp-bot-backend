@@ -149,12 +149,42 @@ def update_learning(point_id: int, data: LearningDecision, admin: User = Depends
     if not row:
         raise HTTPException(status_code=404, detail='Punto de aprendizaje no encontrado')
     row.status = data.status
-    if data.problem is not None: row.problem = data.problem
-    if data.solution is not None: row.solution = data.solution
-    if data.confidence is not None: row.confidence = data.confidence
+    if data.problem is not None:
+        row.problem = data.problem.strip()
+    if data.solution is not None:
+        row.solution = data.solution.strip()
+    if data.confidence is not None:
+        row.confidence = data.confidence
+    if not str(row.problem or '').strip() or not str(row.solution or '').strip():
+        raise HTTPException(status_code=422, detail='Problema y solución no pueden quedar vacíos')
     row.approved_by = admin.username if data.status == 'approved' else None
     db.commit()
-    return {'status': 'ok', 'point_id': row.id}
+    return {
+        'status': 'ok',
+        'point_id': row.id,
+        'learning_status': row.status,
+        'problem': row.problem,
+        'solution': row.solution,
+        'confidence': row.confidence,
+    }
+
+
+@router.delete('/admin-ai/learning/{point_id}')
+def delete_learning(point_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    _primary_admin(admin)
+    row = db.get(AILearningPoint, point_id)
+    if not row:
+        raise HTTPException(status_code=404, detail='Punto de aprendizaje no encontrado')
+    deleted = {
+        'id': row.id,
+        'status': row.status,
+        'problem': row.problem,
+        'ticket_id': row.ticket_id,
+        'company_id': row.company_id,
+    }
+    db.delete(row)
+    db.commit()
+    return {'status': 'deleted', 'learning_point': deleted}
 
 
 @router.post('/admin-ai/chat')

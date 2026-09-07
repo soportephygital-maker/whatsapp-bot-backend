@@ -14,6 +14,7 @@ from ..services.ai_learning import admin_chat, learning_status
 from ..services.case_event_notifications import send_case_event_email
 from ..services.case_reports import build_chat_pdf, build_summary_pdf
 from ..services.ticketing import add_ticket_followup, ticket_code, ticket_dict, ticket_tracking
+from ..services.user_access import allowed_company_ids, can_access_company
 
 router = APIRouter(prefix='/api', tags=['case-management'])
 MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
@@ -55,6 +56,52 @@ def _primary_admin(user: User) -> User:
     if user.role != 'admin' or (expected and user.username != expected):
         raise HTTPException(status_code=403, detail='Esta sección es exclusiva del administrador principal')
     return user
+
+
+def _ai_viewer(user: User) -> User:
+    if user.role not in {'admin', 'gerente'}:
+        raise HTTPException(status_code=403, detail='La visualización de IA está disponible para administrador y gerente')
+    if user.role == 'admin':
+        _primary_admin(user)
+    return user
+
+
+def _scoped_learning_query(db: Session, user: User):
+    query = db.query(AILearningPoint)
+    if user.role == 'gerente':
+        allowed = allowed_company_ids(db, user)
+        if allowed is not None:
+            if not allowed:
+                return query.filter(AILearningPoint.id == -1)
+            query = query.filter(
+                (AILearningPoint.company_id.in_(allowed)) |
+                (AILearningPoint.company_id.is_(None))
+            )
+    return query
+
+
+def _scoped_learning_status(db: Session, user: User) -> dict:
+    if user.role == 'admin':
+        return learning_status(db)
+    rows = _scoped_learning_query(db, user).all()
+    approved = sum(1 for row in rows if row.status == 'approved')
+    pending = sum(1 for row in rows if row.status == 'pending')
+    rejected = sum(1 for row in rows if row.status == 'rejected')
+    companies = len({row.company_id for row in rows if row.company_id})
+    score = min(100, approved * 4 + min(20, companies * 5))
+    level = 'Inicial' if score < 20 else 'Aprendiendo' if score < 50 else 'Operativo' if score < 80 else 'Avanzado'
+    return {
+        'enabled': True,
+        'configured': False,
+        'provider': 'manager_view',
+        'model': 'visualización de aprendizaje',
+        'score': score,
+        'level': level,
+        'approved_points': approved,
+        'pending_points': pending,
+        'rejected_points': rejected,
+        'companies_with_learning': companies,
+    }
 
 
 @router.post('/tickets/{ticket_id}/seguimiento')
@@ -135,19 +182,46 @@ def ticket_archive(ticket_id: int, _: User = Depends(get_current_user), db: Sess
 
 
 @router.get('/admin-ai/status')
-def ai_status(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    _primary_admin(admin)
-    status = learning_status(db)
-    status['recent_points'] = [{'id': r.id, 'company_id': r.company_id, 'ticket_id': r.ticket_id, 'problem': r.problem, 'solution': r.solution, 'confidence': r.confidence, 'status': r.status} for r in db.query(AILearningPoint).order_by(AILearningPoint.id.desc()).limit(30).all()]
+def ai_status(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ai_viewer(user)
+    status = _scoped_learning_status(db, user)
+    rows = _scoped_learning_query(db, user).order_by(AILearningPoint.id.desc()).limit(30).all()
+    status['recent_points'] = [
+        {'id': r.id, 'company_id': r.company_id, 'ticket_id': r.ticket_id, 'problem': r.problem, 'solution': r.solution, 'confidence': r.confidence, 'status': r.status}
+        for r in rows
+    ]
+    status['viewer_role'] = user.role
+    status['can_approve'] = user.role in {'admin', 'gerente'}
+    status['can_edit'] = user.role == 'admin'
+    status['can_reject'] = user.role == 'admin'
+    status['can_delete'] = user.role == 'admin'
+    status['can_train'] = user.role == 'admin'
     return status
 
 
 @router.patch('/admin-ai/learning/{point_id}')
-def update_learning(point_id: int, data: LearningDecision, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    _primary_admin(admin)
+def update_learning(point_id: int, data: LearningDecision, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ai_viewer(user)
     row = db.get(AILearningPoint, point_id)
     if not row:
         raise HTTPException(status_code=404, detail='Punto de aprendizaje no encontrado')
+    if user.role == 'gerente':
+        if not can_access_company(db, user, row.company_id):
+            raise HTTPException(status_code=403, detail='No tienes acceso a la empresa de este aprendizaje')
+        if data.status != 'approved' or data.problem is not None or data.solution is not None or data.confidence is not None:
+            raise HTTPException(status_code=403, detail='El gerente solo puede aprobar aprendizajes; no puede editarlos, rechazarlos ni eliminarlos')
+        row.status = 'approved'
+        row.approved_by = user.username
+        db.commit()
+        return {
+            'status': 'ok',
+            'point_id': row.id,
+            'learning_status': row.status,
+            'approved_by': row.approved_by,
+            'viewer_role': user.role,
+        }
+
+    _primary_admin(user)
     row.status = data.status
     if data.problem is not None:
         row.problem = data.problem.strip()
@@ -157,7 +231,7 @@ def update_learning(point_id: int, data: LearningDecision, admin: User = Depends
         row.confidence = data.confidence
     if not str(row.problem or '').strip() or not str(row.solution or '').strip():
         raise HTTPException(status_code=422, detail='Problema y solución no pueden quedar vacíos')
-    row.approved_by = admin.username if data.status == 'approved' else None
+    row.approved_by = user.username if data.status == 'approved' else None
     db.commit()
     return {
         'status': 'ok',
@@ -175,13 +249,7 @@ def delete_learning(point_id: int, admin: User = Depends(require_admin), db: Ses
     row = db.get(AILearningPoint, point_id)
     if not row:
         raise HTTPException(status_code=404, detail='Punto de aprendizaje no encontrado')
-    deleted = {
-        'id': row.id,
-        'status': row.status,
-        'problem': row.problem,
-        'ticket_id': row.ticket_id,
-        'company_id': row.company_id,
-    }
+    deleted = {'id': row.id, 'status': row.status, 'problem': row.problem, 'ticket_id': row.ticket_id, 'company_id': row.company_id}
     db.delete(row)
     db.commit()
     return {'status': 'deleted', 'learning_point': deleted}

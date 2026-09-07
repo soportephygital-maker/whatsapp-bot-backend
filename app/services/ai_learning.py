@@ -145,13 +145,150 @@ def _learning_matches(db: Session, company_id: int | None, query: str, approved_
     return [row for _, row in scored[:(limit or settings.ai_retrieval_limit)]]
 
 
-def learn_from_conversation(db: Session, ticket: SupportTicket) -> AILearningPoint | None:
-    """Create or enrich a pending learning neuron from the complete solved conversation.
+def _field(text: str, label: str, next_labels: tuple[str, ...]) -> str:
+    tail = '|'.join(re.escape(x) for x in next_labels)
+    pattern = rf'(?is)\b{re.escape(label)}\s*:\s*(.+?)(?=\s*\b(?:{tail})\s*:|$)'
+    match = re.search(pattern, text)
+    return re.sub(r'\s+', ' ', match.group(1)).strip(' .;-') if match else ''
 
-    This is local auto-learning: it extracts the recurring topic, customer problem,
-    operator/bot guidance and final result. It never becomes customer-facing until
-    the primary admin approves it.
-    """
+
+def _training_intent(message: str) -> bool:
+    low = str(message or '').lower()
+    explicit = any(x in low for x in ('tema:', 'problema:', 'procedimiento:', 'solución:', 'solucion:', 'respuesta:'))
+    teaching = any(x in low for x in (
+        'cuando te digan', 'cuando reporten', 'cuando un usuario', 'debes ', 'debe ', 'primero ',
+        'quiero que ', 'aprende que ', 'recuerda que ', 'el procedimiento es', 'la respuesta es',
+        'deberías ', 'deberias ', 'verifica ', 'revisa ', 'antes de ', 'después de ', 'despues de ',
+    ))
+    question = '?' in low or low.strip().startswith(('qué ', 'que ', 'cómo ', 'como ', 'cuál ', 'cual ', 'puedes '))
+    return explicit or (teaching and not question)
+
+
+def _parse_training(message: str) -> dict[str, str]:
+    text = re.sub(r'\s+', ' ', str(message or '')).strip()
+    topic = _field(text, 'Tema', ('Problema','Procedimiento','Solución','Solucion','Respuesta'))
+    problem = _field(text, 'Problema', ('Tema','Procedimiento','Solución','Solucion','Respuesta'))
+    procedure = (
+        _field(text, 'Procedimiento', ('Tema','Problema','Solución','Solucion','Respuesta'))
+        or _field(text, 'Solución', ('Tema','Problema','Procedimiento','Respuesta'))
+        or _field(text, 'Solucion', ('Tema','Problema','Procedimiento','Respuesta'))
+        or _field(text, 'Respuesta', ('Tema','Problema','Procedimiento','Solución','Solucion'))
+    )
+
+    if not problem:
+        m = re.search(r'(?is)\bcuando\s+(?:te\s+digan\s+que\s+|te\s+digan\s+de\s+|reporten\s+|un\s+usuario\s+(?:diga|reporte)\s+)(.+?)(?=\s+(?:debes|debe|primero|quiero\s+que|hay\s+que)\b)', text)
+        if m:
+            problem = re.sub(r'\s+', ' ', m.group(1)).strip(' ,.;:-')
+    if not procedure:
+        m = re.search(r'(?is)\b(?:debes|debe|primero|hay\s+que|quiero\s+que)\s+(.+)$', text)
+        if m:
+            procedure = re.sub(r'\s+', ' ', m.group(1)).strip(' ,.;:-')
+    if not topic and problem:
+        topic = _topic_label(problem, limit=4)
+    return {'topic': topic, 'problem': problem, 'procedure': procedure}
+
+
+def _recent_training_context(db: Session, username: str) -> dict[str, str]:
+    rows = db.query(AIAdminMessage).filter(AIAdminMessage.username == username).order_by(AIAdminMessage.id.desc()).limit(10).all()
+    draft = {'topic': '', 'problem': '', 'procedure': ''}
+    for row in reversed(rows):
+        if row.role != 'admin':
+            continue
+        parsed = _parse_training(row.body or '')
+        for key in draft:
+            if parsed.get(key):
+                draft[key] = parsed[key]
+    return draft
+
+
+def _merge_training_context(previous: dict[str, str], current: dict[str, str], message: str) -> dict[str, str]:
+    merged = {k: current.get(k) or previous.get(k) or '' for k in ('topic','problem','procedure')}
+    raw = re.sub(r'\s+', ' ', str(message or '')).strip()
+    # If the prior turn was missing exactly one field, accept a plain-language answer as that field.
+    missing_prev = [k for k in ('problem','procedure') if not previous.get(k)]
+    if len(missing_prev) == 1 and not current.get(missing_prev[0]) and raw and not _training_intent(raw):
+        merged[missing_prev[0]] = raw.strip(' .')
+    if not merged['topic'] and merged['problem']:
+        merged['topic'] = _topic_label(merged['problem'], limit=4)
+    return merged
+
+
+def _similar_pending(db: Session, company_id: int | None, problem: str) -> AILearningPoint | None:
+    tokens = set(_tokens(problem))
+    if not tokens:
+        return None
+    q = db.query(AILearningPoint).filter(AILearningPoint.status == 'pending')
+    if company_id is None:
+        q = q.filter(AILearningPoint.company_id.is_(None))
+    else:
+        q = q.filter(AILearningPoint.company_id == company_id)
+    for row in q.order_by(AILearningPoint.id.desc()).limit(40).all():
+        other = set(_tokens(row.problem or ''))
+        if not other:
+            continue
+        similarity = len(tokens & other) / max(1, len(tokens | other))
+        if similarity >= .62:
+            return row
+    return None
+
+
+def _save_admin_training(db: Session, company_id: int | None, draft: dict[str, str]) -> AILearningPoint:
+    problem = f"Tema: {draft['topic']}. Problema: {draft['problem']}"[:4000]
+    procedure = draft['procedure'][:4000]
+    row = _similar_pending(db, company_id, problem)
+    if row:
+        row.problem = problem
+        row.solution = procedure
+        row.confidence = max(int(row.confidence or 0), 75)
+        return row
+    row = AILearningPoint(
+        company_id=company_id,
+        ticket_id=None,
+        problem=problem,
+        solution=procedure,
+        confidence=75,
+        status='pending',
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _interpret_admin_training(db: Session, *, username: str, message: str, company_id: int | None) -> dict[str, Any] | None:
+    current = _parse_training(message)
+    previous = _recent_training_context(db, username)
+    continuing = bool(previous.get('problem') or previous.get('procedure'))
+    if not _training_intent(message) and not continuing:
+        return None
+    draft = _merge_training_context(previous, current, message)
+    if not draft['problem']:
+        return {
+            'reply': 'Entiendo que quieres enseñarme un procedimiento. ¿Cuál es exactamente el problema o situación que debe detectar el bot? Por ejemplo: “la etiqueta está apagada” o “la PDA marca Timeout”.',
+            'configured': True, 'provider': _provider(), 'training_state': 'needs_problem',
+        }
+    if not draft['procedure']:
+        return {
+            'reply': f"Entendí el problema: “{draft['problem']}”. ¿Qué debe hacer el bot paso a paso cuando ocurra? Indícame primero qué debe verificar y qué debe hacer después según el resultado.",
+            'configured': True, 'provider': _provider(), 'training_state': 'needs_procedure',
+        }
+    row = _save_admin_training(db, company_id, draft)
+    return {
+        'reply': (
+            '🧠 Entendí la enseñanza y creé una neurona pendiente de aprobación.\n\n'
+            f"Tema: {draft['topic']}\n"
+            f"Problema: {draft['problem']}\n"
+            f"Procedimiento: {draft['procedure']}\n\n"
+            'Todavía no responderé esto a clientes hasta que la apruebes en IA · Aprendizaje. Puedes seguir corrigiéndome o agregar excepciones y actualizaré el punto pendiente.'
+        ),
+        'configured': True,
+        'provider': _provider(),
+        'training_state': 'pending_created',
+        'learning_point_id': row.id,
+    }
+
+
+def learn_from_conversation(db: Session, ticket: SupportTicket) -> AILearningPoint | None:
+    """Create or enrich a pending learning neuron from the complete solved conversation."""
     if not ticket or ticket.status != 'closed':
         return None
     rows = db.query(Message).filter(Message.conversation_id == ticket.conversation_id).order_by(Message.id.asc()).all()
@@ -183,14 +320,7 @@ def learn_from_conversation(db: Session, ticket: SupportTicket) -> AILearningPoi
             existing.solution = solution[:4000]
             existing.confidence = max(int(existing.confidence or 0), confidence)
         return existing
-    row = AILearningPoint(
-        company_id=ticket.company_id,
-        ticket_id=ticket.id,
-        problem=problem[:4000],
-        solution=solution[:4000],
-        confidence=confidence,
-        status='pending',
-    )
+    row = AILearningPoint(company_id=ticket.company_id, ticket_id=ticket.id, problem=problem[:4000], solution=solution[:4000], confidence=confidence, status='pending')
     db.add(row)
     return row
 
@@ -209,26 +339,11 @@ def _responses_text(payload: dict) -> str:
 
 def _generate(provider: str, *, instructions: str, prompt: str) -> str:
     if provider == 'openai':
-        response = requests.post(
-            'https://api.openai.com/v1/responses',
-            headers={'Authorization': f'Bearer {settings.openai_api_key}', 'Content-Type': 'application/json'},
-            json={'model': settings.openai_model, 'instructions': instructions, 'input': prompt},
-            timeout=45,
-        )
+        response = requests.post('https://api.openai.com/v1/responses', headers={'Authorization': f'Bearer {settings.openai_api_key}', 'Content-Type': 'application/json'}, json={'model': settings.openai_model, 'instructions': instructions, 'input': prompt}, timeout=45)
         response.raise_for_status()
         return _responses_text(response.json())
     if provider == 'ollama':
-        response = requests.post(
-            f'{settings.ai_local_base_url}/api/generate',
-            json={
-                'model': settings.ai_local_model,
-                'system': instructions,
-                'prompt': prompt,
-                'stream': False,
-                'options': {'temperature': 0.15},
-            },
-            timeout=settings.ai_local_timeout_seconds,
-        )
+        response = requests.post(f'{settings.ai_local_base_url}/api/generate', json={'model': settings.ai_local_model, 'system': instructions, 'prompt': prompt, 'stream': False, 'options': {'temperature': 0.15}}, timeout=settings.ai_local_timeout_seconds)
         response.raise_for_status()
         return str(response.json().get('response') or '').strip()
     return ''
@@ -238,22 +353,23 @@ def _retrieval_answer(db: Session, company_id: int | None, message: str) -> str:
     matches = _learning_matches(db, company_id, message, approved_only=True, limit=5)
     manuals = manual_context(db, company_id, message, limit=2)
     if not matches and not manuals:
-        return (
-            'Todavía no tengo conocimiento aprobado suficiente sobre ese tema. '
-            'Puedes explicarme cuál debería ser el procedimiento correcto y lo guardaré como un nuevo punto pendiente para revisión.'
-        )
+        return 'Todavía no tengo conocimiento aprobado suficiente sobre ese tema. Si quieres enseñármelo, dime la situación y el procedimiento; si falta algún dato te preguntaré antes de crear el aprendizaje.'
     parts = []
     if matches:
-        parts.append('Conocimiento aprobado relacionado:\n' + '\n\n'.join(
-            f'- {r.problem}\n  Respuesta aprobada: {r.solution}' for r in matches
-        ))
+        parts.append('Conocimiento aprobado relacionado:\n' + '\n\n'.join(f'- {r.problem}\n  Respuesta aprobada: {r.solution}' for r in matches))
     if manuals:
         parts.append('También encontré contenido relacionado en manuales de la empresa. Puedo usarlo como referencia para proponer un nuevo aprendizaje, pero no lo daré por aprobado automáticamente.')
     return '\n\n'.join(parts)
 
 
 def admin_chat(db: Session, *, username: str, message: str, company_id: int | None = None) -> dict[str, Any]:
+    # Read context BEFORE storing this turn so follow-up interpretation uses previous turns only.
+    training = _interpret_admin_training(db, username=username, message=message, company_id=company_id)
     db.add(AIAdminMessage(username=username, role='admin', body=message))
+    if training is not None:
+        db.add(AIAdminMessage(username=username, role='assistant', body=training['reply']))
+        return training
+
     provider = _provider()
     context = approved_context(db, company_id=company_id)
     manuals = manual_context(db, company_id, message, limit=3)
@@ -266,14 +382,11 @@ def admin_chat(db: Session, *, username: str, message: str, company_id: int | No
     instructions = (
         'Eres el asistente interno de aprendizaje de Phygital Bot. Solo ayudas al administrador. '
         'No inventes procedimientos. Usa conocimiento aprobado, manuales recuperados y la instrucción del administrador. '
-        'Los manuales son referencia; si contradicen un punto aprobado, señala la contradicción y pide decisión. '
-        'Si falta información, pregunta al administrador. Propón aprendizajes concretos, breves y verificables.'
+        'Cuando el administrador esté enseñando una regla, identifica problema, procedimiento, condiciones y excepciones. '
+        'Si falta un dato esencial, haz UNA pregunta concreta antes de asumirlo. '
+        'Los manuales son referencia; si contradicen un punto aprobado, señala la contradicción y pide decisión.'
     )
-    prompt = (
-        f'Empresa: {company.name if company else "general"}\n\n'
-        f'Puntos aprobados:\n{context or "Ninguno todavía"}\n\n'
-        f'Manuales recuperados:\n{manuals or "Ninguno relacionado"}\n\nAdministrador: {message}'
-    )
+    prompt = f'Empresa: {company.name if company else "general"}\n\nPuntos aprobados:\n{context or "Ninguno todavía"}\n\nManuales recuperados:\n{manuals or "Ninguno relacionado"}\n\nAdministrador: {message}'
     reply = _generate(provider, instructions=instructions, prompt=prompt) or _retrieval_answer(db, company_id, message)
     db.add(AIAdminMessage(username=username, role='assistant', body=reply))
     return {'reply': reply, 'configured': True, 'provider': provider}
@@ -294,11 +407,6 @@ def customer_suggestion(db: Session, *, company_id: int, question: str) -> str:
         if overlap < .35 or int(best.confidence or 0) < 60:
             return ''
         return str(best.solution or '').strip()
-
     context = '\n\n'.join(f'Problema: {r.problem}\nSolución aprobada: {r.solution}' for r in matches)
-    text = _generate(
-        provider,
-        instructions='Responde como soporte Phygital. Usa solo el conocimiento aprobado proporcionado. Si no hay coincidencia clara, responde exactamente NO_SEGURO. Sé breve y concreto.',
-        prompt=f'Conocimiento aprobado:\n{context}\n\nConsulta del cliente:\n{question}',
-    ).strip()
+    text = _generate(provider, instructions='Responde como soporte Phygital. Usa solo el conocimiento aprobado proporcionado. Si no hay coincidencia clara, responde exactamente NO_SEGURO. Sé breve y concreto.', prompt=f'Conocimiento aprobado:\n{context}\n\nConsulta del cliente:\n{question}').strip()
     return '' if not text or text == 'NO_SEGURO' else text

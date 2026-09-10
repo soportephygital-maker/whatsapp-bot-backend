@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from ..auth import SUPER_ADMIN_USERNAME, create_access_token, hash_password, require_primary_admin, verify_password
 from ..database import get_db
@@ -10,10 +11,14 @@ router = APIRouter(prefix='/api/auth', tags=['auth'])
 
 @router.post('/login')
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == data.username, User.is_active.is_(True)).first()
+    login_username = data.username.strip()
+    user = db.query(User).filter(
+        func.lower(User.username) == login_username.lower(),
+        User.is_active.is_(True),
+    ).first()
     if not user or not verify_password(data.password, user.password_hash):
-        if data.username.strip() != SUPER_ADMIN_USERNAME:
-            db.add(AuditLog(username=data.username.strip()[:80] or None, action='login_fallido', entity='session', details={'reason': 'credenciales_invalidas'}))
+        if login_username != SUPER_ADMIN_USERNAME:
+            db.add(AuditLog(username=login_username[:80] or None, action='login_fallido', entity='session', details={'reason': 'credenciales_invalidas'}))
             db.commit()
         raise HTTPException(status_code=401, detail='Credenciales incorrectas')
     if user.username != SUPER_ADMIN_USERNAME:

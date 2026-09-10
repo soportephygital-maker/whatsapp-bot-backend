@@ -6,14 +6,14 @@ from .dashboard_ai_neural_entry_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-ai-training-interpretation'])
 router.include_router(manager_ai_chat_patch.router)
-UI_VERSION = '2026.09.04-78'
+UI_VERSION = '2026.09.04-79'
 
 
 def _html() -> str:
     html = base_html()
     html = html.replace('UI 2026.09.04-73', f'UI {UI_VERSION}')
     html = html.replace('/dashboard.js?v=2026.09.04-73', f'/dashboard.js?v={UI_VERSION}')
-    html = html.replace('</head>', '''<style id="dashboardAi78">
+    html = html.replace('</head>', '''<style id="dashboardAi79">
 #navGeneral{font-weight:700!important}.dash-action{cursor:pointer;transition:transform .16s ease,filter .16s ease,box-shadow .16s ease}.dash-action:hover{transform:translateY(-2px);filter:brightness(1.08);box-shadow:0 10px 26px rgba(0,0,0,.18)}.dash-general-welcome{padding:16px 18px;margin-bottom:14px}.dash-general-welcome h2{margin:0 0 5px;font-size:24px}.dash-general-welcome p{margin:0;color:#8eacc8}.ai-node-editor{display:grid;gap:9px;margin-top:12px;padding:12px;border:1px solid #62431f;border-radius:12px;background:#0b0907}.ai-node-editor label{font-size:11px;color:#c9ad8d}.ai-node-editor textarea{min-height:88px}.ai-node-editor input[type=number]{max-width:130px}.ai-node-danger{background:#4a1920!important;border-color:#9d3e4c!important;color:#ffdce2!important}.ai-manager-approve{background:#0c5b42!important;border-color:#188966!important;color:#e0fff4!important}.ai-manager-chat{margin-top:14px}.ai-manager-chat-log{max-height:310px;overflow:auto;background:#06111c;border:1px solid #29445a;border-radius:12px;padding:10px}.ai-manager-chat textarea{min-height:92px;width:100%;margin-top:10px}.ai-manager-chat .toolbar{margin-top:8px}.ai-manager-chat .bubble{margin:7px 0;padding:9px 11px;border-radius:12px}.ai-manager-chat .bubble.user{background:#102842;border:1px solid #234864}.ai-manager-chat .bubble.ai{background:#0d2c27;border:1px solid #1b594d}.ai-manager-chat-label{font-size:12px;color:#9eb8ce;margin-bottom:8px}.ai-manager-scope{font-size:11px;color:#9eb8ce}.ai-manager-note{display:none!important}
 </style></head>''')
     return html

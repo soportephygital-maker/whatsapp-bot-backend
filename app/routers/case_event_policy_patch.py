@@ -70,11 +70,36 @@ def _policy_close_ticket(db, *, conversation, username: str, result: str):
     return ticket
 
 
+def _ticket_open_email_once(db, result: dict) -> None:
+    action = str(result.get('action') or '').strip().lower()
+    ticket_id = result.get('ticket_id')
+    if not ticket_id or not action.startswith('ticket_open'):
+        return
+    ticket = db.get(SupportTicket, int(ticket_id))
+    if not ticket:
+        return
+    already = db.query(ticketing.AuditLog).filter(
+        ticketing.AuditLog.entity == 'support_ticket',
+        ticketing.AuditLog.entity_id == str(ticket.id),
+        ticketing.AuditLog.action == 'case_event_email_sent',
+    ).all()
+    if any((row.details or {}).get('event') == 'ticket_opened' for row in already):
+        return
+    send_case_event_email(db, ticket=ticket, event='ticket_opened')
+    db.commit()
+
+
 def _ai_guided_ticketed_inbound(data, operator, db):
     """Use only admin-approved learning points as an optional no-match fallback."""
     result = _original_ticketed_inbound(data=data, operator=operator, db=db)
     if not isinstance(result, dict):
         return result
+
+    # The reportable incident starts when the decision tree actually registers
+    # the ticket (ticket_open:*), not when the company/store context is created.
+    # Send the milestone email exactly once at that point.
+    _ticket_open_email_once(db, result)
+
     if result.get('status') != 'ok' or result.get('chatbot_paused'):
         return result
     if result.get('action') not in {'no_match_first', 'no_match_repeat'}:

@@ -63,7 +63,7 @@ def _image_flowable(attachment: CaseAttachment):
         return None
 
 
-def build_chat_pdf(db: Session, *, ticket: SupportTicket, company: Company | None, store: Store | None, conversation: Conversation | None, code: str) -> bytes:
+def build_chat_pdf(db: Session, *, ticket: SupportTicket, company: Company | None, store: Store | None, conversation: Conversation | None, code: str, include_images: bool = True) -> bytes:
     buffer = BytesIO(); styles = _styles()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=16 * mm, leftMargin=16 * mm, topMargin=16 * mm, bottomMargin=16 * mm)
     story = [Paragraph('Expediente completo de conversación', styles['Title']), Spacer(1, 6), _header_table(ticket, company, store, conversation, code, db), Spacer(1, 12)]
@@ -87,18 +87,20 @@ def build_chat_pdf(db: Session, *, ticket: SupportTicket, company: Company | Non
         story.append(Paragraph(f'<b>{escape(direction)}</b> · {escape(when)}', styles['CaseSmall']))
         story.append(Paragraph(escape(row.body or '').replace('\n', '<br/>'), styles['CaseBody']))
         for attachment in by_message.get(row.id, []):
-            story.append(Paragraph(f'<i>Adjunto: {escape(attachment.filename)}</i>', styles['CaseSmall']))
-            image = _image_flowable(attachment)
-            if image:
-                story.extend([Spacer(1, 4), image])
+            story.append(Paragraph(f'<i>Adjunto registrado: {escape(attachment.filename)}</i>', styles['CaseSmall']))
+            if include_images:
+                image = _image_flowable(attachment)
+                if image:
+                    story.extend([Spacer(1, 4), image])
         story.append(Spacer(1, 8))
     if unlinked:
         story.extend([PageBreak(), Paragraph('Archivos adjuntos del caso', styles['CaseHeading'])])
         for attachment in unlinked:
             story.append(Paragraph(escape(attachment.filename), styles['CaseSmall']))
-            image = _image_flowable(attachment)
-            if image:
-                story.extend([Spacer(1, 4), image, Spacer(1, 10)])
+            if include_images:
+                image = _image_flowable(attachment)
+                if image:
+                    story.extend([Spacer(1, 4), image, Spacer(1, 10)])
     doc.build(story)
     return buffer.getvalue()
 

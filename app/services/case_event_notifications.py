@@ -34,6 +34,7 @@ def _smtp_ready() -> tuple[bool, str]:
 def _subject(event: str, code: str, company: Company, store: Store | None) -> str:
     store_name = store.name if store else 'Tienda sin identificar'
     labels = {
+        'ticket_opened': 'Nueva incidencia',
         'human_required': 'Requiere atención humana',
         'status_changed': 'Cambio de estado',
         'closed_no_human': 'Caso cerrado sin atención humana',
@@ -46,6 +47,7 @@ def _plain_body(event: str, ticket: SupportTicket, company: Company, store: Stor
     code = ticket_code(ticket, company, store)
     store_name = store.name if store else 'Tienda sin identificar'
     labels = {
+        'ticket_opened': 'NUEVA INCIDENCIA',
         'human_required': 'REQUIERE ATENCIÓN HUMANA',
         'status_changed': 'CAMBIO DE ESTADO',
         'closed_no_human': 'CERRADO SIN ATENCIÓN HUMANA',
@@ -64,6 +66,7 @@ def _html_body(event: str, ticket: SupportTicket, company: Company, store: Store
     code = escape(ticket_code(ticket, company, store))
     store_name = escape(store.name if store else 'Tienda sin identificar')
     labels = {
+        'ticket_opened': ('Nueva incidencia', '#ffedd5', '#9a3412'),
         'human_required': ('Requiere atención humana', '#fee2e2', '#991b1b'),
         'status_changed': ('Cambio de estado', '#dbeafe', '#1d4ed8'),
         'closed_no_human': ('Cerrado', '#dcfce7', '#166534'),

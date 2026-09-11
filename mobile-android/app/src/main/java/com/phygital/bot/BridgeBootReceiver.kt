@@ -13,9 +13,19 @@ class BridgeBootReceiver : BroadcastReceiver() {
             action != Intent.ACTION_MY_PACKAGE_REPLACED &&
             action != Intent.ACTION_USER_UNLOCKED) return
 
-        // El keep-alive no necesita esperar a que la actividad esté abierta. Se inicia
-        // incluso antes de recuperar la sesión para mantener enlazado el listener de
-        // notificaciones cuando el teléfono esté bloqueado.
+        val session = context.getSharedPreferences("phygital_session", Context.MODE_PRIVATE)
+        val token = session.getString("token", null)
+        val role = session.getString("role", "").orEmpty().trim().lowercase()
+
+        // El teléfono funciona como bot/puente y no debe arrancar con una sesión
+        // administrativa. Al actualizar o reiniciar, cualquier sesión distinta de
+        // soporte/operador se elimina antes de levantar el servicio.
+        if (!token.isNullOrBlank() && role != "operador") {
+            session.edit().clear().apply()
+            return
+        }
+        if (token.isNullOrBlank() || role != "operador") return
+
         val service = Intent(context, BridgeKeepAliveService::class.java)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(service)

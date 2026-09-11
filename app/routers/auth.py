@@ -5,7 +5,7 @@ from ..auth import SUPER_ADMIN_USERNAME, create_access_token, get_current_user, 
 from ..database import get_db
 from ..models import AuditLog, User
 from ..schemas import LoginRequest, UserCreate, UserUpdate
-from ..services.user_access import require_user_permission
+from ..services.user_access import has_permission, require_user_permission
 
 router = APIRouter(prefix='/api/auth', tags=['auth'])
 
@@ -15,8 +15,7 @@ def require_user_manager(current_user: User = Depends(get_current_user), db: Ses
     return current_user
 
 
-@router.post('/login')
-def login(data: LoginRequest, db: Session = Depends(get_db)):
+def _authenticate_user(data: LoginRequest, db: Session) -> User:
     login_username = data.username.strip()
     user = db.query(User).filter(
         func.lower(User.username) == login_username.lower(),
@@ -27,10 +26,39 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
             db.add(AuditLog(username=login_username[:80] or None, action='login_fallido', entity='session', details={'reason': 'credenciales_invalidas'}))
             db.commit()
         raise HTTPException(status_code=401, detail='Credenciales incorrectas')
+    return user
+
+
+def _login_payload(user: User) -> dict:
+    return {'access_token': create_access_token(user.username), 'token_type': 'bearer', 'username': user.username, 'rol': user.role}
+
+
+@router.post('/login')
+def login(data: LoginRequest, db: Session = Depends(get_db)):
+    user = _authenticate_user(data, db)
     if user.username != SUPER_ADMIN_USERNAME:
         db.add(AuditLog(username=user.username, action='login_exitoso', entity='session', entity_id=str(user.id), details={'role': user.role}))
         db.commit()
-    return {'access_token': create_access_token(user.username), 'token_type': 'bearer', 'username': user.username, 'rol': user.role}
+    return _login_payload(user)
+
+
+@router.post('/mobile-login')
+def mobile_login(data: LoginRequest, db: Session = Depends(get_db)):
+    """Login dedicado al teléfono que funciona como puente/bot.
+
+    El teléfono no debe conservar una sesión administrativa. Solo una cuenta de
+    soporte con rol operador y permiso para responder conversaciones puede emitir
+    el token usado por el puente de WhatsApp.
+    """
+    user = _authenticate_user(data, db)
+    if user.role != 'operador' or not has_permission(db, user, 'reply_conversations'):
+        if user.username != SUPER_ADMIN_USERNAME:
+            db.add(AuditLog(username=user.username, action='mobile_login_bloqueado', entity='session', entity_id=str(user.id), details={'role': user.role}))
+            db.commit()
+        raise HTTPException(status_code=403, detail='La app del teléfono requiere una cuenta de soporte con rol operador')
+    db.add(AuditLog(username=user.username, action='mobile_login_exitoso', entity='session', entity_id=str(user.id), details={'role': user.role, 'device_profile': 'whatsapp_bridge'}))
+    db.commit()
+    return _login_payload(user)
 
 
 @router.get('/usuarios')

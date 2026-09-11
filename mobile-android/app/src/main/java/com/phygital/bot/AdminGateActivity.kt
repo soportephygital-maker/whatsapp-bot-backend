@@ -1,7 +1,9 @@
 package com.phygital.bot
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Button
@@ -12,6 +14,7 @@ import org.json.JSONObject
 
 class AdminGateActivity : Activity() {
     private val sessionPrefsName = "phygital_session"
+    private val imagePermissionRequest = 2401
 
     private lateinit var status: TextView
     private lateinit var usernameInput: EditText
@@ -50,7 +53,7 @@ class AdminGateActivity : Activity() {
         val savedToken = prefs.getString("token", null)
         if (!savedToken.isNullOrBlank()) {
             startBridgeKeepAlive()
-            openMain()
+            ensureImagePermissionThenOpenMain()
             return
         }
 
@@ -97,7 +100,7 @@ class AdminGateActivity : Activity() {
 
                 runOnUiThread {
                     startBridgeKeepAlive()
-                    openMain()
+                    ensureImagePermissionThenOpenMain()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -108,6 +111,23 @@ class AdminGateActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun ensureImagePermissionThenOpenMain() {
+        val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+        if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+            openMain()
+            return
+        }
+        status.text = "Permite acceso a fotos para guardar evidencias de WhatsApp en los reportes."
+        requestPermissions(arrayOf(permission), imagePermissionRequest)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == imagePermissionRequest) {
+            openMain()
+        }
     }
 
     private fun startBridgeKeepAlive() {

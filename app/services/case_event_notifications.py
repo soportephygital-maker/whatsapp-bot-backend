@@ -1,12 +1,11 @@
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr
-from typing import Iterable
 
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import AuditLog, Company, Conversation, HelpRequest, Store, SupportTicket
+from ..models import AuditLog, CaseAttachment, Company, Conversation, HelpRequest, Store, SupportTicket
 from .case_reports import build_chat_pdf, build_summary_pdf
 from .ticketing import ticket_code
 
@@ -43,7 +42,7 @@ def _subject(event: str, code: str, company: Company, store: Store | None) -> st
     return f'[{code}] {labels.get(event, event)} - {company.name} / {store_name}'
 
 
-def _plain_body(event: str, ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation) -> str:
+def _plain_body(event: str, ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation, photo_count: int) -> str:
     code = ticket_code(ticket, company, store)
     store_name = store.name if store else 'Tienda sin identificar'
     labels = {
@@ -57,11 +56,13 @@ def _plain_body(event: str, ticket: SupportTicket, company: Company, store: Stor
         f'Ticket: {code}\nEvento: {labels.get(event, event)}\nEmpresa: {company.name}\n'
         f'Tienda: {store_name}\nContacto: {conversation.wa_user_id}\n'
         f'Problema: {ticket.description}\nResultado: {ticket.close_result or "Pendiente"}\n'
-        'Se adjuntan el expediente de conversación y el resumen ejecutivo. Las imágenes compartidas no se incluyen en el correo.\n'
+        f'Evidencia fotográfica: {photo_count} foto(s).\n'
+        'Se adjuntan el expediente de conversación y el resumen ejecutivo. '
+        'Las fotografías también se integran dentro de los PDF del reporte cuando están almacenadas en el ticket.\n'
     )
 
 
-def _html_body(event: str, ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation) -> str:
+def _html_body(event: str, ticket: SupportTicket, company: Company, store: Store | None, conversation: Conversation, photo_count: int) -> str:
     from html import escape
     code = escape(ticket_code(ticket, company, store))
     store_name = escape(store.name if store else 'Tienda sin identificar')
@@ -77,9 +78,9 @@ def _html_body(event: str, ticket: SupportTicket, company: Company, store: Store
 <table role="presentation" width="100%"><tr><td align="center"><table role="presentation" width="100%" style="max-width:560px;background:#fff;border:1px solid #e5e7eb;border-radius:16px;"><tr><td style="padding:28px;">
 <table role="presentation" width="100%"><tr><td><div style="font-size:14px;color:#6b7280">Ticket de soporte</div><div style="font-size:18px;font-weight:700">{code}</div></td><td align="right"><span style="display:inline-block;background:{bg};color:{fg};padding:7px 14px;border-radius:999px;font-weight:600">{escape(label)}</span></td></tr></table>
 <div style="height:1px;background:#e5e7eb;margin:20px 0"></div>
-<table role="presentation" width="100%"><tr><td style="padding:7px 0;color:#6b7280">Empresa</td><td align="right"><b>{escape(company.name)}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Tienda</td><td align="right"><b>{store_name}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Contacto</td><td align="right"><b>{escape(conversation.wa_user_id)}</b></td></tr></table>
+<table role="presentation" width="100%"><tr><td style="padding:7px 0;color:#6b7280">Empresa</td><td align="right"><b>{escape(company.name)}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Tienda</td><td align="right"><b>{store_name}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Contacto</td><td align="right"><b>{escape(conversation.wa_user_id)}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Fotos recibidas</td><td align="right"><b>{photo_count}</b></td></tr></table>
 <div style="height:1px;background:#e5e7eb;margin:20px 0"></div><div style="font-size:14px;color:#6b7280;margin-bottom:7px">Problema</div><div style="font-size:16px;line-height:1.5">{escape(ticket.description or 'Sin descripción').replace(chr(10), '<br>')}</div>
-<div style="margin-top:20px;background:#f7f7f7;padding:13px 15px;border-radius:12px;color:#6b7280;font-size:14px">Se adjuntan el expediente y el resumen ejecutivo. Las imágenes compartidas quedan fuera del correo.</div>
+<div style="margin-top:20px;background:#f7f7f7;padding:13px 15px;border-radius:12px;color:#6b7280;font-size:14px">Se adjuntan el expediente y el resumen ejecutivo. Las fotografías almacenadas en el ticket se muestran dentro de los PDF.</div>
 </td></tr></table></td></tr></table></body></html>'''
 
 
@@ -95,14 +96,16 @@ def send_case_event_email(db: Session, *, ticket: SupportTicket, event: str) -> 
         db.add(AuditLog(action='case_event_email_not_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'result': 'sin_destinatarios' if not recipients else sender_or_error}))
         return False
     code = ticket_code(ticket, company, store)
-    chat_pdf = build_chat_pdf(db, ticket=ticket, company=company, store=store, conversation=conversation, code=code, include_images=False)
+    photos = db.query(CaseAttachment).filter(CaseAttachment.ticket_id == ticket.id, CaseAttachment.content_type.ilike('image/%')).all()
+    photo_count = len(photos)
+    chat_pdf = build_chat_pdf(db, ticket=ticket, company=company, store=store, conversation=conversation, code=code, include_images=True)
     summary_pdf = build_summary_pdf(db, ticket=ticket, company=company, store=store, conversation=conversation, code=code)
     msg = EmailMessage()
     msg['Subject'] = _subject(event, code, company, store)
     msg['From'] = formataddr((settings.smtp_from_name, sender_or_error))
     msg['To'] = ', '.join(recipients)
-    msg.set_content(_plain_body(event, ticket, company, store, conversation))
-    msg.add_alternative(_html_body(event, ticket, company, store, conversation), subtype='html')
+    msg.set_content(_plain_body(event, ticket, company, store, conversation, photo_count))
+    msg.add_alternative(_html_body(event, ticket, company, store, conversation, photo_count), subtype='html')
     msg.add_attachment(chat_pdf, maintype='application', subtype='pdf', filename=f'{code}-chat-completo.pdf')
     msg.add_attachment(summary_pdf, maintype='application', subtype='pdf', filename=f'{code}-resumen.pdf')
     try:
@@ -113,7 +116,7 @@ def send_case_event_email(db: Session, *, ticket: SupportTicket, event: str) -> 
             if settings.smtp_username:
                 smtp.login(settings.smtp_username, settings.smtp_password)
             smtp.send_message(msg)
-        db.add(AuditLog(action='case_event_email_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'recipients': recipients, 'images_included': False}))
+        db.add(AuditLog(action='case_event_email_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'recipients': recipients, 'images_included': photo_count > 0, 'photo_count': photo_count}))
         return True
     except Exception as exc:
         db.add(AuditLog(action='case_event_email_not_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'result': str(exc)[:500]}))

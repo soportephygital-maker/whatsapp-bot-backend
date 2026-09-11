@@ -30,16 +30,16 @@ class AdminGateActivity : Activity() {
         }
 
         usernameInput = EditText(this).apply {
-            hint = "Usuario"
+            hint = "Usuario de soporte"
             setText("")
         }
         passwordInput = EditText(this).apply {
-            hint = "Contraseña"
+            hint = "Contraseña de soporte"
             inputType = 0x00000081
         }
-        loginButton = Button(this).apply { text = "Entrar" }
+        loginButton = Button(this).apply { text = "Activar bot" }
         status = TextView(this).apply {
-            text = "Phygital Bot ${BuildConfig.VERSION_NAME}"
+            text = "Phygital Bot ${BuildConfig.VERSION_NAME}\nUsa una cuenta de soporte (operador), no una cuenta administrativa."
             setPadding(0, 16, 0, 0)
         }
 
@@ -51,17 +51,22 @@ class AdminGateActivity : Activity() {
 
         val prefs = getSharedPreferences(sessionPrefsName, MODE_PRIVATE)
         val savedToken = prefs.getString("token", null)
-        if (!savedToken.isNullOrBlank()) {
+        val savedRole = prefs.getString("role", "").orEmpty().trim().lowercase()
+        if (!savedToken.isNullOrBlank() && savedRole == "operador") {
             startBridgeKeepAlive()
             ensureImagePermissionThenOpenMain()
             return
+        }
+        if (!savedToken.isNullOrBlank()) {
+            prefs.edit().clear().apply()
+            status.text = "Se eliminó la sesión administrativa guardada en este teléfono.\nInicia sesión con credenciales de soporte."
         }
 
         loginButton.setOnClickListener {
             val user = usernameInput.text.toString().trim()
             val pass = passwordInput.text.toString()
             if (user.isBlank() || pass.isBlank()) {
-                status.text = "Escribe usuario y contraseña."
+                status.text = "Escribe usuario y contraseña de soporte."
             } else {
                 login(user, pass)
             }
@@ -70,15 +75,17 @@ class AdminGateActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null)
-        if (!token.isNullOrBlank()) startBridgeKeepAlive()
+        val prefs = getSharedPreferences(sessionPrefsName, MODE_PRIVATE)
+        val token = prefs.getString("token", null)
+        val role = prefs.getString("role", "").orEmpty().trim().lowercase()
+        if (!token.isNullOrBlank() && role == "operador") startBridgeKeepAlive()
     }
 
     private fun login(userName: String, password: String) {
         loginButton.isEnabled = false
         usernameInput.isEnabled = false
         passwordInput.isEnabled = false
-        status.text = "Iniciando sesión..."
+        status.text = "Activando bot con cuenta de soporte..."
 
         Thread {
             try {
@@ -87,15 +94,21 @@ class AdminGateActivity : Activity() {
                     .put("password", password)
                     .toString()
 
-                val json = JSONObject(NetworkClient.request("POST", "/api/auth/login", body, null))
+                val json = JSONObject(NetworkClient.request("POST", "/api/auth/mobile-login", body, null))
                 val token = json.getString("access_token")
                 val role = json.optString("rol", "")
                 val username = json.optString("username", userName)
 
+                if (role.trim().lowercase() != "operador") {
+                    throw IllegalStateException("La cuenta no es de soporte/operador")
+                }
+
                 getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit()
+                    .clear()
                     .putString("token", token)
                     .putString("role", role)
                     .putString("username", username)
+                    .putString("session_type", "support_bridge")
                     .apply()
 
                 runOnUiThread {
@@ -103,11 +116,12 @@ class AdminGateActivity : Activity() {
                     ensureImagePermissionThenOpenMain()
                 }
             } catch (e: Exception) {
+                getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit().clear().apply()
                 runOnUiThread {
                     loginButton.isEnabled = true
                     usernameInput.isEnabled = true
                     passwordInput.isEnabled = true
-                    status.text = "No se pudo iniciar sesión.\nVersión: ${BuildConfig.VERSION_NAME}\nDetalle: ${e.message}"
+                    status.text = "No se pudo activar el bot con esa cuenta.\nUsa credenciales de soporte con rol operador.\nVersión: ${BuildConfig.VERSION_NAME}\nDetalle: ${e.message}"
                 }
             }
         }.start()

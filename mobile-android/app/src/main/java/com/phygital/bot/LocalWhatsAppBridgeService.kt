@@ -19,6 +19,7 @@ import java.io.ByteArrayOutputStream
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.text.Normalizer
+import java.util.concurrent.ConcurrentHashMap
 
 class LocalWhatsAppBridgeService : NotificationListenerService() {
     private val baseUrl = "https://whatsapp-bot-backend-142e.onrender.com"
@@ -30,6 +31,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     private val duplicateWindowMs = 12_000L
     private val maxReplyHistory = 8
     private val maxMediaBytes = 15 * 1024 * 1024
+    private val pendingMediaPerConversation = 6
     @Volatile private var manualPollRunning = false
 
     private data class MediaCandidate(
@@ -38,6 +40,8 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val contentType: String,
         val source: String,
     )
+
+    private val pendingMedia = ConcurrentHashMap<String, MutableList<MediaCandidate>>()
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -52,6 +56,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     override fun onDestroy() {
         manualPollRunning = false
+        pendingMedia.clear()
         super.onDestroy()
     }
 
@@ -73,6 +78,9 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
         val extras = notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        val senderKey = extras.getString(Notification.EXTRA_CONVERSATION_TITLE)
+            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
+            ?: title
         val media = extractMediaCandidate(notification, sbn.postTime)
         val rawText = extractText(notification).trim()
         val text = when {
@@ -89,10 +97,8 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         if (isRapidDuplicate(sbn.packageName, title, text)) return
 
         val replyAction = findReplyAction(notification)
-        val senderKey = extras.getString(Notification.EXTRA_CONVERSATION_TITLE)
-            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
-            ?: title
         val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "android-device"
+        val mediaQueueKey = mediaQueueKey(sbn.packageName, senderKey.ifBlank { title })
 
         Thread {
             withWakeLock("inbound", 60_000L) {
@@ -107,6 +113,8 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("bounce_filter", "v2")
                         .put("media_capture", if (media != null) "available" else "none")
                         .put("media_source", media?.source ?: "")
+                        .put("media_content_type", media?.contentType ?: "")
+                        .put("media_bytes", media?.bytes?.size ?: 0)
                         .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp")
                     val payload = JSONObject()
                         .put("package_name", sbn.packageName)
@@ -127,8 +135,15 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                     val ticketId = response.optInt("ticket_id", 0)
                     outboundMessageId = response.optInt("outbound_message_id", 0)
 
-                    if (media != null && ticketId > 0) {
-                        tryUploadMedia(token, ticketId, media)
+                    if (ticketId > 0) {
+                        flushPendingMedia(token, ticketId, mediaQueueKey)
+                    }
+                    if (media != null) {
+                        if (ticketId > 0) {
+                            if (!tryUploadMedia(token, ticketId, media)) queuePendingMedia(mediaQueueKey, media)
+                        } else {
+                            queuePendingMedia(mediaQueueKey, media)
+                        }
                     }
 
                     if (shouldReply && replyText.isNotBlank() && replyAction != null && outboundMessageId > 0) {
@@ -138,6 +153,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else "Android no pudo ejecutar RemoteInput")
                     }
                 } catch (e: Exception) {
+                    if (media != null) queuePendingMedia(mediaQueueKey, media)
                     if (outboundMessageId > 0) {
                         try { reportDelivery(token, outboundMessageId, false, sbn.key, e.message ?: "Error local") } catch (_: Exception) {}
                     }
@@ -146,13 +162,46 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         }.start()
     }
 
-    private fun tryUploadMedia(token: String, ticketId: Int, media: MediaCandidate) {
-        if (media.bytes.isEmpty() || media.bytes.size > maxMediaBytes) return
-        val digest = MessageDigest.getInstance("SHA-256").digest(media.bytes).joinToString("") { "%02x".format(it) }
+    private fun mediaQueueKey(packageName: String, senderKey: String): String =
+        "$packageName|${normalizeConversationLabel(senderKey)}"
+
+    private fun queuePendingMedia(key: String, media: MediaCandidate) {
+        if (key.isBlank() || media.bytes.isEmpty()) return
+        val digest = mediaDigest(media.bytes)
+        val list = pendingMedia.getOrPut(key) { mutableListOf() }
+        synchronized(list) {
+            if (list.any { mediaDigest(it.bytes) == digest }) return
+            list.add(media)
+            while (list.size > pendingMediaPerConversation) list.removeAt(0)
+        }
+    }
+
+    private fun flushPendingMedia(token: String, ticketId: Int, key: String) {
+        val list = pendingMedia[key] ?: return
+        val snapshot = synchronized(list) { list.toList() }
+        if (snapshot.isEmpty()) return
+        val uploaded = mutableListOf<String>()
+        snapshot.forEach { item ->
+            if (tryUploadMedia(token, ticketId, item)) uploaded.add(mediaDigest(item.bytes))
+        }
+        if (uploaded.isNotEmpty()) {
+            synchronized(list) {
+                list.removeAll { mediaDigest(it.bytes) in uploaded }
+                if (list.isEmpty()) pendingMedia.remove(key)
+            }
+        }
+    }
+
+    private fun mediaDigest(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private fun tryUploadMedia(token: String, ticketId: Int, media: MediaCandidate): Boolean {
+        if (media.bytes.isEmpty() || media.bytes.size > maxMediaBytes) return false
+        val digest = mediaDigest(media.bytes)
         val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
         val key = "media_uploaded_${ticketId}_$digest"
-        if (prefs.getBoolean(key, false)) return
-        try {
+        if (prefs.getBoolean(key, false)) return true
+        return try {
             NetworkClient.uploadFile(
                 path = "/api/tickets/$ticketId/adjuntos",
                 bearer = token,
@@ -162,21 +211,31 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                 fields = emptyMap(),
             )
             prefs.edit().putBoolean(key, true).apply()
+            true
         } catch (_: Exception) {
-            // The chat itself must continue even if WhatsApp does not grant access to media bytes.
+            false
         }
     }
 
     private fun extractMediaCandidate(notification: Notification, postTime: Long): MediaCandidate? {
-        extractMessagingStyleMedia(notification, postTime)?.let { return it }
+        extractMessagingStyleMedia(notification, Notification.EXTRA_MESSAGES, postTime, "messaging_style_uri")?.let { return it }
+        extractMessagingStyleMedia(notification, Notification.EXTRA_HISTORIC_MESSAGES, postTime, "historic_messaging_style_uri")?.let { return it }
         extractPictureExtra(notification, postTime)?.let { return it }
-        extractLargeIconPreview(notification, postTime)?.let { return it }
         return null
     }
 
-    private fun extractMessagingStyleMedia(notification: Notification, postTime: Long): MediaCandidate? {
-        val messaging = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
-        for (item in messaging.reversed()) {
+    private fun extractMessagingStyleMedia(notification: Notification, extraKey: String, postTime: Long, source: String): MediaCandidate? {
+        val bundles = notification.extras.getParcelableArray(extraKey) ?: return null
+        val official = runCatching { Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundles) }.getOrNull().orEmpty()
+        for (message in official.asReversed()) {
+            val mime = message.dataMimeType?.trim().orEmpty()
+            val uri = message.dataUri
+            if (!mime.startsWith("image/") || uri == null) continue
+            readUriBytes(uri)?.let { bytes ->
+                return MediaCandidate(bytes, "whatsapp-${postTime}.${extensionForMime(mime)}", mime, source)
+            }
+        }
+        for (item in bundles.reversed()) {
             val bundle = item as? android.os.Bundle ?: continue
             val mime = bundle.getString("type")?.trim().orEmpty()
             val uri = when (val raw = bundle.get("uri")) {
@@ -186,8 +245,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             } ?: continue
             if (!mime.startsWith("image/")) continue
             readUriBytes(uri)?.let { bytes ->
-                val extension = extensionForMime(mime)
-                return MediaCandidate(bytes, "whatsapp-${postTime}.$extension", mime, "messaging_style_uri")
+                return MediaCandidate(bytes, "whatsapp-${postTime}.${extensionForMime(mime)}", mime, "${source}_raw")
             }
         }
         return null
@@ -198,15 +256,6 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val bitmap = notification.extras.getParcelable(Notification.EXTRA_PICTURE) as? Bitmap ?: return null
         val bytes = bitmapToJpeg(bitmap) ?: return null
         return MediaCandidate(bytes, "whatsapp-${postTime}.jpg", "image/jpeg", "notification_picture")
-    }
-
-    private fun extractLargeIconPreview(notification: Notification, postTime: Long): MediaCandidate? {
-        val icon = notification.getLargeIcon() ?: return null
-        val drawable = runCatching { icon.loadDrawable(this) }.getOrNull() ?: return null
-        val bitmap = (drawable as? BitmapDrawable)?.bitmap ?: return null
-        if (bitmap.width < 96 || bitmap.height < 96) return null
-        val bytes = bitmapToJpeg(bitmap) ?: return null
-        return MediaCandidate(bytes, "whatsapp-preview-${postTime}.jpg", "image/jpeg", "large_icon_preview")
     }
 
     private fun readUriBytes(uri: Uri): ByteArray? {
@@ -222,14 +271,14 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                     if (total > maxMediaBytes) return null
                     out.write(buffer, 0, read)
                 }
-                out.toByteArray()
+                out.toByteArray().takeIf { it.isNotEmpty() }
             }
         } catch (_: Exception) { null }
     }
 
     private fun bitmapToJpeg(bitmap: Bitmap): ByteArray? = try {
         val out = ByteArrayOutputStream()
-        if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)) null else out.toByteArray()
+        if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)) null else out.toByteArray()
     } catch (_: Exception) { null }
 
     private fun extensionForMime(mime: String): String = when (mime.lowercase()) {

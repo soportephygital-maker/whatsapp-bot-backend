@@ -57,7 +57,7 @@ def _plain_body(event: str, ticket: SupportTicket, company: Company, store: Stor
         f'Ticket: {code}\nEvento: {labels.get(event, event)}\nEmpresa: {company.name}\n'
         f'Tienda: {store_name}\nContacto: {conversation.wa_user_id}\n'
         f'Problema: {ticket.description}\nResultado: {ticket.close_result or "Pendiente"}\n'
-        'Se adjuntan el expediente completo de la conversación y el resumen ejecutivo del caso.\n'
+        'Se adjuntan el expediente de conversación y el resumen ejecutivo. Las imágenes compartidas no se incluyen en el correo.\n'
     )
 
 
@@ -79,7 +79,7 @@ def _html_body(event: str, ticket: SupportTicket, company: Company, store: Store
 <div style="height:1px;background:#e5e7eb;margin:20px 0"></div>
 <table role="presentation" width="100%"><tr><td style="padding:7px 0;color:#6b7280">Empresa</td><td align="right"><b>{escape(company.name)}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Tienda</td><td align="right"><b>{store_name}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Contacto</td><td align="right"><b>{escape(conversation.wa_user_id)}</b></td></tr></table>
 <div style="height:1px;background:#e5e7eb;margin:20px 0"></div><div style="font-size:14px;color:#6b7280;margin-bottom:7px">Problema</div><div style="font-size:16px;line-height:1.5">{escape(ticket.description or 'Sin descripción').replace(chr(10), '<br>')}</div>
-<div style="margin-top:20px;background:#f7f7f7;padding:13px 15px;border-radius:12px;color:#6b7280;font-size:14px">Se adjuntan el expediente completo y el resumen ejecutivo del caso.</div>
+<div style="margin-top:20px;background:#f7f7f7;padding:13px 15px;border-radius:12px;color:#6b7280;font-size:14px">Se adjuntan el expediente y el resumen ejecutivo. Las imágenes compartidas quedan fuera del correo.</div>
 </td></tr></table></td></tr></table></body></html>'''
 
 
@@ -95,7 +95,7 @@ def send_case_event_email(db: Session, *, ticket: SupportTicket, event: str) -> 
         db.add(AuditLog(action='case_event_email_not_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'result': 'sin_destinatarios' if not recipients else sender_or_error}))
         return False
     code = ticket_code(ticket, company, store)
-    chat_pdf = build_chat_pdf(db, ticket=ticket, company=company, store=store, conversation=conversation, code=code)
+    chat_pdf = build_chat_pdf(db, ticket=ticket, company=company, store=store, conversation=conversation, code=code, include_images=False)
     summary_pdf = build_summary_pdf(db, ticket=ticket, company=company, store=store, conversation=conversation, code=code)
     msg = EmailMessage()
     msg['Subject'] = _subject(event, code, company, store)
@@ -113,7 +113,7 @@ def send_case_event_email(db: Session, *, ticket: SupportTicket, event: str) -> 
             if settings.smtp_username:
                 smtp.login(settings.smtp_username, settings.smtp_password)
             smtp.send_message(msg)
-        db.add(AuditLog(action='case_event_email_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'recipients': recipients}))
+        db.add(AuditLog(action='case_event_email_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'recipients': recipients, 'images_included': False}))
         return True
     except Exception as exc:
         db.add(AuditLog(action='case_event_email_not_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'result': str(exc)[:500]}))
@@ -125,7 +125,5 @@ def human_was_required(db: Session, ticket: SupportTicket) -> bool:
 
 
 def create_learning_candidate(db: Session, ticket: SupportTicket) -> None:
-    # Defer the extraction details to ai_learning so the same local learner can
-    # use the complete conversation, human replies and final outcome.
     from .ai_learning import learn_from_conversation
     learn_from_conversation(db, ticket)

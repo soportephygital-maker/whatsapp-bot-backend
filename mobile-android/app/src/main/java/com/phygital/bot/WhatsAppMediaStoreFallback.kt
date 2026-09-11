@@ -17,10 +17,22 @@ object WhatsAppMediaStoreFallback {
     )
 
     private const val MAX_BYTES = 15 * 1024 * 1024
-    private const val WINDOW_MS = 120_000L
+    private const val WINDOW_MS = 180_000L
+    private const val RETRIES = 8
+    private const val RETRY_DELAY_MS = 1_250L
 
     fun captureRecentIncomingImage(context: Context, notificationTime: Long): CapturedImage? {
         if (!hasImagePermission(context)) return null
+        repeat(RETRIES) { attempt ->
+            queryRecentIncomingImage(context, notificationTime)?.let { return it }
+            if (attempt < RETRIES - 1) {
+                try { Thread.sleep(RETRY_DELAY_MS) } catch (_: InterruptedException) { return null }
+            }
+        }
+        return null
+    }
+
+    private fun queryRecentIncomingImage(context: Context, notificationTime: Long): CapturedImage? {
         val resolver = context.contentResolver
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = mutableListOf(
@@ -28,14 +40,15 @@ object WhatsAppMediaStoreFallback {
             MediaStore.Images.Media.DISPLAY_NAME,
             MediaStore.Images.Media.MIME_TYPE,
             MediaStore.Images.Media.DATE_ADDED,
+            MediaStore.Images.Media.DATE_MODIFIED,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) projection.add(MediaStore.Images.Media.RELATIVE_PATH)
 
         val fromSeconds = ((notificationTime - WINDOW_MS).coerceAtLeast(0L)) / 1000L
-        val toSeconds = (notificationTime + WINDOW_MS) / 1000L
-        val selection = "${MediaStore.Images.Media.DATE_ADDED} BETWEEN ? AND ?"
-        val args = arrayOf(fromSeconds.toString(), toSeconds.toString())
-        val sort = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+        val nowSeconds = (System.currentTimeMillis() + WINDOW_MS) / 1000L
+        val selection = "(${MediaStore.Images.Media.DATE_ADDED} BETWEEN ? AND ?) OR (${MediaStore.Images.Media.DATE_MODIFIED} BETWEEN ? AND ?)"
+        val args = arrayOf(fromSeconds.toString(), nowSeconds.toString(), fromSeconds.toString(), nowSeconds.toString())
+        val sort = "${MediaStore.Images.Media.DATE_ADDED} DESC, ${MediaStore.Images.Media.DATE_MODIFIED} DESC"
 
         return try {
             resolver.query(collection, projection.toTypedArray(), selection, args, sort)?.use { cursor ->
@@ -63,7 +76,7 @@ object WhatsAppMediaStoreFallback {
     private fun looksLikeWhatsAppImage(relativePath: String, filename: String): Boolean {
         val path = relativePath.lowercase()
         val name = filename.lowercase()
-        if (path.contains("whatsapp images") || path.contains("com.whatsapp") || path.contains("com.whatsapp.w4b")) return true
+        if (path.contains("whatsapp images") || path.contains("whatsapp/media") || path.contains("com.whatsapp") || path.contains("com.whatsapp.w4b")) return true
         return name.startsWith("img-") && name.contains("wa")
     }
 

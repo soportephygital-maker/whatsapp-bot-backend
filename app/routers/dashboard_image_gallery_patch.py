@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, Response
 
-from .dashboard_email_milestone_patch import _html as base_html, _js as base_js
+from .dashboard_ai_training_interpretation_patch import _html as base_html, _js as base_js
 
 router = APIRouter(tags=['dashboard-ui-image-gallery'])
 UI_VERSION = '2026.09.04-83'
@@ -9,8 +9,8 @@ UI_VERSION = '2026.09.04-83'
 
 def _html() -> str:
     html = base_html()
-    html = html.replace('UI 2026.09.04-82', f'UI {UI_VERSION}')
-    html = html.replace('/dashboard.js?v=2026.09.04-82', f'/dashboard.js?v={UI_VERSION}')
+    html = html.replace('UI 2026.09.04-81', f'UI {UI_VERSION}')
+    html = html.replace('/dashboard.js?v=2026.09.04-81', f'/dashboard.js?v={UI_VERSION}')
     html = html.replace('</head>', '''<style id="dashboardImageGallery83">
 .case-photo-gallery{margin-top:14px;padding:13px;border:1px solid #275272;border-radius:13px;background:#081d31}.case-photo-gallery h3{margin:0 0 5px}.case-photo-gallery .muted{margin-bottom:10px}.case-photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}.case-photo-item{min-width:0;border:1px solid #244a68;border-radius:11px;overflow:hidden;background:#061522}.case-photo-item img{display:block;width:100%;height:132px;object-fit:cover;background:#030b12;cursor:pointer}.case-photo-meta{padding:7px 8px;font-size:11px;color:#a8bfd3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.case-photo-empty{padding:9px 0;color:#8eacc8}.case-photo-view-btn{width:auto!important;margin-left:6px!important}.case-photo-modal{position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:18px}.case-photo-modal img{max-width:96vw;max-height:92vh;object-fit:contain}.case-photo-modal button{position:absolute;top:14px;right:14px;width:auto!important;min-width:46px}.case-photo-loading{padding:12px;color:#8eacc8}@media(max-width:620px){.case-photo-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.case-photo-item img{height:115px}}
 </style></head>''')

@@ -8,6 +8,7 @@ from .database import Base, SessionLocal, engine
 from .models import Company, Store
 from .routers import access_control, auth, case_event_policy_patch, case_management_patch, case_media_upload_patch, companies, company_delete_safe, company_resources, contacts, conversation_admin, conversation_visibility_patch, coppel_support, dashboard, dashboard_ai_neural_entry_patch, dashboard_ai_neural_patch, dashboard_ai_training_interpretation_patch, dashboard_email_milestone_patch, dashboard_fullscreen_support_patch, dashboard_patch, dashboard_permission_visibility_patch, dashboard_role_redesign_patch, dashboard_ui, flow_simulator_dashboard_patch, global_entry, global_entry_dashboard_patch, global_entry_sequence_patch, iqos_support, local_bridge, login_recovery_dashboard_patch, manager_patch, mobile_update, operations_dashboard_patch, report_download_dashboard_patch, routing_dashboard_patch, settings as settings_router, super_admin, super_admin_email_pause, support_email_bridge, support_tickets, ticketed_case_close, ticketed_local_bridge, tree_editor_patch, tree_zoom_dashboard_patch, whatsapp
 from .services.escalation import process_help_escalations
+from .services.mobile_support_bootstrap import ensure_mobile_support_account
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -136,6 +137,7 @@ def startup():
     db = SessionLocal()
     try:
         super_admin._ensure_core_users(db)
+        ensure_mobile_support_account(db)
 
         if not db.query(Company).first():
             company = Company(company_key='empresa_demo', name='Empresa Demo Phygital', decision_tree={

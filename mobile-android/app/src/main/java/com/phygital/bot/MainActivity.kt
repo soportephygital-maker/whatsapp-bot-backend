@@ -90,7 +90,7 @@ class MainActivity : Activity() {
                         val quotedToken = JSONObject.quote(currentToken)
                         val quotedRole = JSONObject.quote(role ?: "")
                         view.evaluateJavascript(
-                            "localStorage.setItem('phygital_token',$quotedToken);localStorage.setItem('phygital_role',$quotedRole);if(window.show){show();}",
+                            "(function(){var existing=localStorage.getItem('phygital_token');if(!existing){localStorage.setItem('phygital_token',$quotedToken);localStorage.setItem('phygital_role',$quotedRole);}if(window.show){show();}})();",
                             null
                         )
                     }
@@ -137,10 +137,7 @@ class MainActivity : Activity() {
                 val access = JSONObject(request("GET", "/api/access-control/me", null, savedToken))
                 role = access.optString("role", role ?: "")
                 username = access.optString("username", username ?: "")
-                prefs.edit()
-                    .putString("role", role)
-                    .putString("username", username)
-                    .apply()
+                prefs.edit().putString("role", role).putString("username", username).apply()
                 applyNativeAccess(access)
                 runOnUiThread { openDashboard() }
                 startNotificationPolling()
@@ -156,20 +153,10 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun loadNativeAccess(auth: String) {
-        val access = JSONObject(request("GET", "/api/access-control/me", null, auth))
-        applyNativeAccess(access)
-    }
-
     private fun applyNativeAccess(access: JSONObject) {
         val permissions = access.optJSONObject("permissions") ?: JSONObject()
         canManageBridge = permissions.optBoolean("manage_mobile_bridge", false)
         runOnUiThread { settingsButton.visibility = View.VISIBLE }
-    }
-
-    private fun isAdminUser(): Boolean {
-        val normalized = role.orEmpty().trim().lowercase().replace('-', '_').replace(' ', '_')
-        return normalized == "admin" || normalized == "super_admin" || normalized == "superadmin"
     }
 
     private fun openLogin() {
@@ -184,8 +171,8 @@ class MainActivity : Activity() {
 
     private fun confirmLogout() {
         AlertDialog.Builder(this)
-            .setTitle("Cerrar sesión")
-            .setMessage("¿Quieres salir de Phygital Bot?")
+            .setTitle("Cerrar sesión de la app")
+            .setMessage("Se cerrará la sesión móvil de Phygital Bot. La sesión del dashboard se conservará.")
             .setNegativeButton("Cancelar", null)
             .setPositiveButton("Salir") { _, _ -> logout() }
             .show()
@@ -196,9 +183,10 @@ class MainActivity : Activity() {
         token = null
         role = null
         username = null
+        canManageBridge = false
         getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit().clear().apply()
-        webView.clearCache(true)
-        webView.evaluateJavascript("localStorage.removeItem('phygital_token');localStorage.removeItem('phygital_role');", null)
+        // Intentionally preserve WebView localStorage/cookies so the dashboard session
+        // remains independent from the mobile bridge session.
         openLogin()
     }
 
@@ -224,22 +212,38 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun updateButton(): Button = Button(this).apply {
+        text = "Buscar actualizaciones"
+        setOnClickListener { checkForUpdate(true) }
+    }
+
+    private fun appSettingsButton(): Button = Button(this).apply {
+        text = "Permisos / ajustes de la aplicación"
+        setOnClickListener {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        }
+    }
+
+    private fun notificationAccessButton(): Button = Button(this).apply {
+        text = "Acceso a notificaciones"
+        setOnClickListener { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
+    }
+
     private fun showNotificationOnlySettings() {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 20, 32, 20)
         }
         content.addView(TextView(this).apply {
-            text = "Notificaciones"
+            text = "Configuración de la app"
             textSize = 17f
         })
         content.addView(TextView(this).apply {
-            text = "Desde aquí puedes permitir que Phygital Bot reciba y muestre las notificaciones necesarias."
+            text = "Puedes revisar permisos, acceso a notificaciones y actualizaciones."
         })
-        content.addView(Button(this).apply {
-            text = "Acceso a notificaciones"
-            setOnClickListener { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
-        })
+        content.addView(notificationAccessButton())
+        content.addView(appSettingsButton())
+        content.addView(updateButton())
 
         AlertDialog.Builder(this)
             .setTitle("Configuración")
@@ -256,6 +260,11 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 16, 32, 16)
         }
+
+        content.addView(TextView(this).apply {
+            text = "App que atenderá este teléfono"
+            textSize = 16f
+        })
 
         val waSwitch = Switch(this).apply {
             text = "WhatsApp"
@@ -296,18 +305,13 @@ class MainActivity : Activity() {
             }
         }
 
-        val notificationAccess = Button(this).apply {
-            text = "Acceso a notificaciones"
-            setOnClickListener { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
-        }
-        val appSettings = Button(this).apply {
-            text = "Ajustes de la aplicación"
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
-            }
-        }
-        content.addView(notificationAccess)
-        content.addView(appSettings)
+        content.addView(notificationAccessButton())
+        content.addView(appSettingsButton())
+        content.addView(updateButton())
+        content.addView(TextView(this).apply {
+            text = "Versión instalada: ${BuildConfig.VERSION_NAME}"
+            setPadding(0, 12, 0, 0)
+        })
 
         val scroll = ScrollView(this).apply { addView(content) }
         AlertDialog.Builder(this)
@@ -381,7 +385,9 @@ class MainActivity : Activity() {
 
     private fun showSupportNotification(id: Int, title: String, body: String) {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val intent = Intent(this, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP }
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
         val pendingIntent = PendingIntent.getActivity(this, id, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = if (Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, notificationChannelId)
         else @Suppress("DEPRECATION") android.app.Notification.Builder(this)
@@ -407,9 +413,30 @@ class MainActivity : Activity() {
                 val message = json.optString("message", "Hay una actualización disponible para Phygital Bot.")
                 if (published && latestCode > BuildConfig.VERSION_CODE && apkUrl.isNotBlank()) {
                     runOnUiThread { showUpdatePrompt(latestName, message, apkUrl) }
+                } else if (showIfCurrent) {
+                    runOnUiThread {
+                        val text = if (published) {
+                            "Tu app está actualizada.\nInstalada: ${BuildConfig.VERSION_NAME}\nÚltima publicada: ${if (latestName.isBlank()) BuildConfig.VERSION_NAME else latestName}"
+                        } else {
+                            "No hay una actualización móvil publicada en este momento."
+                        }
+                        AlertDialog.Builder(this)
+                            .setTitle("Actualizaciones")
+                            .setMessage(text)
+                            .setPositiveButton("Aceptar", null)
+                            .show()
+                    }
                 }
-            } catch (_: Exception) {
-                if (showIfCurrent) return@Thread
+            } catch (e: Exception) {
+                if (showIfCurrent) {
+                    runOnUiThread {
+                        AlertDialog.Builder(this)
+                            .setTitle("Actualizaciones")
+                            .setMessage("No se pudo consultar la actualización.\n${e.message ?: ""}")
+                            .setPositiveButton("Aceptar", null)
+                            .show()
+                    }
+                }
             }
         }.start()
     }
@@ -443,7 +470,15 @@ class MainActivity : Activity() {
                 connection.inputStream.use { input -> apk.outputStream().use { output -> input.copyTo(output) } }
                 connection.disconnect()
                 runOnUiThread { requestInstallOrOpen(apk) }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                runOnUiThread {
+                    AlertDialog.Builder(this)
+                        .setTitle("Actualización")
+                        .setMessage("No se pudo descargar la actualización.\n${e.message ?: ""}")
+                        .setPositiveButton("Aceptar", null)
+                        .show()
+                }
+            }
         }.start()
     }
 

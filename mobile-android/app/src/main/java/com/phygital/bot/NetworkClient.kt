@@ -12,7 +12,7 @@ import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 
 object NetworkClient {
-    private const val BASE_URL = "https://whatsapp-bot-backend-142e.onrender.com"
+    private const val BASE_URL = "https://whatsapp-bot-backend-v2.onrender.com"
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     private val bootstrapClient: OkHttpClient by lazy {

@@ -36,11 +36,9 @@ app.include_router(contacts.router)
 app.include_router(ticketed_case_close.router)
 app.include_router(conversation_admin.router)
 app.include_router(conversation_visibility_patch.router)
-app.include_router(dashboard.router)
-app.include_router(settings_router.router)
-app.include_router(global_entry.router)
-# Final dashboard layer. The newest wrapper must be registered first because it
-# owns /dashboard and /dashboard.js for cache-busting the active UI.
+
+# IMPORTANT: /dashboard and /dashboard.js are first-match routes in FastAPI.
+# Register the newest dashboard wrapper BEFORE every legacy dashboard router.
 app.include_router(dashboard_email_milestone_patch.router)
 app.include_router(dashboard_ai_training_interpretation_patch.router)
 app.include_router(dashboard_ai_neural_entry_patch.router)
@@ -59,6 +57,10 @@ app.include_router(tree_editor_patch.router)
 app.include_router(manager_patch.router)
 app.include_router(dashboard_patch.router)
 app.include_router(dashboard_ui.router)
+app.include_router(dashboard.router)
+
+app.include_router(settings_router.router)
+app.include_router(global_entry.router)
 # This wrapper owns /api/local-bridge/inbound so the first unidentified contact
 # always receives the greeting; the unmatched-company message is only used after
 # the greeting has already been sent and the next client response is still unclear.
@@ -175,7 +177,12 @@ def startup():
 
 @app.get('/health')
 def health():
-    return {'status': 'ok', 'environment': settings.environment, 'primary_transport': 'android_notification'}
+    return {
+        'status': 'ok',
+        'environment': settings.environment,
+        'primary_transport': 'android_notification',
+        'dashboard_ui': dashboard_email_milestone_patch.UI_VERSION,
+    }
 
 
 @app.get('/')
@@ -185,6 +192,7 @@ def root():
         'status': 'running',
         'health': '/health',
         'dashboard': '/dashboard',
+        'dashboard_ui': dashboard_email_milestone_patch.UI_VERSION,
         'primary_transport': 'android_notification',
         'webhook': '/webhook',
     }

@@ -11,7 +11,7 @@ router = APIRouter(tags=['dashboard-ui-email-milestone'])
 # We still reuse dashboard_image_gallery_patch._html()/_js() as the content base.
 router.include_router(image_evidence_listo_patch.router)
 router.include_router(image_evidence_patch.router)
-UI_VERSION = '2026.09.04-97'
+UI_VERSION = '2026.09.04-98'
 
 
 def _html() -> str:
@@ -21,7 +21,7 @@ def _html() -> str:
         '2026.09.04-86', '2026.09.04-87', '2026.09.04-88',
         '2026.09.04-89', '2026.09.04-90', '2026.09.04-91',
         '2026.09.04-92', '2026.09.04-93', '2026.09.04-94',
-        '2026.09.04-95', '2026.09.04-96',
+        '2026.09.04-95', '2026.09.04-96', '2026.09.04-97',
     ):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')

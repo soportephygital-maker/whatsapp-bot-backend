@@ -3,7 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from ..auth import SUPER_ADMIN_USERNAME, create_access_token, get_current_user, hash_password, verify_password
 from ..database import get_db
-from ..models import AuditLog, User
+from ..models import AuditLog, User, UserPermission
 from ..schemas import LoginRequest, UserCreate, UserUpdate
 from ..services.user_access import has_permission, require_user_permission
 
@@ -59,6 +59,70 @@ def mobile_login(data: LoginRequest, db: Session = Depends(get_db)):
     db.add(AuditLog(username=user.username, action='mobile_login_exitoso', entity='session', entity_id=str(user.id), details={'role': user.role, 'device_profile': 'whatsapp_bridge'}))
     db.commit()
     return _login_payload(user)
+
+
+@router.post('/soporte/activar')
+def activate_mobile_support(
+    data: LoginRequest,
+    manager: User = Depends(require_user_manager),
+    db: Session = Depends(get_db),
+):
+    """Create or reactivate the dedicated mobile support account from the dashboard.
+
+    The password is supplied at request time and stored only as a hash.
+    """
+    password = data.password
+    if not password:
+        raise HTTPException(status_code=422, detail='La contraseña de Soporte es obligatoria')
+
+    user = db.query(User).filter(func.lower(User.username) == 'soporte').first()
+    created = user is None
+    if user is None:
+        user = User(
+            username='Soporte',
+            password_hash=hash_password(password),
+            role='operador',
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+    else:
+        user.username = 'Soporte'
+        user.password_hash = hash_password(password)
+        user.role = 'operador'
+        user.is_active = True
+        db.add(user)
+        db.flush()
+
+    permission_row = db.get(UserPermission, user.id)
+    if permission_row and isinstance(permission_row.permissions, dict) and permission_row.permissions.get('_configured'):
+        permissions = dict(permission_row.permissions)
+        permissions['reply_conversations'] = True
+        permission_row.permissions = permissions
+        db.add(permission_row)
+
+    db.add(AuditLog(
+        username=manager.username,
+        action='activar_soporte_movil',
+        entity='user',
+        entity_id=str(user.id),
+        details={
+            'target_username': 'Soporte',
+            'role': 'operador',
+            'reply_conversations': True,
+            'created': created,
+            'password_changed': True,
+        },
+    ))
+    db.commit()
+    return {
+        'status': 'ok',
+        'username': 'Soporte',
+        'role': 'operador',
+        'is_active': True,
+        'reply_conversations': True,
+        'created': created,
+    }
 
 
 @router.get('/usuarios')

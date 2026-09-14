@@ -1,18 +1,38 @@
+import secrets
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from ..auth import hash_password
 from ..models import User, UserPermission
 
 SUPPORT_USERNAME = 'Soporte'
 
 
 def ensure_mobile_support_account(db: Session) -> bool:
-    """Normalize an existing mobile support account without changing its password."""
-    user = db.query(User).filter(func.lower(User.username) == SUPPORT_USERNAME.lower()).first()
-    if not user:
-        return False
+    """Ensure the dedicated mobile support account exists and is usable by the app.
 
+    A missing account is created with a random one-time password hash so no default
+    credential is stored in source code. The dashboard can then set the real
+    password explicitly.
+    """
+    user = db.query(User).filter(func.lower(User.username) == SUPPORT_USERNAME.lower()).first()
     changed = False
+
+    if not user:
+        user = User(
+            username=SUPPORT_USERNAME,
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+            role='operador',
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        changed = True
+
+    if user.username != SUPPORT_USERNAME:
+        user.username = SUPPORT_USERNAME
+        changed = True
     if user.role != 'operador':
         user.role = 'operador'
         changed = True

@@ -203,7 +203,7 @@ class MainActivity : Activity() {
     }
 
     private fun showBridgeSettings() {
-        if (!isAdminUser()) {
+        if (!canManageBridge) {
             showNotificationOnlySettings()
             return
         }

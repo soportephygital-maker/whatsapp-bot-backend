@@ -103,7 +103,14 @@ class MainActivity : Activity() {
         setContentView(root)
 
         restoreSavedSession()
+        handleNotificationAction(intent)
         checkForUpdate(false)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationAction(intent)
     }
 
     override fun onResume() {
@@ -120,6 +127,19 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
+    }
+
+    private fun handleNotificationAction(sourceIntent: Intent?) {
+        when (sourceIntent?.getStringExtra("phygital_action")) {
+            "update" -> {
+                sourceIntent.removeExtra("phygital_action")
+                checkForUpdate(true)
+            }
+            "settings" -> {
+                sourceIntent.removeExtra("phygital_action")
+                showBridgeSettings()
+            }
+        }
     }
 
     private fun restoreSavedSession() {
@@ -185,29 +205,21 @@ class MainActivity : Activity() {
         username = null
         canManageBridge = false
         getSharedPreferences(sessionPrefsName, MODE_PRIVATE).edit().clear().apply()
-        // Intentionally preserve WebView localStorage/cookies so the dashboard session
-        // remains independent from the mobile bridge session.
         openLogin()
     }
 
     private fun showBridgeSettings() {
-        if (!canManageBridge) {
-            showNotificationOnlySettings()
+        val auth = token
+        if (auth.isNullOrBlank()) {
+            buildBridgeSettingsDialog(JSONArray())
             return
         }
-        val auth = token ?: return
         Thread {
             try {
                 val companies = JSONArray(request("GET", "/api/empresas/listar", null, auth))
                 runOnUiThread { buildBridgeSettingsDialog(companies) }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    AlertDialog.Builder(this)
-                        .setTitle("Configuración")
-                        .setMessage("No se pudieron cargar las empresas y tiendas.\n${e.message ?: ""}")
-                        .setPositiveButton("Aceptar", null)
-                        .show()
-                }
+            } catch (_: Exception) {
+                runOnUiThread { buildBridgeSettingsDialog(JSONArray()) }
             }
         }.start()
     }
@@ -230,26 +242,7 @@ class MainActivity : Activity() {
     }
 
     private fun showNotificationOnlySettings() {
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 20, 32, 20)
-        }
-        content.addView(TextView(this).apply {
-            text = "Configuración de la app"
-            textSize = 17f
-        })
-        content.addView(TextView(this).apply {
-            text = "Puedes revisar permisos, acceso a notificaciones y actualizaciones."
-        })
-        content.addView(notificationAccessButton())
-        content.addView(appSettingsButton())
-        content.addView(updateButton())
-
-        AlertDialog.Builder(this)
-            .setTitle("Configuración")
-            .setView(content)
-            .setPositiveButton("Cerrar", null)
-            .show()
+        buildBridgeSettingsDialog(JSONArray())
     }
 
     private fun buildBridgeSettingsDialog(companies: JSONArray) {
@@ -262,8 +255,11 @@ class MainActivity : Activity() {
         }
 
         content.addView(TextView(this).apply {
-            text = "App que atenderá este teléfono"
-            textSize = 16f
+            text = "Aplicación a leer en este teléfono"
+            textSize = 17f
+        })
+        content.addView(TextView(this).apply {
+            text = "Selecciona la aplicación de WhatsApp cuyas notificaciones atenderá Phygital Bot."
         })
 
         val waSwitch = Switch(this).apply {
@@ -283,6 +279,11 @@ class MainActivity : Activity() {
         })
 
         val checks = mutableListOf<Pair<Int, CheckBox>>()
+        if (companies.length() == 0) {
+            content.addView(TextView(this).apply {
+                text = "Las empresas/tiendas no están disponibles en este momento. La selección de aplicación y los demás ajustes siguen disponibles."
+            })
+        }
         for (i in 0 until companies.length()) {
             val company = companies.optJSONObject(i) ?: continue
             val companyName = company.optString("nombre", company.optString("name", "Empresa"))
@@ -305,26 +306,30 @@ class MainActivity : Activity() {
             }
         }
 
+        content.addView(TextView(this).apply {
+            text = "\nConfiguraciones"
+            textSize = 16f
+        })
         content.addView(notificationAccessButton())
         content.addView(appSettingsButton())
         content.addView(updateButton())
         content.addView(TextView(this).apply {
-            text = "Versión instalada: ${BuildConfig.VERSION_NAME}"
+            text = "Versión instalada: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
             setPadding(0, 12, 0, 0)
         })
 
         val scroll = ScrollView(this).apply { addView(content) }
         AlertDialog.Builder(this)
-            .setTitle("Configuración del puente")
+            .setTitle("Configuración de Phygital Bot")
             .setView(scroll)
             .setNegativeButton("Cancelar", null)
             .setPositiveButton("Guardar") { _, _ ->
                 val selectedIds = checks.filter { it.second.isChecked }.map { it.first.toString() }.toSet()
-                prefs.edit()
+                val edit = prefs.edit()
                     .putBoolean("app_enabled_com_whatsapp", waSwitch.isChecked)
                     .putBoolean("app_enabled_com_whatsapp_w4b", businessSwitch.isChecked)
-                    .putStringSet("selected_store_ids", selectedIds)
-                    .apply()
+                if (checks.isNotEmpty()) edit.putStringSet("selected_store_ids", selectedIds)
+                edit.apply()
                 startBridgeKeepAlive()
             }
             .show()

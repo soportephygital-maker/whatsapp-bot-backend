@@ -8,8 +8,13 @@ from . import image_evidence_patch, local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-image-finish'])
 
-LISTO_WORDS = {'listo', 'lista', 'ya', 'continuar', 'continua', 'continuemos', 'terminar', 'finalizar'}
-LISTO_TEXT = '✅ Listo. La evidencia quedó registrada en el reporte. Puedes continuar con la atención.'
+LISTO_WORDS = {
+    'listo', 'lista', 'ya', 'continuar', 'continua', 'continuemos', 'terminar', 'finalizar',
+    'siguiente', 'seguir', 'adelante', 'es solo esa', 'solo esa', 'solo es esa',
+    'esa es la unica', 'es la unica', 'es la unica foto', 'solo esa foto', 'nada mas',
+    'no hay otra', 'no tengo otra', 'esa nada mas', 'esa nomas', 'esa es todo',
+}
+LISTO_TEXT = '✅ Listo. La evidencia quedó registrada en el reporte. Continuamos con la atención.'
 
 
 def _save_listo_message(db: Session, data: local_bridge.LocalInbound, conversation) -> None:
@@ -43,7 +48,20 @@ def _last_outbound_is_image_confirmation(db: Session, conversation_id: int) -> b
         Message.direction == 'outbound',
     ).order_by(Message.id.desc()).first()
     text = str(row.body or '') if row else ''
-    return 'foto quedó registrada' in text.lower() or 'evidencia quedó registrada' in text.lower()
+    low = text.lower()
+    return 'foto quedó registrada' in low or 'evidencia quedó registrada' in low or 'recibí una imagen' in low
+
+
+def _is_finish_phrase(value: str) -> bool:
+    text = image_evidence_patch._normalized(value)
+    if text in LISTO_WORDS:
+        return True
+    phrases = (
+        'es solo esa', 'solo esa', 'solo es esa', 'esa es la unica', 'es la unica foto',
+        'no tengo otra', 'no hay otra', 'esa nada mas', 'esa nomas', 'podemos seguir',
+        'puedes seguir', 'continua con la atencion', 'continuar con la atencion',
+    )
+    return any(phrase in text for phrase in phrases)
 
 
 @router.post('/inbound')
@@ -52,9 +70,8 @@ def image_evidence_finish_inbound(
     operator: User = Depends(require_operator),
     db: Session = Depends(get_db),
 ):
-    normalized = image_evidence_patch._normalized(data.text)
     local_user_id, conversation, company, store, ticket = image_evidence_patch._active_context(db, data)
-    if conversation and company and store and normalized in LISTO_WORDS:
+    if conversation and company and store and _is_finish_phrase(data.text):
         in_photo_state = conversation.state in {image_evidence_patch.IMAGE_CONFIRM_STATE, image_evidence_patch.IMAGE_WAIT_STATE}
         just_confirmed = _last_outbound_is_image_confirmation(db, conversation.id)
         if in_photo_state or just_confirmed:

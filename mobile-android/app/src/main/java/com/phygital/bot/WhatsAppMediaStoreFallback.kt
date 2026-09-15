@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import java.io.ByteArrayOutputStream
+import kotlin.math.abs
 
 object WhatsAppMediaStoreFallback {
     data class CapturedImage(
@@ -17,7 +18,8 @@ object WhatsAppMediaStoreFallback {
     )
 
     private const val MAX_BYTES = 15 * 1024 * 1024
-    private const val WINDOW_MS = 180_000L
+    private const val WINDOW_MS = 45_000L
+    private const val FUTURE_GRACE_MS = 12_000L
     private const val RETRIES = 8
     private const val RETRY_DELAY_MS = 1_250L
     private const val PREFS = "phygital_local_bridge"
@@ -45,6 +47,14 @@ object WhatsAppMediaStoreFallback {
         }
     }
 
+    private data class CandidateRow(
+        val id: Long,
+        val name: String,
+        val mime: String,
+        val relative: String,
+        val timestampMs: Long,
+    )
+
     private fun queryRecentIncomingImage(context: Context, notificationTime: Long, expectedPackage: String?): CapturedImage? {
         val resolver = context.contentResolver
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
@@ -58,9 +68,9 @@ object WhatsAppMediaStoreFallback {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) projection.add(MediaStore.Images.Media.RELATIVE_PATH)
 
         val fromSeconds = ((notificationTime - WINDOW_MS).coerceAtLeast(0L)) / 1000L
-        val nowSeconds = (System.currentTimeMillis() + WINDOW_MS) / 1000L
+        val toSeconds = (notificationTime + FUTURE_GRACE_MS) / 1000L
         val selection = "(${MediaStore.Images.Media.DATE_ADDED} BETWEEN ? AND ?) OR (${MediaStore.Images.Media.DATE_MODIFIED} BETWEEN ? AND ?)"
-        val args = arrayOf(fromSeconds.toString(), nowSeconds.toString(), fromSeconds.toString(), nowSeconds.toString())
+        val args = arrayOf(fromSeconds.toString(), toSeconds.toString(), fromSeconds.toString(), toSeconds.toString())
         val sort = "${MediaStore.Images.Media.DATE_ADDED} DESC, ${MediaStore.Images.Media.DATE_MODIFIED} DESC"
 
         return try {
@@ -68,21 +78,37 @@ object WhatsAppMediaStoreFallback {
                 val idIx = cursor.getColumnIndex(MediaStore.Images.Media._ID)
                 val nameIx = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
                 val mimeIx = cursor.getColumnIndex(MediaStore.Images.Media.MIME_TYPE)
+                val addedIx = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
+                val modifiedIx = cursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED)
                 val pathIx = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) cursor.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH) else -1
+
+                val candidates = mutableListOf<CandidateRow>()
                 while (cursor.moveToNext()) {
                     val id = if (idIx >= 0) cursor.getLong(idIx) else continue
                     val name = if (nameIx >= 0) cursor.getString(nameIx).orEmpty() else "whatsapp-image.jpg"
                     val mime = if (mimeIx >= 0) cursor.getString(mimeIx).orEmpty() else "image/jpeg"
                     val relative = if (pathIx >= 0) cursor.getString(pathIx).orEmpty() else ""
                     if (!looksLikeWhatsAppImage(relative, name, expectedPackage)) continue
-                    val uri = Uri.withAppendedPath(collection, id.toString())
+                    val addedMs = if (addedIx >= 0) cursor.getLong(addedIx) * 1000L else 0L
+                    val modifiedMs = if (modifiedIx >= 0) cursor.getLong(modifiedIx) * 1000L else 0L
+                    val timestamp = maxOf(addedMs, modifiedMs)
+                    if (timestamp <= 0L) continue
+                    candidates.add(CandidateRow(id, name, mime, relative, timestamp))
+                }
+
+                val ordered = candidates.sortedWith(
+                    compareBy<CandidateRow> { abs(it.timestampMs - notificationTime) }
+                        .thenByDescending { it.timestampMs }
+                )
+                for (row in ordered) {
+                    val uri = Uri.withAppendedPath(collection, row.id.toString())
                     val bytes = readBytes(context, uri) ?: continue
                     val source = when (expectedPackage) {
                         "com.whatsapp.w4b" -> "whatsapp_business_media_store"
                         "com.whatsapp" -> "whatsapp_media_store"
                         else -> "whatsapp_media_store_unscoped"
                     }
-                    return CapturedImage(bytes, name.ifBlank { "whatsapp-image.jpg" }, mime.ifBlank { "image/jpeg" }, source)
+                    return CapturedImage(bytes, row.name.ifBlank { "whatsapp-image.jpg" }, row.mime.ifBlank { "image/jpeg" }, source)
                 }
                 null
             }

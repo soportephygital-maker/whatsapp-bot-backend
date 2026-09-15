@@ -52,4 +52,4 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
 }
 
-// Android publisher trigger: workflow registered on main.
+// Android publisher trigger: workflow_run registered on main.

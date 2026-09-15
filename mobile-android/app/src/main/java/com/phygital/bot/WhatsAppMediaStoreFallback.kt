@@ -20,11 +20,13 @@ object WhatsAppMediaStoreFallback {
     private const val WINDOW_MS = 180_000L
     private const val RETRIES = 8
     private const val RETRY_DELAY_MS = 1_250L
+    private const val PREFS = "phygital_local_bridge"
 
     fun captureRecentIncomingImage(context: Context, notificationTime: Long): CapturedImage? {
         if (!hasImagePermission(context)) return null
+        val expectedApp = expectedPackage(context)
         repeat(RETRIES) { attempt ->
-            queryRecentIncomingImage(context, notificationTime)?.let { return it }
+            queryRecentIncomingImage(context, notificationTime, expectedApp)?.let { return it }
             if (attempt < RETRIES - 1) {
                 try { Thread.sleep(RETRY_DELAY_MS) } catch (_: InterruptedException) { return null }
             }
@@ -32,7 +34,18 @@ object WhatsAppMediaStoreFallback {
         return null
     }
 
-    private fun queryRecentIncomingImage(context: Context, notificationTime: Long): CapturedImage? {
+    private fun expectedPackage(context: Context): String? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val wa = prefs.getBoolean("app_enabled_com_whatsapp", false)
+        val business = prefs.getBoolean("app_enabled_com_whatsapp_w4b", false)
+        return when {
+            business && !wa -> "com.whatsapp.w4b"
+            wa && !business -> "com.whatsapp"
+            else -> null
+        }
+    }
+
+    private fun queryRecentIncomingImage(context: Context, notificationTime: Long, expectedPackage: String?): CapturedImage? {
         val resolver = context.contentResolver
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = mutableListOf(
@@ -61,10 +74,15 @@ object WhatsAppMediaStoreFallback {
                     val name = if (nameIx >= 0) cursor.getString(nameIx).orEmpty() else "whatsapp-image.jpg"
                     val mime = if (mimeIx >= 0) cursor.getString(mimeIx).orEmpty() else "image/jpeg"
                     val relative = if (pathIx >= 0) cursor.getString(pathIx).orEmpty() else ""
-                    if (!looksLikeWhatsAppImage(relative, name)) continue
+                    if (!looksLikeWhatsAppImage(relative, name, expectedPackage)) continue
                     val uri = Uri.withAppendedPath(collection, id.toString())
                     val bytes = readBytes(context, uri) ?: continue
-                    return CapturedImage(bytes, name.ifBlank { "whatsapp-image.jpg" }, mime.ifBlank { "image/jpeg" })
+                    val source = when (expectedPackage) {
+                        "com.whatsapp.w4b" -> "whatsapp_business_media_store"
+                        "com.whatsapp" -> "whatsapp_media_store"
+                        else -> "whatsapp_media_store_unscoped"
+                    }
+                    return CapturedImage(bytes, name.ifBlank { "whatsapp-image.jpg" }, mime.ifBlank { "image/jpeg" }, source)
                 }
                 null
             }
@@ -73,11 +91,19 @@ object WhatsAppMediaStoreFallback {
         }
     }
 
-    private fun looksLikeWhatsAppImage(relativePath: String, filename: String): Boolean {
+    private fun looksLikeWhatsAppImage(relativePath: String, filename: String, expectedPackage: String?): Boolean {
         val path = relativePath.lowercase()
         val name = filename.lowercase()
-        if (path.contains("whatsapp images") || path.contains("whatsapp/media") || path.contains("com.whatsapp") || path.contains("com.whatsapp.w4b")) return true
-        return name.startsWith("img-") && name.contains("wa")
+        val isBusiness = path.contains("com.whatsapp.w4b") || path.contains("whatsapp business")
+        val isRegular = (path.contains("com.whatsapp") && !path.contains("com.whatsapp.w4b")) ||
+            (path.contains("whatsapp images") && !path.contains("whatsapp business")) ||
+            (path.contains("whatsapp/media") && !path.contains("whatsapp business"))
+
+        return when (expectedPackage) {
+            "com.whatsapp.w4b" -> isBusiness
+            "com.whatsapp" -> isRegular && !isBusiness
+            else -> isBusiness || isRegular || (name.startsWith("img-") && name.contains("wa"))
+        }
     }
 
     private fun readBytes(context: Context, uri: Uri): ByteArray? {

@@ -13,8 +13,12 @@ LISTO_WORDS = {
     'siguiente', 'seguir', 'adelante', 'es solo esa', 'solo esa', 'solo es esa',
     'esa es la unica', 'es la unica', 'es la unica foto', 'solo esa foto', 'nada mas',
     'no hay otra', 'no tengo otra', 'esa nada mas', 'esa nomas', 'esa es todo',
+    'ya estan', 'ya estan las fotos', 'ya estan todas', 'ya mande las fotos',
+    'ya envie las fotos', 'son todas', 'son todas las fotos', 'esas son todas',
+    'esas son las fotos', 'ya no hay mas', 'no hay mas fotos', 'termine las fotos',
+    'termine de enviar', 'termine de mandar', 'fueron todas',
 }
-LISTO_TEXT = '✅ Listo. La evidencia quedó registrada en el reporte. Continuamos con la atención.'
+LISTO_TEXT = '✅ Listo. La evidencia quedó registrada en el reporte.'
 
 
 def _save_listo_message(db: Session, data: local_bridge.LocalInbound, conversation) -> None:
@@ -60,8 +64,22 @@ def _is_finish_phrase(value: str) -> bool:
         'es solo esa', 'solo esa', 'solo es esa', 'esa es la unica', 'es la unica foto',
         'no tengo otra', 'no hay otra', 'esa nada mas', 'esa nomas', 'podemos seguir',
         'puedes seguir', 'continua con la atencion', 'continuar con la atencion',
+        'ya estan las foto', 'ya estan todas', 'ya mande las foto', 'ya envie las foto',
+        'son todas las foto', 'esas son todas', 'ya no hay mas', 'no hay mas foto',
+        'termine de enviar', 'termine de mandar',
     )
     return any(phrase in text for phrase in phrases)
+
+
+def _next_node_message(company, state: str) -> str:
+    tree = company.decision_tree or {}
+    nodes = tree.get('nodos') or tree.get('nodes') or {}
+    if not isinstance(nodes, dict):
+        return ''
+    node = nodes.get(state)
+    if not isinstance(node, dict):
+        return ''
+    return str(node.get('mensaje') or node.get('message') or '').strip()
 
 
 @router.post('/inbound')
@@ -80,13 +98,21 @@ def image_evidence_finish_inbound(
             if return_state and return_state not in {image_evidence_patch.IMAGE_CONFIRM_STATE, image_evidence_patch.IMAGE_WAIT_STATE}:
                 conversation.state = return_state
             _save_listo_message(db, data, conversation)
+
+            next_prompt = _next_node_message(company, conversation.state)
+            response = LISTO_TEXT
+            if next_prompt:
+                response += '\n\n' + next_prompt
+            else:
+                response += '\n\nContinuamos con la atención.'
+
             outbound = image_evidence_patch._reply(
                 db,
                 conversation=conversation,
                 company=company,
                 store=store,
                 data=data,
-                text=LISTO_TEXT,
+                text=response,
             )
             db.commit()
             return {
@@ -96,10 +122,11 @@ def image_evidence_finish_inbound(
                 'company_name': company.name,
                 'store_name': store.name,
                 'action': 'image_evidence_finished',
-                'reply_text': LISTO_TEXT if data.can_reply else '',
+                'reply_text': response if data.can_reply else '',
                 'should_reply': bool(data.can_reply),
                 'outbound_message_id': outbound.id,
                 'ticket_id': ticket.id if ticket else None,
                 'chatbot_paused': False,
+                'restored_state': conversation.state,
             }
     return image_evidence_patch.image_evidence_inbound(data=data, operator=operator, db=db)

@@ -171,8 +171,17 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     private fun looksLikeImageNotification(notification: Notification, rawText: String): Boolean {
         if (notification.extras.containsKey(Notification.EXTRA_PICTURE)) return true
         val text = normalizeName(rawText)
-        if (text in setOf("foto", "photo", "imagen", "image", "foto recibida", "photo received", "imagen recibida", "image received")) return true
-        if (text.startsWith("foto ") || text.startsWith("photo ") || text.startsWith("imagen ") || text.startsWith("image ")) return true
+        if (text in setOf(
+                "foto", "photo", "imagen", "image",
+                "foto recibida", "photo received", "imagen recibida", "image received",
+                "envio una foto", "envio una imagen", "sent a photo", "sent an image"
+            )) return true
+        if (
+            text.startsWith("foto ") || text.startsWith("photo ") ||
+            text.startsWith("imagen ") || text.startsWith("image ") ||
+            text.contains("envio una foto") || text.contains("envio una imagen") ||
+            text.contains("sent a photo") || text.contains("sent an image")
+        ) return true
         val messages = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES).orEmpty()
         val parsed = runCatching { Notification.MessagingStyle.Message.getMessagesFromBundleArray(messages) }.getOrNull().orEmpty()
         return parsed.any { it.dataMimeType?.startsWith("image/") == true || it.dataUri != null }

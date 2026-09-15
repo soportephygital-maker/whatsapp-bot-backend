@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_operator
 from ..database import get_db
-from ..models import CaseAttachment, Message, SupportTicket, User
+from ..models import AuditLog, CaseAttachment, Message, SupportTicket, User
+from ..services.case_evidence_email import send_evidence_email
 
 router = APIRouter(prefix='/api', tags=['case-media-upload'])
 MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
@@ -17,7 +18,14 @@ def _latest_unlinked_image_message(db: Session, ticket: SupportTicket) -> Messag
     for row in rows:
         payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
         metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
-        is_image = bool(payload.get('image_evidence')) or str(metadata.get('media_capture') or '').lower() in {'available', 'detected'} or bool(metadata.get('media_source'))
+        body = ' '.join(str(row.body or '').lower().split())
+        body_image_hint = any(token in body for token in ('imagen recibida', 'foto recibida', 'envió una foto', 'envio una foto', 'envió una imagen', 'envio una imagen'))
+        is_image = (
+            body_image_hint
+            or bool(payload.get('image_evidence'))
+            or str(metadata.get('media_capture') or '').lower() in {'available', 'detected'}
+            or bool(metadata.get('media_source'))
+        )
         if not is_image:
             continue
         linked = db.query(CaseAttachment.id).filter(CaseAttachment.message_id == row.id).first()
@@ -65,6 +73,26 @@ async def upload_case_media(
         uploaded_by=operator.username,
     )
     db.add(row)
+    db.flush()
+
+    email_sent = False
+    email_result = 'no_aplica'
+    if is_image:
+        email_sent, email_result = send_evidence_email(
+            db,
+            ticket=ticket,
+            filename=row.filename,
+            content_type=row.content_type,
+            data=data,
+        )
+        db.add(AuditLog(
+            username=operator.username,
+            action='case_evidence_email_sent' if email_sent else 'case_evidence_email_not_sent',
+            entity='support_ticket',
+            entity_id=str(ticket.id),
+            details={'attachment_id': row.id, 'filename': row.filename, 'result': email_result},
+        ))
+
     db.commit()
     db.refresh(row)
     return {
@@ -76,4 +104,6 @@ async def upload_case_media(
         'message_id': row.message_id,
         'source': row.source,
         'is_image': is_image,
+        'email_sent': email_sent,
+        'email_result': email_result,
     }

@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.ComponentName
 import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -53,8 +54,6 @@ class BridgeKeepAliveService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // El servicio es independiente de la actividad. Mantener el listener enlazado
-        // aunque el usuario quite la app de recientes o la pantalla esté bloqueada.
         ensureWakeLock()
         requestListenerRebind()
         super.onTaskRemoved(rootIntent)
@@ -102,22 +101,46 @@ class BridgeKeepAliveService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val openIntent = Intent(this, AdminGateActivity::class.java).apply {
+        val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
-        val pending = PendingIntent.getActivity(
+        val openPending = PendingIntent.getActivity(
             this,
             31001,
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+
+        val updateIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val updatePending = PendingIntent.getActivity(
+            this,
+            31002,
+            updateIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val settingsIntent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:$packageName")
+        )
+        val settingsPending = PendingIntent.getActivity(
+            this,
+            31003,
+            settingsIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
             .setContentTitle("Phygital Bot activo")
             .setContentText("Puente de WhatsApp funcionando incluso con pantalla bloqueada")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setContentIntent(pending)
+            .setContentIntent(openPending)
+            .addAction(android.R.drawable.stat_notify_sync_noanim, "Actualización", updatePending)
+            .addAction(android.R.drawable.ic_menu_manage, "Configuraciones", settingsPending)
             .build()
     }
 

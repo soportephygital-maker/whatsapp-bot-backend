@@ -9,11 +9,11 @@ class LoginRequest(BaseModel):
 class UserCreate(BaseModel):
     username: str
     password: str = Field(min_length=8)
-    role: str = Field(default='operador', pattern='^(operador|lector)$')
+    role: str = Field(default='operador', pattern='^(gerente|operador|lector)$')
 
 
 class UserUpdate(BaseModel):
-    role: str | None = Field(default=None, pattern='^(operador|lector)$')
+    role: str | None = Field(default=None, pattern='^(gerente|operador|lector)$')
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8)
 
@@ -45,6 +45,14 @@ class CompanyCreate(BaseModel):
 class CompanyUpdate(BaseModel):
     name: str | None = None
     is_active: bool | None = None
+
+
+class StoreCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+
+
+class StoreUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
 
 
 class CompanyIdentificationUpdate(BaseModel):

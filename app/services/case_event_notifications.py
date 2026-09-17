@@ -36,6 +36,7 @@ def _subject(event: str, code: str, company: Company, store: Store | None) -> st
         'ticket_opened': 'Nueva incidencia',
         'human_required': 'Requiere atención humana',
         'status_changed': 'Cambio de estado',
+        'ticket_closed': 'Caso cerrado',
         'closed_no_human': 'Caso cerrado sin atención humana',
         'resolved_success': 'Caso concluido con éxito',
     }
@@ -49,6 +50,7 @@ def _plain_body(event: str, ticket: SupportTicket, company: Company, store: Stor
         'ticket_opened': 'NUEVA INCIDENCIA',
         'human_required': 'REQUIERE ATENCIÓN HUMANA',
         'status_changed': 'CAMBIO DE ESTADO',
+        'ticket_closed': 'CASO CERRADO',
         'closed_no_human': 'CERRADO SIN ATENCIÓN HUMANA',
         'resolved_success': 'CONCLUIDO CON ÉXITO',
     }
@@ -58,7 +60,7 @@ def _plain_body(event: str, ticket: SupportTicket, company: Company, store: Stor
         f'Problema: {ticket.description}\nResultado: {ticket.close_result or "Pendiente"}\n'
         f'Evidencia fotográfica: {photo_count} foto(s).\n'
         'Se adjuntan el expediente de conversación y el resumen ejecutivo. '
-        'Las fotografías también se integran dentro de los PDF del reporte cuando están almacenadas en el ticket.\n'
+        'Las fotografías almacenadas en el ticket están integradas dentro de ambos PDF.\n'
     )
 
 
@@ -70,6 +72,7 @@ def _html_body(event: str, ticket: SupportTicket, company: Company, store: Store
         'ticket_opened': ('Nueva incidencia', '#ffedd5', '#9a3412'),
         'human_required': ('Requiere atención humana', '#fee2e2', '#991b1b'),
         'status_changed': ('Cambio de estado', '#dbeafe', '#1d4ed8'),
+        'ticket_closed': ('Caso cerrado', '#dcfce7', '#166534'),
         'closed_no_human': ('Cerrado', '#dcfce7', '#166534'),
         'resolved_success': ('Resuelto con éxito', '#dcfce7', '#166534'),
     }
@@ -80,7 +83,7 @@ def _html_body(event: str, ticket: SupportTicket, company: Company, store: Store
 <div style="height:1px;background:#e5e7eb;margin:20px 0"></div>
 <table role="presentation" width="100%"><tr><td style="padding:7px 0;color:#6b7280">Empresa</td><td align="right"><b>{escape(company.name)}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Tienda</td><td align="right"><b>{store_name}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Contacto</td><td align="right"><b>{escape(conversation.wa_user_id)}</b></td></tr><tr><td style="padding:7px 0;color:#6b7280">Fotos recibidas</td><td align="right"><b>{photo_count}</b></td></tr></table>
 <div style="height:1px;background:#e5e7eb;margin:20px 0"></div><div style="font-size:14px;color:#6b7280;margin-bottom:7px">Problema</div><div style="font-size:16px;line-height:1.5">{escape(ticket.description or 'Sin descripción').replace(chr(10), '<br>')}</div>
-<div style="margin-top:20px;background:#f7f7f7;padding:13px 15px;border-radius:12px;color:#6b7280;font-size:14px">Se adjuntan el expediente y el resumen ejecutivo. Las fotografías almacenadas en el ticket se muestran dentro de los PDF.</div>
+<div style="margin-top:20px;background:#f7f7f7;padding:13px 15px;border-radius:12px;color:#6b7280;font-size:14px">Se adjuntan el expediente completo y el resumen ejecutivo. Las fotografías almacenadas en el ticket están integradas dentro de ambos PDF.</div>
 </td></tr></table></td></tr></table></body></html>'''
 
 
@@ -116,7 +119,7 @@ def send_case_event_email(db: Session, *, ticket: SupportTicket, event: str) -> 
             if settings.smtp_username:
                 smtp.login(settings.smtp_username, settings.smtp_password)
             smtp.send_message(msg)
-        db.add(AuditLog(action='case_event_email_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'recipients': recipients, 'images_included': photo_count > 0, 'photo_count': photo_count}))
+        db.add(AuditLog(action='case_event_email_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'recipients': recipients, 'images_included': photo_count > 0, 'photo_count': photo_count, 'pdfs_attached': 2}))
         return True
     except Exception as exc:
         db.add(AuditLog(action='case_event_email_not_sent', entity='support_ticket', entity_id=str(ticket.id), details={'event': event, 'result': str(exc)[:500]}))

@@ -10,7 +10,7 @@ android {
         applicationId = "com.phygital.bot"
         minSdk = 26
         targetSdk = 36
-        versionCode = 58
+        versionCode = 59
         versionName = "0.6.32"
     }
 
@@ -92,7 +92,7 @@ val patchBridgeDiagnostics = tasks.register("patchBridgeDiagnostics") {
             "                        reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else \"Android no pudo ejecutar RemoteInput\")\n",
             "                        reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else \"Android no pudo ejecutar RemoteInput\")\n                        BridgeDiagnostics.record(this, if (sent) \"REMOTE_INPUT_SENT\" else \"REMOTE_INPUT_FAILED\", if (sent) \"Respuesta enviada a WhatsApp\" else \"Android no pudo ejecutar RemoteInput\", sbn.packageName, title, replyText, replyAction != null)\n"
         )
-        s = s.replace(
+        s = s.replaceFirst(
             "                } catch (e: Exception) {\n",
             "                } catch (e: Exception) {\n                    BridgeDiagnostics.record(this, \"ERROR\", e.message ?: \"Error local sin detalle\", sbn.packageName, title, text, replyAction != null)\n"
         )

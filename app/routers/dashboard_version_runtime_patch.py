@@ -1,12 +1,12 @@
 from . import dashboard_email_milestone_patch as target
 
-UI_VERSION = '2026.09.17-115'
+UI_VERSION = '2026.09.17-116'
 _original_html = target._html
 
 
 def _html():
     html = _original_html()
-    for old in ('2026.09.04-105', '2026.09.04-106', '2026.09.04-107', '2026.09.04-108', '2026.09.17-109', '2026.09.17-110', '2026.09.17-111', '2026.09.17-112', '2026.09.17-113', '2026.09.17-114'):
+    for old in ('2026.09.04-105', '2026.09.04-106', '2026.09.04-107', '2026.09.04-108', '2026.09.17-109', '2026.09.17-110', '2026.09.17-111', '2026.09.17-112', '2026.09.17-113', '2026.09.17-114', '2026.09.17-115'):
         html = html.replace(f'UI {old}', f'UI {UI_VERSION}')
         html = html.replace(f'/dashboard.js?v={old}', f'/dashboard.js?v={UI_VERSION}')
     return html

@@ -10,6 +10,9 @@ from .case_reports import build_chat_pdf, build_summary_pdf
 from .ticketing import ticket_code
 
 
+TERMINAL_EMAIL_EVENTS = {'ticket_closed', 'closed_no_human', 'resolved_success'}
+
+
 def _recipients(db: Session, company_id: int) -> list[str]:
     from ..models import SupportEmailRecipient
     rows = db.query(SupportEmailRecipient).filter(
@@ -87,7 +90,35 @@ def _html_body(event: str, ticket: SupportTicket, company: Company, store: Store
 </td></tr></table></td></tr></table></body></html>'''
 
 
+def _already_sent(db: Session, ticket_id: int, event: str) -> bool:
+    rows = db.query(AuditLog).filter(
+        AuditLog.entity == 'support_ticket',
+        AuditLog.entity_id == str(ticket_id),
+        AuditLog.action == 'case_event_email_sent',
+    ).order_by(AuditLog.id.desc()).all()
+    for row in rows:
+        details = row.details if isinstance(row.details, dict) else {}
+        sent_event = str(details.get('event') or '')
+        if sent_event == event:
+            return True
+        # A ticket must emit only one terminal/closure email. Different wrappers
+        # may classify the same close as closed_no_human, resolved_success or
+        # ticket_closed; treat those as the same terminal milestone.
+        if event in TERMINAL_EMAIL_EVENTS and sent_event in TERMINAL_EMAIL_EVENTS:
+            return True
+    return False
+
+
 def send_case_event_email(db: Session, *, ticket: SupportTicket, event: str) -> bool:
+    if _already_sent(db, ticket.id, event):
+        db.add(AuditLog(
+            action='case_event_email_duplicate_suppressed',
+            entity='support_ticket',
+            entity_id=str(ticket.id),
+            details={'event': event},
+        ))
+        return True
+
     company = db.get(Company, ticket.company_id)
     store = db.get(Store, ticket.store_id) if ticket.store_id else None
     conversation = db.get(Conversation, ticket.conversation_id)

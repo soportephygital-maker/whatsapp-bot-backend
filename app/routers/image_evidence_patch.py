@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from ..auth import require_operator
 from ..database import get_db
 from ..models import AuditLog, Company, Conversation, ConversationChannel, Message, Store, SupportTicket, User
-from ..services.ticketing import close_ticket
+from ..services.ticketing import close_ticket, ticket_code
 from . import global_entry_sequence_patch, local_bridge, ticketed_local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-image-evidence'])
@@ -27,12 +27,6 @@ IMAGE_ANOTHER_TEXT = (
 IMAGE_INCIDENT_QUESTION = (
     '✅ La foto quedó registrada en el expediente de tu reporte.\n\n'
     'Ahora cuéntame brevemente: ¿cómo sucedió el problema?'
-)
-IMAGE_CLOSED_TEXT = (
-    '✅ Gracias. Registré cómo sucedió y el ticket quedó cerrado.\n\n'
-    '¿Quieres reportar otro problema?\n'
-    '1️⃣ Sí, abrir un reporte nuevo\n'
-    '2️⃣ No'
 )
 
 
@@ -85,10 +79,18 @@ def _reply(db: Session, *, conversation: Conversation, company: Company, store: 
         company=company,
         store=store,
     )
+    payload = dict(outbound.raw_payload or {})
+    payload['package_name'] = data.package_name
+    payload['sender_display'] = data.sender
+    payload['sender_key'] = data.sender_key
+    # If the current WhatsApp notification has no inline reply action, keep the
+    # message pending so the Android poller can retry it against the next active
+    # notification for the same conversation instead of silently losing it.
     if not data.can_reply:
-        payload = dict(outbound.raw_payload or {})
-        payload['delivery_status'] = 'not_reply_capable'
-        outbound.raw_payload = payload
+        payload['delivery_status'] = 'requested'
+        payload['manual_dashboard'] = True
+        payload['retry_inline'] = True
+    outbound.raw_payload = payload
     return outbound
 
 
@@ -176,6 +178,19 @@ def _save_image_message(
     return message, False
 
 
+def _closed_text(ticket: SupportTicket | None, company: Company, store: Store) -> str:
+    code = ticket_code(ticket, company, store) if ticket else ''
+    ticket_line = f'🎫 Ticket: {code}\n' if code else ''
+    return (
+        '✅ Gracias. Registré cómo sucedió el problema.\n\n'
+        f'{ticket_line}'
+        'Estado: CERRADO 🟢\n\n'
+        '¿Quieres reportar otro problema?\n'
+        '1️⃣ Sí, abrir un reporte nuevo\n'
+        '2️⃣ No'
+    )
+
+
 def _capture_incident_and_close(
     db: Session,
     *,
@@ -188,23 +203,26 @@ def _capture_incident_and_close(
 ):
     explanation = str(data.text or '').strip()
     if not explanation:
+        repeat = 'Cuéntame brevemente cómo sucedió el problema para poder cerrar el ticket.'
         outbound = _reply(
             db,
             conversation=conversation,
             company=company,
             store=store,
             data=data,
-            text='Cuéntame brevemente cómo sucedió el problema para poder cerrar el ticket.',
+            text=repeat,
         )
         db.commit()
         return {
             'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
             'company_name': company.name, 'store_name': store.name, 'action': 'incident_description_repeat',
-            'reply_text': 'Cuéntame brevemente cómo sucedió el problema para poder cerrar el ticket.' if data.can_reply else '',
+            'reply_text': repeat if data.can_reply else '',
             'should_reply': bool(data.can_reply), 'outbound_message_id': outbound.id,
             'ticket_id': ticket.id if ticket else None, 'chatbot_paused': False,
         }
 
+    # Cualquier texto recibido después de "¿cómo sucedió?" es la explicación.
+    # No se requiere enviar "Finalizar" ni ninguna palabra adicional.
     _save_inbound_text(db, data=data, conversation=conversation, marker='incident_description')
 
     if ticket:
@@ -221,13 +239,14 @@ def _capture_incident_and_close(
 
     conversation.status = 'open'
     conversation.state = 'post_close_prompt'
+    close_text = _closed_text(ticket, company, store)
     outbound = _reply(
         db,
         conversation=conversation,
         company=company,
         store=store,
         data=data,
-        text=IMAGE_CLOSED_TEXT,
+        text=close_text,
     )
     db.add(AuditLog(
         username=operator.username,
@@ -238,6 +257,7 @@ def _capture_incident_and_close(
             'ticket_id': ticket.id if ticket else None,
             'incident_description': explanation[:2000],
             'ticket_closed': bool(ticket),
+            'reply_capable_at_capture': bool(data.can_reply),
         },
     ))
     db.commit()
@@ -245,9 +265,10 @@ def _capture_incident_and_close(
         'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
         'company_name': company.name, 'store_name': store.name,
         'action': 'incident_captured_ticket_closed' if ticket else 'incident_captured_no_ticket',
-        'reply_text': IMAGE_CLOSED_TEXT if data.can_reply else '', 'should_reply': bool(data.can_reply),
+        'reply_text': close_text if data.can_reply else '', 'should_reply': bool(data.can_reply),
         'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
         'chatbot_paused': False, 'post_close_prompt': True,
+        'reply_queued_for_retry': not bool(data.can_reply),
     }
 
 
@@ -314,6 +335,9 @@ def image_evidence_inbound(
     local_user_id, conversation, company, store, ticket = _active_context(db, data)
 
     if conversation and company and store and conversation.status not in {'help_pending', 'human_active'}:
+        # Esta condición va antes de cualquier otra clasificación: el primer texto
+        # después de la pregunta "¿cómo sucedió?" siempre captura la explicación,
+        # cierra el ticket y genera la confirmación de cierre.
         if conversation.state == IMAGE_INCIDENT_STATE:
             return _capture_incident_and_close(
                 db,

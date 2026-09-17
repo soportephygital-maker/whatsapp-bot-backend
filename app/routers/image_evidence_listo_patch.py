@@ -4,9 +4,14 @@ from sqlalchemy.orm import Session
 from ..auth import require_operator
 from ..database import get_db
 from ..models import Message, User
-from . import image_evidence_patch, local_bridge
+from . import global_entry_sequence_patch, image_evidence_patch, local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-image-finish'])
+
+GREETING_WORDS = {
+    'hola', 'holaa', 'holaaa', 'buen dia', 'buenos dias', 'buenas',
+    'buenas tardes', 'buenas noches', 'hello', 'hi',
+}
 
 LISTO_WORDS = {
     'listo', 'lista', 'ya', 'continuar', 'continua', 'continuemos', 'terminar', 'finalizar',
@@ -88,7 +93,17 @@ def image_evidence_finish_inbound(
     operator: User = Depends(require_operator),
     db: Session = Depends(get_db),
 ):
+    normalized = image_evidence_patch._normalized(data.text)
     local_user_id, conversation, company, store, ticket = image_evidence_patch._active_context(db, data)
+
+    # Fail-open recovery: greetings must never remain trapped in a photo state.
+    if normalized in GREETING_WORDS:
+        if conversation and company and conversation.status not in {'help_pending', 'human_active'}:
+            tree = company.decision_tree or {}
+            conversation.state = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
+            db.flush()
+        return global_entry_sequence_patch.global_entry_sequence_inbound(data=data, operator=operator, db=db)
+
     if conversation and company and store and _is_finish_phrase(data.text):
         in_photo_state = conversation.state in {image_evidence_patch.IMAGE_CONFIRM_STATE, image_evidence_patch.IMAGE_WAIT_STATE}
         just_confirmed = _last_outbound_is_image_confirmation(db, conversation.id)

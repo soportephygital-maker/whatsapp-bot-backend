@@ -102,11 +102,8 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
             ?: title
 
-        // IMPORTANT: WhatsApp keeps previous image messages in notification history.
-        // Only the LATEST current message may classify this notification as an image.
-        // Otherwise the text that follows a photo (for example "cómo sucedió") is
-        // incorrectly converted back to "[Imagen recibida]" and then discarded as a
-        // duplicate of the previous image.
+        // WhatsApp keeps previous image messages in notification history. Only the
+        // latest current message may classify this notification as an image.
         val rawText = extractText(notification).trim()
         val directMedia = extractCurrentMediaCandidate(notification, sbn.postTime, rawText)
         val imageHint = directMedia != null || looksLikeImageText(rawText)
@@ -136,22 +133,43 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             BridgeDiagnostics.record(this, "DISCARDED", "Detectada como mensaje propio", sbn.packageName, title, text)
             return
         }
-        if (isRemoteInputHistoryBounce(notification, text)) {
+
+        // Menu/confirmation replies are intentionally allowed through the bounce
+        // filters. WhatsApp may retain RemoteInput history and notification people
+        // after several bot replies, which previously caused valid replies such as
+        // 1, 2, Si, No or "Es correcta" to disappear before reaching the backend.
+        val normalizedInbound = normalizeName(text)
+        val criticalShortReply = normalizedInbound in setOf(
+            "1", "2", "si", "no", "listo", "finalizar", "terminar", "cerrar",
+            "correcta", "correcto", "es correcta", "es correcto", "esta correcta",
+            "esta correcto", "esa es", "es esa"
+        )
+        if (!criticalShortReply && isRemoteInputHistoryBounce(notification, text)) {
             BridgeDiagnostics.record(this, "DISCARDED", "Rebote de RemoteInput", sbn.packageName, title, text)
             return
         }
-        if (isRecentBotReply(sbn.packageName, text)) {
+        if (!criticalShortReply && isRecentBotReply(sbn.packageName, text)) {
             BridgeDiagnostics.record(this, "DISCARDED", "Coincide con respuesta reciente del bot", sbn.packageName, title, text)
             return
         }
-        if (isBounceDuplicate(sbn.packageName, sbn.key, text)) {
+        if (!criticalShortReply && isBounceDuplicate(sbn.packageName, sbn.key, text)) {
             BridgeDiagnostics.record(this, "DISCARDED", "Notificación duplicada/rebote", sbn.packageName, title, text)
             return
         }
         // No descartamos contactos guardados. Un contacto guardado también puede iniciar soporte.
-        if (isRapidDuplicate(sbn.packageName, title, text)) {
+        if (!criticalShortReply && isRapidDuplicate(sbn.packageName, title, text)) {
             BridgeDiagnostics.record(this, "DISCARDED", "Duplicado rápido", sbn.packageName, title, text)
             return
+        }
+        if (criticalShortReply) {
+            BridgeDiagnostics.record(
+                this,
+                "SHORT_REPLY_ACCEPTED",
+                "Respuesta corta prioritaria aceptada",
+                sbn.packageName,
+                title,
+                text,
+            )
         }
 
         val replyAction = findReplyAction(notification)
@@ -173,7 +191,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("category", notification.category ?: "")
                         .put("saved_contact", isSavedContact(title))
                         .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
-                        .put("bounce_filter", "v4-current-message-media")
+                        .put("bounce_filter", "v5-short-reply-safe")
                         .put("media_capture", when {
                             media != null -> "available"
                             imageHint -> "detected"
@@ -330,9 +348,6 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     private fun extractCurrentMediaCandidate(notification: Notification, postTime: Long, rawText: String): MediaCandidate? {
         extractLatestMessagingStyleMedia(notification, postTime, "messaging_style_uri")?.let { return it }
-        // EXTRA_PICTURE may remain attached after a previous image. Only trust it
-        // when the current visible text itself looks like an image notification or
-        // there is no current text at all.
         if (rawText.isBlank() || looksLikeImageText(rawText)) {
             extractPictureExtra(notification, postTime)?.let { return it }
         }
@@ -408,17 +423,11 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     }
 
     private fun isSelfAuthoredNotification(title: String, extras: android.os.Bundle): Boolean {
+        // The notification title is authoritative. EXTRA_PEOPLE_LIST can retain
+        // the local user after an inline reply, so using it here incorrectly
+        // discards the customer's next incoming message.
         val normalizedTitle = normalizeName(title)
-        if (normalizedTitle in setOf("tu", "you", "me", "yo")) return true
-        val people = extras.getParcelableArray(Notification.EXTRA_PEOPLE_LIST)
-        if (!people.isNullOrEmpty()) {
-            people.forEach { item ->
-                val bundle = item as? android.os.Bundle ?: return@forEach
-                val name = normalizeName(bundle.getCharSequence("name")?.toString().orEmpty())
-                if (name in setOf("tu", "you", "me", "yo")) return true
-            }
-        }
-        return false
+        return normalizedTitle in setOf("tu", "you", "me", "yo")
     }
 
     private fun isRemoteInputHistoryBounce(notification: Notification, text: String): Boolean {

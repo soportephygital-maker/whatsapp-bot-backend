@@ -6,12 +6,14 @@ import android.app.AlertDialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.service.notification.NotificationListenerService
 import android.view.View
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -120,6 +122,10 @@ class MainActivity : Activity() {
             pendingUpdateFile = null
             installApk(file)
             return
+        }
+        if (notificationListenerAccessEnabled()) {
+            startBridgeKeepAlive()
+            requestBridgeRebind()
         }
         checkForUpdate(false)
     }
@@ -253,6 +259,51 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun restartListenerButton(): Button = Button(this).apply {
+        text = "Reiniciar escucha de WhatsApp"
+        setOnClickListener {
+            if (!notificationListenerAccessEnabled()) {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Acceso a notificaciones requerido")
+                    .setMessage("Android no tiene habilitado el acceso a notificaciones para Phygital Bot. Actívalo y vuelve a la app.")
+                    .setNegativeButton("Cancelar", null)
+                    .setPositiveButton("Abrir ajustes") { _, _ ->
+                        startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+                    }
+                    .show()
+                return@setOnClickListener
+            }
+            BridgeDiagnostics.record(this@MainActivity, "REBIND_REQUESTED", "Reinicio manual solicitado desde Configuración")
+            startBridgeKeepAlive()
+            requestBridgeRebind()
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Escucha reiniciada")
+                .setMessage("Se solicitó a Android reconectar el lector de notificaciones. Espera 3 a 5 segundos y manda un mensaje de prueba con WhatsApp en segundo plano.")
+                .setPositiveButton("Aceptar", null)
+                .show()
+        }
+    }
+
+    private fun notificationListenerAccessEnabled(): Boolean {
+        return try {
+            val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners").orEmpty()
+            val component = ComponentName(this, LocalWhatsAppBridgeService::class.java)
+            enabled.split(":").any {
+                it.equals(component.flattenToString(), ignoreCase = true) ||
+                    it.equals(component.flattenToShortString(), ignoreCase = true)
+            }
+        } catch (_: Exception) { false }
+    }
+
+    private fun requestBridgeRebind() {
+        try {
+            val component = ComponentName(this, LocalWhatsAppBridgeService::class.java)
+            NotificationListenerService.requestRebind(component)
+        } catch (e: Exception) {
+            BridgeDiagnostics.record(this, "REBIND_ERROR", e.message ?: "No se pudo solicitar reconexión")
+        }
+    }
+
     private fun showNotificationOnlySettings() {
         buildBridgeSettingsDialog(JSONArray())
     }
@@ -323,6 +374,7 @@ class MainActivity : Activity() {
             textSize = 16f
         })
         content.addView(notificationAccessButton())
+        content.addView(restartListenerButton())
         content.addView(appSettingsButton())
         content.addView(diagnosticsButton())
         content.addView(updateButton())
@@ -344,6 +396,7 @@ class MainActivity : Activity() {
                 if (checks.isNotEmpty()) edit.putStringSet("selected_store_ids", selectedIds)
                 edit.apply()
                 startBridgeKeepAlive()
+                if (notificationListenerAccessEnabled()) requestBridgeRebind()
             }
             .show()
     }
@@ -353,7 +406,9 @@ class MainActivity : Activity() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
             else startService(intent)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            BridgeDiagnostics.record(this, "KEEPALIVE_ERROR", e.message ?: "No se pudo iniciar KeepAlive")
+        }
     }
 
     private fun createNotificationChannel() {
@@ -518,12 +573,11 @@ class MainActivity : Activity() {
         startActivity(intent)
     }
 
+    private fun request(method: String, path: String, body: String?, bearer: String?): String = NetworkClient.request(method, path, body, bearer)
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2001)
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7001)
         }
     }
-
-    private fun request(method: String, path: String, body: String?, bearer: String?): String =
-        NetworkClient.request(method, path, body, bearer)
 }

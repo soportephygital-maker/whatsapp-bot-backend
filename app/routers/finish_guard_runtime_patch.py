@@ -1,9 +1,10 @@
 from sqlalchemy.orm import Session
 
 from ..models import AuditLog, Company, Conversation
-from ..services.decision_tree import match_response_with_action
+from ..services import decision_tree
 from . import local_bridge, ticketed_local_bridge
 
+_original_match = local_bridge.match_response_with_action
 _original_ticketed_local_inbound = ticketed_local_bridge.ticketed_local_inbound
 
 _EXPLICIT_FINISH = {
@@ -32,14 +33,29 @@ def _looks_like_prompt(text: str) -> bool:
     return option_lines >= 2
 
 
+def _guarded_match(tree: dict, state: str, text: str):
+    matched, response, next_state, action = _original_match(tree, state, text)
+    action_value = str(action or '').strip().lower()
+    if matched and action_value in {'finish', 'ticket_close'} and _looks_like_prompt(response) and not _is_explicit_finish(text):
+        # A node cannot close while its own response is still asking the user a question.
+        # Preserve the destination state and response, but defer the close action until
+        # the user actually answers or sends an explicit close command.
+        return matched, response, next_state, 'pending_question'
+    return matched, response, next_state, action
+
+
+# local_bridge imported match_response_with_action directly, so patch that bound symbol.
+local_bridge.match_response_with_action = _guarded_match
+
+
 def _recover_destination_state(tree: dict, previous_state: str | None, text: str, prompt: str) -> str | None:
     root = local_bridge._root_state(tree)
     state = previous_state or root
 
-    matched, response, next_state, action = match_response_with_action(tree, state, text)
+    matched, response, next_state, action = decision_tree.match_response_with_action(tree, state, text)
     if not matched and state != root:
-        matched, response, next_state, action = match_response_with_action(tree, root, text)
-    if matched and str(action or '').strip().lower() == 'finish' and next_state:
+        matched, response, next_state, action = decision_tree.match_response_with_action(tree, root, text)
+    if matched and next_state:
         return str(next_state)
 
     nodes = tree.get('nodos') or tree.get('nodes') or {}
@@ -64,7 +80,7 @@ def guarded_ticketed_local_inbound(data, operator, db: Session):
         return result
 
     action_base, _ = ticketed_local_bridge._action_parts(result.get('action'))
-    if action_base != 'finish':
+    if action_base not in {'finish', 'ticket_close'}:
         return result
 
     prompt = str(result.get('reply_text') or '')
@@ -96,9 +112,10 @@ def guarded_ticketed_local_inbound(data, operator, db: Session):
             'recovered_state': conversation.state,
             'incoming_text': str(data.text or '')[:500],
             'prompt': prompt[:1000],
+            'original_action': action_base,
         },
     ))
-    result['action'] = 'finish_deferred'
+    result['action'] = 'pending_question'
     result['chatbot_paused'] = False
     db.commit()
     return result

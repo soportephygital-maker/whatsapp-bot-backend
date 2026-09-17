@@ -43,10 +43,12 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        BridgeDiagnostics.record(this, "LISTENER_CONNECTED", "NotificationListener conectado")
         startManualReplyPolling()
     }
 
     override fun onListenerDisconnected() {
+        BridgeDiagnostics.record(this, "LISTENER_DISCONNECTED", "NotificationListener desconectado")
         manualPollRunning = false
         try { requestRebind(android.content.ComponentName(this, LocalWhatsAppBridgeService::class.java)) } catch (_: Exception) {}
         super.onListenerDisconnected()
@@ -61,18 +63,38 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         startManualReplyPolling()
         if (!allowedPackages.contains(sbn.packageName)) return
+        BridgeDiagnostics.record(this, "NOTIFICATION_DETECTED", packageName = sbn.packageName)
+
         val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
         val suffix = packageSuffix(sbn.packageName)
-        if (!prefs.getBoolean("app_enabled_$suffix", false)) return
+        if (!prefs.getBoolean("app_enabled_$suffix", false)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "WhatsApp desactivado en configuración", sbn.packageName)
+            return
+        }
+
         val selectedStoreIds = prefs.getStringSet("selected_store_ids", emptySet())
             ?.mapNotNull { it.toIntOrNull() }
             ?.distinct()
             ?: emptyList()
-        if (selectedStoreIds.isEmpty()) return
-        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null) ?: return
+        if (selectedStoreIds.isEmpty()) {
+            BridgeDiagnostics.record(this, "DISCARDED", "No hay tienda seleccionada", sbn.packageName)
+            return
+        }
 
-        val notification = sbn.notification ?: return
-        if ((notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null)
+        if (token.isNullOrBlank()) {
+            BridgeDiagnostics.record(this, "DISCARDED", "No hay sesión/token móvil", sbn.packageName)
+            return
+        }
+
+        val notification = sbn.notification ?: run {
+            BridgeDiagnostics.record(this, "DISCARDED", "Notificación vacía", sbn.packageName)
+            return
+        }
+        if ((notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Resumen de grupo de Android", sbn.packageName)
+            return
+        }
 
         val extras = notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
@@ -85,17 +107,42 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val text = when {
             imageHint -> "[Imagen recibida]"
             rawText.isNotBlank() -> rawText
-            else -> return
+            else -> {
+                BridgeDiagnostics.record(this, "DISCARDED", "Notificación sin texto ni imagen", sbn.packageName, title)
+                return
+            }
         }
-        if (looksLikeGroup(notification, title)) return
-        if (isSelfAuthoredNotification(title, extras)) return
-        if (isRemoteInputHistoryBounce(notification, text)) return
-        if (isRecentBotReply(sbn.packageName, text)) return
-        if (isBounceDuplicate(sbn.packageName, sbn.key, text)) return
-        if (isSavedContact(title)) return
-        if (isRapidDuplicate(sbn.packageName, title, text)) return
+
+        BridgeDiagnostics.record(this, "MESSAGE_PARSED", "Notificación leída", sbn.packageName, title, text)
+
+        if (looksLikeGroup(notification, title)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Detectada como grupo", sbn.packageName, title, text)
+            return
+        }
+        if (isSelfAuthoredNotification(title, extras)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Detectada como mensaje propio", sbn.packageName, title, text)
+            return
+        }
+        if (isRemoteInputHistoryBounce(notification, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Rebote de RemoteInput", sbn.packageName, title, text)
+            return
+        }
+        if (isRecentBotReply(sbn.packageName, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Coincide con respuesta reciente del bot", sbn.packageName, title, text)
+            return
+        }
+        if (isBounceDuplicate(sbn.packageName, sbn.key, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Notificación duplicada/rebote", sbn.packageName, title, text)
+            return
+        }
+        // No descartamos contactos guardados. Un contacto guardado también puede iniciar soporte.
+        if (isRapidDuplicate(sbn.packageName, title, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Duplicado rápido", sbn.packageName, title, text)
+            return
+        }
 
         val replyAction = findReplyAction(notification)
+        BridgeDiagnostics.record(this, "READY_TO_POST", "Listo para enviar al backend", sbn.packageName, title, text, replyAction != null)
         val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "android-device"
         val mediaQueueKey = mediaQueueKey(sbn.packageName, senderKey.ifBlank { title })
 
@@ -111,9 +158,9 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                     selectedStoreIds.forEach { storesJson.put(it) }
                     val metadata = JSONObject()
                         .put("category", notification.category ?: "")
-                        .put("saved_contact", false)
+                        .put("saved_contact", isSavedContact(title))
                         .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
-                        .put("bounce_filter", "v2")
+                        .put("bounce_filter", "v3")
                         .put("media_capture", when {
                             media != null -> "available"
                             imageHint -> "detected"
@@ -137,11 +184,21 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("can_reply", replyAction != null)
                         .put("metadata", metadata)
 
+                    BridgeDiagnostics.record(this, "POST_SENDING", "Enviando /api/local-bridge/inbound", sbn.packageName, title, text, replyAction != null)
                     val response = JSONObject(request("POST", "/api/local-bridge/inbound", payload.toString(), token))
                     val shouldReply = response.optBoolean("should_reply", false)
                     val replyText = response.optString("reply_text", "")
                     val ticketId = response.optInt("ticket_id", 0)
                     outboundMessageId = response.optInt("outbound_message_id", 0)
+                    BridgeDiagnostics.record(
+                        this,
+                        "BACKEND_RESPONSE",
+                        "should_reply=$shouldReply, ticket_id=$ticketId, outbound_message_id=$outboundMessageId",
+                        sbn.packageName,
+                        title,
+                        text,
+                        replyAction != null,
+                    )
 
                     if (ticketId > 0) flushPendingMedia(token, ticketId, mediaQueueKey)
                     if (media != null) {
@@ -157,8 +214,20 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         val sent = sendInlineReply(replyAction, replyText)
                         if (!sent) clearRememberedBotReply(sbn.packageName, replyText)
                         reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else "Android no pudo ejecutar RemoteInput")
+                        BridgeDiagnostics.record(
+                            this,
+                            if (sent) "REMOTE_INPUT_SENT" else "REMOTE_INPUT_FAILED",
+                            if (sent) "Respuesta enviada a WhatsApp" else "Android no pudo ejecutar RemoteInput",
+                            sbn.packageName,
+                            title,
+                            replyText,
+                            replyAction != null,
+                        )
+                    } else if (shouldReply && replyText.isNotBlank() && replyAction == null) {
+                        BridgeDiagnostics.record(this, "REMOTE_INPUT_FAILED", "La notificación no contiene acción Responder", sbn.packageName, title, replyText, false)
                     }
                 } catch (e: Exception) {
+                    BridgeDiagnostics.record(this, "ERROR", e.message ?: "Error local sin detalle", sbn.packageName, title, text, replyAction != null)
                     if (media != null) queuePendingMedia(mediaQueueKey, media!!)
                     if (outboundMessageId > 0) {
                         try { reportDelivery(token, outboundMessageId, false, sbn.key, e.message ?: "Error local") } catch (_: Exception) {}

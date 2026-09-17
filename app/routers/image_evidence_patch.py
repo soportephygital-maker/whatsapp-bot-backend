@@ -595,7 +595,8 @@ def _handle_confirmation_reply(
     text = _normalized(data.text)
     yes = text in {
         '1', 'si', 'correcta', 'correcto', 'esta bien', 'es correcta', 'esa es', 'esa esta bien',
-        'esta foto es la correcta', 'si esta foto es la correcta', 'cerrar', 'cerrar ticket',
+        'esta foto es la correcta', 'si esta foto es la correcta',
+        'cerrar', 'cerrar ticket', 'finalizar', 'terminar', 'listo', 'fin', 'salir',
     }
     no = text in {
         '2', 'no', 'otra', 'otra foto', 'otra evidencia', 'enviar otra', 'quiero otra',

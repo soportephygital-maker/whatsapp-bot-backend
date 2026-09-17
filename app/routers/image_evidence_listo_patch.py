@@ -8,46 +8,49 @@ from . import image_evidence_patch, local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-image-finish'])
 
-LISTO_WORDS = {'listo', 'lista', 'ya', 'continuar', 'continua', 'continuemos', 'terminar', 'finalizar'}
-LISTO_TEXT = '✅ Listo. La evidencia quedó registrada en el reporte. Puedes continuar con la atención.'
+ACTIVE_IMAGE_STATES = {
+    image_evidence_patch.IMAGE_CONFIRM_STATE,
+    image_evidence_patch.IMAGE_EVIDENCE_ACTION_STATE,
+    image_evidence_patch.IMAGE_WAIT_STATE,
+    image_evidence_patch.IMAGE_INCIDENT_STATE,
+    image_evidence_patch.IMAGE_MORE_PROBLEM_STATE,
+}
 
 
-def _save_listo_message(db: Session, data: local_bridge.LocalInbound, conversation) -> None:
-    provider_message_id = local_bridge._provider_message_id(data)
-    if db.query(Message).filter(Message.provider_message_id == provider_message_id).first():
-        return
-    db.add(Message(
-        conversation_id=conversation.id,
-        direction='inbound',
-        sender=local_bridge._local_user_id(data),
-        body=data.text,
-        provider_message_id=provider_message_id,
-        raw_payload={
-            'provider': 'android_notification',
-            'package_name': data.package_name,
-            'device_id': data.device_id,
-            'notification_key': data.notification_key,
-            'post_time': data.post_time,
-            'sender_display': data.sender,
-            'sender_key': data.sender_key,
-            'reply_capable': data.can_reply,
-            'metadata': dict(data.metadata or {}),
-            'image_evidence_finish': True,
-        },
-    ))
-
-
-def _last_outbound_is_legacy_image_confirmation(db: Session, conversation_id: int) -> bool:
+def _latest_outbound_text(db: Session, conversation_id: int) -> str:
     row = db.query(Message).filter(
         Message.conversation_id == conversation_id,
         Message.direction == 'outbound',
     ).order_by(Message.id.desc()).first()
-    text = str(row.body or '') if row else ''
-    lowered = text.lower()
-    return (
-        'perfecto. la foto quedó registrada' in lowered
-        or 'evidencia quedó registrada en el reporte. puedes continuar' in lowered
-    )
+    return str(row.body or '') if row else ''
+
+
+def _recover_image_state(db: Session, conversation) -> str | None:
+    """Recover an image-flow state when a legacy tree response moved it away.
+
+    The visible bot prompt is authoritative. This lets an already-open
+    conversation recover without asking the user to delete/restart the ticket.
+    """
+    if not conversation:
+        return None
+
+    text = _latest_outbound_text(db, conversation.id).lower()
+    recovered = None
+
+    if '¿esta foto es la correcta?' in text or 'esta foto es la correcta?' in text:
+        recovered = image_evidence_patch.IMAGE_CONFIRM_STATE
+    elif '¿desea agregar o cambiar la foto?' in text or 'desea agregar o cambiar la foto?' in text:
+        recovered = image_evidence_patch.IMAGE_EVIDENCE_ACTION_STATE
+    elif 'envía la nueva evidencia que deseas agregar' in text or 'envia la nueva evidencia que deseas agregar' in text:
+        recovered = image_evidence_patch.IMAGE_WAIT_STATE
+    elif 'envía ahora la nueva foto' in text or 'envia ahora la nueva foto' in text:
+        recovered = image_evidence_patch.IMAGE_WAIT_STATE
+
+    if recovered and conversation.state != recovered:
+        conversation.status = 'open'
+        conversation.state = recovered
+        db.flush()
+    return recovered
 
 
 @router.post('/inbound')
@@ -56,47 +59,23 @@ def image_evidence_finish_inbound(
     operator: User = Depends(require_operator),
     db: Session = Depends(get_db),
 ):
-    normalized = image_evidence_patch._normalized(data.text)
-    local_user_id, conversation, company, store, ticket = image_evidence_patch._active_context(db, data)
+    _, conversation, _, _, _ = image_evidence_patch._active_context(db, data)
 
-    # Once the photo is confirmed, every text response belongs to the
-    # "¿cómo sucedió?" step. Do not let words such as listo/finalizar bypass it.
-    if conversation and conversation.state == image_evidence_patch.IMAGE_INCIDENT_STATE:
-        return image_evidence_patch.image_evidence_inbound(data=data, operator=operator, db=db)
+    # New image evidence flow always owns its replies. Never let the legacy
+    # decision tree consume 1/2, cerrar, finalizar or listo while a photo prompt
+    # is active.
+    _recover_image_state(db, conversation)
+    if conversation and conversation.state in ACTIVE_IMAGE_STATES:
+        return image_evidence_patch.image_evidence_inbound(
+            data=data,
+            operator=operator,
+            db=db,
+        )
 
-    if conversation and company and store and normalized in LISTO_WORDS:
-        in_photo_state = conversation.state in {image_evidence_patch.IMAGE_CONFIRM_STATE, image_evidence_patch.IMAGE_WAIT_STATE}
-        legacy_confirmation = _last_outbound_is_legacy_image_confirmation(db, conversation.id)
-        if in_photo_state or legacy_confirmation:
-            context = image_evidence_patch._latest_image_context(db, conversation.id)
-            return_state = str(context.get('return_state') or '').strip()
-            if return_state and return_state not in {
-                image_evidence_patch.IMAGE_CONFIRM_STATE,
-                image_evidence_patch.IMAGE_WAIT_STATE,
-                image_evidence_patch.IMAGE_INCIDENT_STATE,
-            }:
-                conversation.state = return_state
-            _save_listo_message(db, data, conversation)
-            outbound = image_evidence_patch._reply(
-                db,
-                conversation=conversation,
-                company=company,
-                store=store,
-                data=data,
-                text=LISTO_TEXT,
-            )
-            db.commit()
-            return {
-                'status': 'ok',
-                'conversation_id': conversation.id,
-                'company_key': company.company_key,
-                'company_name': company.name,
-                'store_name': store.name,
-                'action': 'image_evidence_finished',
-                'reply_text': LISTO_TEXT if data.can_reply else '',
-                'should_reply': bool(data.can_reply),
-                'outbound_message_id': outbound.id,
-                'ticket_id': ticket.id if ticket else None,
-                'chatbot_paused': False,
-            }
-    return image_evidence_patch.image_evidence_inbound(data=data, operator=operator, db=db)
+    # Compatibility wrapper only: all non-image traffic continues to the normal
+    # image router, which delegates to the global/company decision tree.
+    return image_evidence_patch.image_evidence_inbound(
+        data=data,
+        operator=operator,
+        db=db,
+    )

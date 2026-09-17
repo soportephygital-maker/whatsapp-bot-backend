@@ -10,7 +10,7 @@ android {
         applicationId = "com.phygital.bot"
         minSdk = 26
         targetSdk = 36
-        versionCode = 61
+        versionCode = 62
         versionName = "0.6.32"
     }
 
@@ -52,6 +52,5 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
 }
 
-// Keep diagnostics out of Gradle source rewriting.
-// Runtime diagnostics will be added directly in Kotlin after we have a clean compiling baseline.
+// Diagnostics are implemented directly in Kotlin to avoid build-time source rewriting.
 // Android publisher trigger: workflow_run registered on main.

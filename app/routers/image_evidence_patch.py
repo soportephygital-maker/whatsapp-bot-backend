@@ -4,12 +4,14 @@ from sqlalchemy.orm import Session
 from ..auth import require_operator
 from ..database import get_db
 from ..models import AuditLog, Company, Conversation, ConversationChannel, Message, Store, SupportTicket, User
+from ..services.ticketing import close_ticket
 from . import global_entry_sequence_patch, local_bridge, ticketed_local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-image-evidence'])
 
 IMAGE_CONFIRM_STATE = '__image_evidence_confirm__'
 IMAGE_WAIT_STATE = '__image_evidence_wait_another__'
+IMAGE_INCIDENT_STATE = '__image_evidence_incident_description__'
 IMAGE_CONFIRM_TEXT = (
     '📷 Recibí una imagen.\n\n'
     '¿Esta foto es la correcta o deseas enviar otra?\n'
@@ -22,9 +24,15 @@ IMAGE_ANOTHER_TEXT = (
     'Cuando la reciba te preguntaré nuevamente si es la correcta. '
     'Las imágenes recibidas quedarán asociadas al expediente de tu reporte.'
 )
-IMAGE_CONFIRMED_TEXT = (
-    '✅ Perfecto. La foto quedó registrada en el expediente de tu reporte.\n\n'
-    'Si necesitas agregar otra imagen puedes enviarla; de lo contrario continúa con la atención anterior.'
+IMAGE_INCIDENT_QUESTION = (
+    '✅ La foto quedó registrada en el expediente de tu reporte.\n\n'
+    'Ahora cuéntame brevemente: ¿cómo sucedió el problema?'
+)
+IMAGE_CLOSED_TEXT = (
+    '✅ Gracias. Registré cómo sucedió y el ticket quedó cerrado.\n\n'
+    '¿Quieres reportar otro problema?\n'
+    '1️⃣ Sí, abrir un reporte nuevo\n'
+    '2️⃣ No'
 )
 
 
@@ -82,6 +90,31 @@ def _reply(db: Session, *, conversation: Conversation, company: Company, store: 
         payload['delivery_status'] = 'not_reply_capable'
         outbound.raw_payload = payload
     return outbound
+
+
+def _save_inbound_text(db: Session, *, data: local_bridge.LocalInbound, conversation: Conversation, marker: str) -> None:
+    provider_message_id = local_bridge._provider_message_id(data)
+    if db.query(Message).filter(Message.provider_message_id == provider_message_id).first():
+        return
+    db.add(Message(
+        conversation_id=conversation.id,
+        direction='inbound',
+        sender=local_bridge._local_user_id(data),
+        body=data.text,
+        provider_message_id=provider_message_id,
+        raw_payload={
+            'provider': 'android_notification',
+            'package_name': data.package_name,
+            'device_id': data.device_id,
+            'notification_key': data.notification_key,
+            'post_time': data.post_time,
+            'sender_display': data.sender,
+            'sender_key': data.sender_key,
+            'reply_capable': data.can_reply,
+            'metadata': dict(data.metadata or {}),
+            marker: True,
+        },
+    ))
 
 
 def _save_image_message(
@@ -143,6 +176,81 @@ def _save_image_message(
     return message, False
 
 
+def _capture_incident_and_close(
+    db: Session,
+    *,
+    data: local_bridge.LocalInbound,
+    operator: User,
+    conversation: Conversation,
+    company: Company,
+    store: Store,
+    ticket: SupportTicket | None,
+):
+    explanation = str(data.text or '').strip()
+    if not explanation:
+        outbound = _reply(
+            db,
+            conversation=conversation,
+            company=company,
+            store=store,
+            data=data,
+            text='Cuéntame brevemente cómo sucedió el problema para poder cerrar el ticket.',
+        )
+        db.commit()
+        return {
+            'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
+            'company_name': company.name, 'store_name': store.name, 'action': 'incident_description_repeat',
+            'reply_text': 'Cuéntame brevemente cómo sucedió el problema para poder cerrar el ticket.' if data.can_reply else '',
+            'should_reply': bool(data.can_reply), 'outbound_message_id': outbound.id,
+            'ticket_id': ticket.id if ticket else None, 'chatbot_paused': False,
+        }
+
+    _save_inbound_text(db, data=data, conversation=conversation, marker='incident_description')
+
+    if ticket:
+        base_description = str(ticket.description or '').strip()
+        incident_line = f'Cómo sucedió: {explanation}'
+        if incident_line.lower() not in base_description.lower():
+            ticket.description = f'{base_description}\n\n{incident_line}'.strip()[:4000]
+        close_ticket(
+            db,
+            conversation=conversation,
+            username=operator.username,
+            result=f'Cierre automático después de evidencia. Cómo sucedió: {explanation}'[:2000],
+        )
+
+    conversation.status = 'open'
+    conversation.state = 'post_close_prompt'
+    outbound = _reply(
+        db,
+        conversation=conversation,
+        company=company,
+        store=store,
+        data=data,
+        text=IMAGE_CLOSED_TEXT,
+    )
+    db.add(AuditLog(
+        username=operator.username,
+        action='image_incident_captured_and_ticket_closed',
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={
+            'ticket_id': ticket.id if ticket else None,
+            'incident_description': explanation[:2000],
+            'ticket_closed': bool(ticket),
+        },
+    ))
+    db.commit()
+    return {
+        'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
+        'company_name': company.name, 'store_name': store.name,
+        'action': 'incident_captured_ticket_closed' if ticket else 'incident_captured_no_ticket',
+        'reply_text': IMAGE_CLOSED_TEXT if data.can_reply else '', 'should_reply': bool(data.can_reply),
+        'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
+        'chatbot_paused': False, 'post_close_prompt': True,
+    }
+
+
 def _handle_confirmation_reply(
     db: Session,
     *,
@@ -167,22 +275,7 @@ def _handle_confirmation_reply(
             'chatbot_paused': False,
         }
 
-    provider_message_id = local_bridge._provider_message_id(data)
-    if not db.query(Message).filter(Message.provider_message_id == provider_message_id).first():
-        db.add(Message(
-            conversation_id=conversation.id,
-            direction='inbound',
-            sender=local_bridge._local_user_id(data),
-            body=data.text,
-            provider_message_id=provider_message_id,
-            raw_payload={
-                'provider': 'android_notification', 'package_name': data.package_name,
-                'device_id': data.device_id, 'notification_key': data.notification_key,
-                'post_time': data.post_time, 'sender_display': data.sender,
-                'sender_key': data.sender_key, 'reply_capable': data.can_reply,
-                'metadata': dict(data.metadata or {}), 'image_confirmation_answer': True,
-            },
-        ))
+    _save_inbound_text(db, data=data, conversation=conversation, marker='image_confirmation_answer')
 
     context = _latest_image_context(db, conversation.id)
     if no:
@@ -190,11 +283,9 @@ def _handle_confirmation_reply(
         response = IMAGE_ANOTHER_TEXT
         action = 'image_request_another'
     else:
-        return_state = str(context.get('return_state') or '').strip()
-        if return_state and return_state not in {IMAGE_CONFIRM_STATE, IMAGE_WAIT_STATE}:
-            conversation.state = return_state
-        response = IMAGE_CONFIRMED_TEXT
-        action = 'image_confirmed'
+        conversation.state = IMAGE_INCIDENT_STATE
+        response = IMAGE_INCIDENT_QUESTION
+        action = 'image_confirmed_ask_incident'
 
     outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
     db.add(AuditLog(
@@ -223,11 +314,22 @@ def image_evidence_inbound(
     local_user_id, conversation, company, store, ticket = _active_context(db, data)
 
     if conversation and company and store and conversation.status not in {'help_pending', 'human_active'}:
+        if conversation.state == IMAGE_INCIDENT_STATE:
+            return _capture_incident_and_close(
+                db,
+                data=data,
+                operator=operator,
+                conversation=conversation,
+                company=company,
+                store=store,
+                ticket=ticket,
+            )
+
         if _is_image(data):
             context = _latest_image_context(db, conversation.id)
             return_state = str(context.get('return_state') or '').strip()
-            if not return_state or return_state in {IMAGE_CONFIRM_STATE, IMAGE_WAIT_STATE}:
-                return_state = conversation.state if conversation.state not in {IMAGE_CONFIRM_STATE, IMAGE_WAIT_STATE} else ''
+            if not return_state or return_state in {IMAGE_CONFIRM_STATE, IMAGE_WAIT_STATE, IMAGE_INCIDENT_STATE}:
+                return_state = conversation.state if conversation.state not in {IMAGE_CONFIRM_STATE, IMAGE_WAIT_STATE, IMAGE_INCIDENT_STATE} else ''
             message, duplicate = _save_image_message(
                 db,
                 data=data,

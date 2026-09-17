@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from ..auth import require_operator
 from ..database import get_db
 from ..models import AuditLog, CaseAttachment, Message, SupportTicket, User
-from ..services.case_evidence_email import send_evidence_email
 
 router = APIRouter(prefix='/api', tags=['case-media-upload'])
 MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
@@ -75,22 +74,16 @@ async def upload_case_media(
     db.add(row)
     db.flush()
 
-    email_sent = False
-    email_result = 'no_aplica'
+    # IMPORTANT: photographs are stored in the case but are NOT emailed as
+    # individual messages. They are embedded in the final case PDFs when the
+    # ticket is closed / sent to validation.
     if is_image:
-        email_sent, email_result = send_evidence_email(
-            db,
-            ticket=ticket,
-            filename=row.filename,
-            content_type=row.content_type,
-            data=data,
-        )
         db.add(AuditLog(
             username=operator.username,
-            action='case_evidence_email_sent' if email_sent else 'case_evidence_email_not_sent',
+            action='case_evidence_stored_for_final_report',
             entity='support_ticket',
             entity_id=str(ticket.id),
-            details={'attachment_id': row.id, 'filename': row.filename, 'result': email_result},
+            details={'attachment_id': row.id, 'filename': row.filename, 'delivery': 'final_case_pdfs'},
         ))
 
     db.commit()
@@ -104,6 +97,6 @@ async def upload_case_media(
         'message_id': row.message_id,
         'source': row.source,
         'is_image': is_image,
-        'email_sent': email_sent,
-        'email_result': email_result,
+        'email_sent': False,
+        'email_result': 'deferred_to_final_case_pdfs' if is_image else 'no_aplica',
     }

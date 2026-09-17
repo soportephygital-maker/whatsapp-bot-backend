@@ -3,27 +3,38 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_operator
 from ..database import get_db
-from ..models import AuditLog, Company, Conversation, ConversationChannel, Message, Store, SupportTicket, User
+from ..models import AuditLog, CaseAttachment, Company, Conversation, ConversationChannel, Message, Store, SupportTicket, User
 from ..services.ticketing import add_ticket_followup, close_ticket, ticket_code
 from . import global_entry_sequence_patch, local_bridge, ticketed_local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-image-evidence'])
 
 IMAGE_CONFIRM_STATE = '__image_evidence_confirm__'
+IMAGE_EVIDENCE_ACTION_STATE = '__image_evidence_add_or_replace__'
 IMAGE_WAIT_STATE = '__image_evidence_wait_another__'
 IMAGE_INCIDENT_STATE = '__image_evidence_incident_description__'
 IMAGE_MORE_PROBLEM_STATE = '__image_evidence_more_problem__'
 IMAGE_CONFIRM_TEXT = (
     '📷 Recibí una imagen.\n\n'
-    '¿Esta foto es la correcta o deseas enviar otra?\n'
-    '1️⃣ Sí, esta foto es la correcta\n'
-    '2️⃣ Deseo enviar otra foto\n\n'
-    'Todas las fotos que compartas quedarán asociadas al expediente de tu reporte.'
+    '¿Esta foto es la correcta?\n'
+    '1️⃣ Sí, cerrar el ticket con esta evidencia\n'
+    '2️⃣ No, quiero agregar o reemplazar evidencia\n\n'
+    'Si eliges 2 podrás conservar esta foto y agregar otra, o reemplazarla.'
+)
+IMAGE_EVIDENCE_ACTION_TEXT = (
+    '📷 ¿Qué deseas hacer con la evidencia?\n'
+    '1️⃣ Agregar otra evidencia y conservar esta foto\n'
+    '2️⃣ Reemplazar esta foto por una nueva'
 )
 IMAGE_ANOTHER_TEXT = (
-    '📷 Claro. Envía la siguiente foto cuando quieras.\n\n'
-    'Cuando la reciba te preguntaré nuevamente si es la correcta. '
-    'Las imágenes recibidas quedarán asociadas al expediente de tu reporte.'
+    '📎 Perfecto. Esta foto se conserva en el expediente.\n\n'
+    'Envía la evidencia adicional cuando quieras. '
+    'Cuando la reciba te preguntaré si es correcta.'
+)
+IMAGE_REPLACE_TEXT = (
+    '♻️ Entendido. La foto anterior se retiró del expediente.\n\n'
+    'Envía ahora la nueva foto que la reemplazará. '
+    'Cuando la reciba te preguntaré si es correcta.'
 )
 IMAGE_INCIDENT_QUESTION = (
     '✅ La foto quedó registrada en el expediente de tu reporte.\n\n'
@@ -446,6 +457,132 @@ def _handle_more_problem_reply(
     }
 
 
+def _remove_latest_image_evidence(
+    db: Session,
+    *,
+    conversation: Conversation,
+    ticket: SupportTicket | None,
+) -> int:
+    if not ticket:
+        return 0
+
+    context = _latest_image_context(db, conversation.id)
+    try:
+        message_id = int(context.get('message_id') or 0)
+    except (TypeError, ValueError):
+        message_id = 0
+
+    query = db.query(CaseAttachment).filter(
+        CaseAttachment.ticket_id == ticket.id,
+        CaseAttachment.content_type.like('image/%'),
+    )
+    if message_id:
+        rows = query.filter(CaseAttachment.message_id == message_id).all()
+    else:
+        latest = query.order_by(CaseAttachment.id.desc()).first()
+        rows = [latest] if latest else []
+
+    for row in rows:
+        db.delete(row)
+
+    if message_id:
+        message = db.get(Message, message_id)
+        if message:
+            payload = dict(message.raw_payload or {})
+            payload['image_evidence_replaced'] = True
+            payload['image_confirmation_pending'] = False
+            message.raw_payload = payload
+
+    return len(rows)
+
+
+def _handle_evidence_action_reply(
+    db: Session,
+    *,
+    data: local_bridge.LocalInbound,
+    operator: User,
+    conversation: Conversation,
+    company: Company,
+    store: Store,
+    ticket: SupportTicket | None,
+):
+    answer = _normalized(data.text)
+    add = answer in {
+        '1', 'agregar', 'agrega', 'agregar otra', 'agregar evidencia',
+        'agregar otra evidencia', 'otra', 'otra foto', 'otra evidencia',
+        'conservar', 'conservar esta', 'conservar foto', 'mas evidencia',
+    }
+    replace = answer in {
+        '2', 'reemplazar', 'reemplaza', 'reemplazar foto', 'reemplazar evidencia',
+        'remplazar', 'remplaza', 'remplazar foto', 'remplazar evidencia',
+        'cambiar', 'cambiar foto', 'cambiar evidencia', 'sustituir', 'sustituir foto',
+    }
+
+    if not add and not replace:
+        outbound = _reply(
+            db,
+            conversation=conversation,
+            company=company,
+            store=store,
+            data=data,
+            text=IMAGE_EVIDENCE_ACTION_TEXT,
+        )
+        db.commit()
+        return {
+            'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
+            'company_name': company.name, 'store_name': store.name,
+            'action': 'image_evidence_action_repeat',
+            'reply_text': IMAGE_EVIDENCE_ACTION_TEXT if data.can_reply else '',
+            'should_reply': bool(data.can_reply), 'outbound_message_id': outbound.id,
+            'ticket_id': ticket.id if ticket else None, 'chatbot_paused': False,
+        }
+
+    _save_inbound_text(db, data=data, conversation=conversation, marker='image_evidence_action_answer')
+
+    removed = 0
+    if replace:
+        removed = _remove_latest_image_evidence(
+            db,
+            conversation=conversation,
+            ticket=ticket,
+        )
+        response = IMAGE_REPLACE_TEXT
+        action = 'image_evidence_replace_requested'
+    else:
+        response = IMAGE_ANOTHER_TEXT
+        action = 'image_evidence_add_requested'
+
+    conversation.status = 'open'
+    conversation.state = IMAGE_WAIT_STATE
+    outbound = _reply(
+        db,
+        conversation=conversation,
+        company=company,
+        store=store,
+        data=data,
+        text=response,
+    )
+    db.add(AuditLog(
+        username=operator.username,
+        action=action,
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={
+            'ticket_id': ticket.id if ticket else None,
+            'answer': answer,
+            'removed_attachments': removed,
+        },
+    ))
+    db.commit()
+    return {
+        'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
+        'company_name': company.name, 'store_name': store.name, 'action': action,
+        'reply_text': response if data.can_reply else '', 'should_reply': bool(data.can_reply),
+        'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
+        'chatbot_paused': False, 'removed_attachments': removed,
+    }
+
+
 def _handle_confirmation_reply(
     db: Session,
     *,
@@ -457,8 +594,14 @@ def _handle_confirmation_reply(
     ticket: SupportTicket | None,
 ):
     text = _normalized(data.text)
-    yes = text in {'1', 'si', 'correcta', 'correcto', 'esta bien', 'es correcta', 'esa es', 'esa esta bien'}
-    no = text in {'2', 'no', 'otra', 'otra foto', 'enviar otra', 'quiero otra', 'deseo enviar otra'}
+    yes = text in {
+        '1', 'si', 'correcta', 'correcto', 'esta bien', 'es correcta', 'esa es', 'esa esta bien',
+        'esta foto es la correcta', 'si esta foto es la correcta', 'cerrar', 'cerrar ticket',
+    }
+    no = text in {
+        '2', 'no', 'otra', 'otra foto', 'otra evidencia', 'enviar otra', 'quiero otra',
+        'deseo enviar otra', 'agregar', 'reemplazar', 'remplazar', 'cambiar foto',
+    }
     if not yes and not no:
         outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=IMAGE_CONFIRM_TEXT)
         db.commit()
@@ -474,31 +617,66 @@ def _handle_confirmation_reply(
 
     context = _latest_image_context(db, conversation.id)
     if no:
-        conversation.state = IMAGE_WAIT_STATE
-        response = IMAGE_ANOTHER_TEXT
-        action = 'image_request_another'
-    else:
-        conversation.state = IMAGE_INCIDENT_STATE
-        response = IMAGE_INCIDENT_QUESTION
-        action = 'image_confirmed_ask_incident'
+        conversation.status = 'open'
+        conversation.state = IMAGE_EVIDENCE_ACTION_STATE
+        response = IMAGE_EVIDENCE_ACTION_TEXT
+        action = 'image_choose_add_or_replace'
+        outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
+        db.add(AuditLog(
+            username=operator.username,
+            action=action,
+            entity='conversation',
+            entity_id=str(conversation.id),
+            details={'ticket_id': ticket.id if ticket else None, 'return_state': context.get('return_state')},
+        ))
+        db.commit()
+        return {
+            'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
+            'company_name': company.name, 'store_name': store.name, 'action': action,
+            'reply_text': response if data.can_reply else '', 'should_reply': bool(data.can_reply),
+            'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
+            'chatbot_paused': False,
+        }
 
-    outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
+    closed = _close_for_validation(
+        db,
+        operator=operator,
+        conversation=conversation,
+        ticket=ticket,
+        result='Evidencia fotográfica confirmada por el usuario. Ticket cerrado y enviado a validación.',
+    )
+    conversation.status = 'closed'
+    conversation.state = 'closed_previous_ticket'
+    response = _validation_closed_text(closed or ticket, company, store)
+    outbound = _reply(
+        db,
+        conversation=conversation,
+        company=company,
+        store=store,
+        data=data,
+        text=response,
+    )
     db.add(AuditLog(
         username=operator.username,
-        action=action,
+        action='image_confirmed_ticket_closed',
         entity='conversation',
         entity_id=str(conversation.id),
-        details={'ticket_id': ticket.id if ticket else None, 'return_state': context.get('return_state')},
+        details={
+            'ticket_id': ticket.id if ticket else None,
+            'return_state': context.get('return_state'),
+            'answer': text,
+        },
     ))
     db.commit()
     return {
         'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
-        'company_name': company.name, 'store_name': store.name, 'action': action,
+        'company_name': company.name, 'store_name': store.name,
+        'action': 'image_confirmed_ticket_closed',
         'reply_text': response if data.can_reply else '', 'should_reply': bool(data.can_reply),
         'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
-        'chatbot_paused': False,
+        'chatbot_paused': False, 'pending_validation': True,
+        'reply_queued_for_retry': not bool(data.can_reply),
     }
-
 
 @router.post('/inbound')
 def image_evidence_inbound(
@@ -534,10 +712,25 @@ def image_evidence_inbound(
                 ticket=ticket,
             )
 
+        # La opción 2 de la confirmación abre una segunda decisión:
+        # conservar la foto y agregar otra evidencia, o reemplazarla.
+        # Si el usuario manda directamente una imagen, se conserva la anterior
+        # y la nueva se procesa como evidencia adicional.
+        if conversation.state == IMAGE_EVIDENCE_ACTION_STATE and not _is_image(data):
+            return _handle_evidence_action_reply(
+                db,
+                data=data,
+                operator=operator,
+                conversation=conversation,
+                company=company,
+                store=store,
+                ticket=ticket,
+            )
+
         if _is_image(data):
             context = _latest_image_context(db, conversation.id)
             return_state = str(context.get('return_state') or '').strip()
-            photo_states = {IMAGE_CONFIRM_STATE, IMAGE_WAIT_STATE, IMAGE_INCIDENT_STATE, IMAGE_MORE_PROBLEM_STATE}
+            photo_states = {IMAGE_CONFIRM_STATE, IMAGE_EVIDENCE_ACTION_STATE, IMAGE_WAIT_STATE, IMAGE_INCIDENT_STATE, IMAGE_MORE_PROBLEM_STATE}
             if not return_state or return_state in photo_states:
                 return_state = conversation.state if conversation.state not in photo_states else ''
             message, duplicate = _save_image_message(

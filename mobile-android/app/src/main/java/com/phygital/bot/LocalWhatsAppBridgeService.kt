@@ -142,7 +142,10 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val criticalShortReply = normalizedInbound in setOf(
             "1", "2", "si", "no", "listo", "finalizar", "terminar", "cerrar",
             "correcta", "correcto", "es correcta", "es correcto", "esta correcta",
-            "esta correcto", "esa es", "es esa"
+            "esta correcto", "esa es", "es esa", "otra", "otra foto", "otra evidencia",
+            "agregar", "agregar otra", "agregar evidencia", "agregar otra evidencia",
+            "reemplazar", "reemplazar foto", "reemplazar evidencia",
+            "remplazar", "remplazar foto", "remplazar evidencia", "cambiar foto"
         )
         if (!criticalShortReply && isRemoteInputHistoryBounce(notification, text)) {
             BridgeDiagnostics.record(this, "DISCARDED", "Rebote de RemoteInput", sbn.packageName, title, text)
@@ -191,7 +194,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("category", notification.category ?: "")
                         .put("saved_contact", isSavedContact(title))
                         .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
-                        .put("bounce_filter", "v5-short-reply-safe")
+                        .put("bounce_filter", "v6-evidence-choice-safe")
                         .put("media_capture", when {
                             media != null -> "available"
                             imageHint -> "detected"

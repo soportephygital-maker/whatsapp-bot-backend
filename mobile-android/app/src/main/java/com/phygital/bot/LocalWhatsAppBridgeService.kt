@@ -129,24 +129,35 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             BridgeDiagnostics.record(this, "DISCARDED", "Detectada como grupo", sbn.packageName, title, text)
             return
         }
-        if (isSelfAuthoredNotification(title, extras)) {
-            BridgeDiagnostics.record(this, "DISCARDED", "Detectada como mensaje propio", sbn.packageName, title, text)
-            return
-        }
 
-        // Menu/confirmation replies are intentionally allowed through the bounce
-        // filters. WhatsApp may retain RemoteInput history and notification people
-        // after several bot replies, which previously caused valid replies such as
-        // 1, 2, Si, No or "Es correcta" to disappear before reaching the backend.
+        // Classify menu/confirmation replies BEFORE the self-authored filter.
+        // WhatsApp can keep the notification title as "Tú" after RemoteInput even
+        // when the newest message belongs to the customer. Numeric choices must
+        // never disappear because of that stale title.
         val normalizedInbound = normalizeName(text)
         val criticalShortReply = normalizedInbound in setOf(
             "1", "2", "si", "no", "listo", "finalizar", "terminar", "cerrar",
-            "correcta", "correcto", "es correcta", "es correcto", "esta correcta",
-            "esta correcto", "esa es", "es esa", "otra", "otra foto", "otra evidencia",
-            "agregar", "agregar otra", "agregar evidencia", "agregar otra evidencia",
+            "fin", "salir", "correcta", "correcto", "es correcta", "es correcto",
+            "esta correcta", "esta correcto", "esa es", "es esa", "otra", "otra foto",
+            "otra evidencia", "agregar", "agregar otra", "agregar evidencia",
+            "agregar otra evidencia", "cambiar", "cambiar foto", "cambiar evidencia",
             "reemplazar", "reemplazar foto", "reemplazar evidencia",
-            "remplazar", "remplazar foto", "remplazar evidencia", "cambiar foto"
+            "remplazar", "remplazar foto", "remplazar evidencia"
         )
+        if (!criticalShortReply && isSelfAuthoredNotification(notification, title, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Mensaje propio confirmado por historial", sbn.packageName, title, text)
+            return
+        }
+        if (criticalShortReply && normalizeName(title) in setOf("tu", "you", "me", "yo")) {
+            BridgeDiagnostics.record(
+                this,
+                "STALE_SELF_TITLE_BYPASSED",
+                "Título propio obsoleto ignorado para respuesta de menú",
+                sbn.packageName,
+                title,
+                text,
+            )
+        }
         if (!criticalShortReply && isRemoteInputHistoryBounce(notification, text)) {
             BridgeDiagnostics.record(this, "DISCARDED", "Rebote de RemoteInput", sbn.packageName, title, text)
             return
@@ -194,7 +205,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("category", notification.category ?: "")
                         .put("saved_contact", isSavedContact(title))
                         .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
-                        .put("bounce_filter", "v7-current-text-authoritative")
+                        .put("bounce_filter", "v8-stale-self-title-safe")
                         .put("media_capture", when {
                             media != null -> "available"
                             imageHint -> "detected"
@@ -430,12 +441,25 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         else -> "jpg"
     }
 
-    private fun isSelfAuthoredNotification(title: String, extras: android.os.Bundle): Boolean {
-        // The notification title is authoritative. EXTRA_PEOPLE_LIST can retain
-        // the local user after an inline reply, so using it here incorrectly
-        // discards the customer's next incoming message.
+    private fun isSelfAuthoredNotification(notification: Notification, title: String, text: String): Boolean {
+        val selfLabels = setOf("tu", "you", "me", "yo")
+        val messages = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        val latest = messages?.lastOrNull() as? android.os.Bundle
+        val latestSender = normalizeName(latest?.getCharSequence("sender")?.toString().orEmpty())
+
+        // The latest MessagingStyle sender is stronger evidence than the
+        // notification title. A non-self sender means this is an inbound message,
+        // even if WhatsApp left the title as "Tú" after a RemoteInput reply.
+        if (latestSender.isNotBlank()) {
+            return latestSender in selfLabels
+        }
+
         val normalizedTitle = normalizeName(title)
-        return normalizedTitle in setOf("tu", "you", "me", "yo")
+        if (normalizedTitle !in selfLabels) return false
+
+        // With no sender metadata, only classify it as our own message when the
+        // visible text is actually present in RemoteInput history.
+        return isRemoteInputHistoryBounce(notification, text)
     }
 
     private fun isRemoteInputHistoryBounce(notification: Notification, text: String): Boolean {

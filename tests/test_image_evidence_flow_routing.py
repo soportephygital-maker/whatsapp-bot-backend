@@ -19,3 +19,15 @@ def test_second_evidence_menu_is_add_or_change():
     text = image_evidence_patch.IMAGE_EVIDENCE_ACTION_TEXT
     assert '1️⃣ Agregar' in text
     assert '2️⃣ Cambiar' in text
+
+
+def test_prompt_recovery_maps_the_evidence_menus():
+    assert image_evidence_listo_patch._state_from_prompt(
+        image_evidence_patch.IMAGE_CONFIRM_TEXT
+    ) == image_evidence_patch.IMAGE_CONFIRM_STATE
+    assert image_evidence_listo_patch._state_from_prompt(
+        image_evidence_patch.IMAGE_EVIDENCE_ACTION_TEXT
+    ) == image_evidence_patch.IMAGE_EVIDENCE_ACTION_STATE
+    assert image_evidence_listo_patch._state_from_prompt(
+        image_evidence_patch.IMAGE_ANOTHER_TEXT
+    ) == image_evidence_patch.IMAGE_WAIT_STATE

@@ -17,40 +17,59 @@ ACTIVE_IMAGE_STATES = {
 }
 
 
-def _latest_outbound_text(db: Session, conversation_id: int) -> str:
-    row = db.query(Message).filter(
-        Message.conversation_id == conversation_id,
-        Message.direction == 'outbound',
-    ).order_by(Message.id.desc()).first()
-    return str(row.body or '') if row else ''
+def _state_from_prompt(text: str) -> str | None:
+    low = str(text or '').lower()
+    if '¿esta foto es la correcta?' in low or 'esta foto es la correcta?' in low:
+        return image_evidence_patch.IMAGE_CONFIRM_STATE
+    if '¿desea agregar o cambiar la foto?' in low or 'desea agregar o cambiar la foto?' in low:
+        return image_evidence_patch.IMAGE_EVIDENCE_ACTION_STATE
+    if 'envía la nueva evidencia que deseas agregar' in low or 'envia la nueva evidencia que deseas agregar' in low:
+        return image_evidence_patch.IMAGE_WAIT_STATE
+    if 'envía ahora la nueva foto' in low or 'envia ahora la nueva foto' in low:
+        return image_evidence_patch.IMAGE_WAIT_STATE
+    if '¿cómo sucedió el problema?' in low or 'como sucedio el problema?' in low:
+        return image_evidence_patch.IMAGE_INCIDENT_STATE
+    if '¿deseas reportar otro problema?' in low or 'deseas reportar otro problema?' in low:
+        return image_evidence_patch.IMAGE_MORE_PROBLEM_STATE
+    return None
 
 
 def _recover_image_state(db: Session, conversation) -> str | None:
-    """Recover an image-flow state when a legacy tree response moved it away.
+    """Recover the evidence flow even after a legacy tree message slipped in.
 
-    The visible bot prompt is authoritative. This lets an already-open
-    conversation recover without asking the user to delete/restart the ticket.
+    The image audit proves that this conversation has an evidence session. We
+    inspect recent bot prompts instead of only the last message, because an old
+    generic-tree reply such as "No entendí" must not permanently steal the flow.
     """
     if not conversation:
         return None
+    if conversation.state in ACTIVE_IMAGE_STATES:
+        return conversation.state
 
-    text = _latest_outbound_text(db, conversation.id).lower()
-    recovered = None
+    if not image_evidence_patch._latest_image_context(db, conversation.id):
+        return None
 
-    if '¿esta foto es la correcta?' in text or 'esta foto es la correcta?' in text:
-        recovered = image_evidence_patch.IMAGE_CONFIRM_STATE
-    elif '¿desea agregar o cambiar la foto?' in text or 'desea agregar o cambiar la foto?' in text:
-        recovered = image_evidence_patch.IMAGE_EVIDENCE_ACTION_STATE
-    elif 'envía la nueva evidencia que deseas agregar' in text or 'envia la nueva evidencia que deseas agregar' in text:
-        recovered = image_evidence_patch.IMAGE_WAIT_STATE
-    elif 'envía ahora la nueva foto' in text or 'envia ahora la nueva foto' in text:
-        recovered = image_evidence_patch.IMAGE_WAIT_STATE
+    rows = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.direction == 'outbound',
+    ).order_by(Message.id.desc()).limit(12).all()
 
-    if recovered and conversation.state != recovered:
-        conversation.status = 'open'
-        conversation.state = recovered
-        db.flush()
-    return recovered
+    for row in rows:
+        low = str(row.body or '').lower()
+        if (
+            'estado: cerrado' in low
+            or 'caso cerrado' in low
+            or 'reporte quedó registrado correctamente' in low
+            or 'reporte quedo registrado correctamente' in low
+        ):
+            break
+        recovered = _state_from_prompt(row.body or '')
+        if recovered:
+            conversation.status = 'open'
+            conversation.state = recovered
+            db.flush()
+            return recovered
+    return None
 
 
 @router.post('/inbound')

@@ -10,7 +10,7 @@ android {
         applicationId = "com.phygital.bot"
         minSdk = 26
         targetSdk = 36
-        versionCode = 69
+        versionCode = 70
         versionName = "7.0"
     }
 

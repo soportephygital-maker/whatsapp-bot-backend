@@ -194,7 +194,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("category", notification.category ?: "")
                         .put("saved_contact", isSavedContact(title))
                         .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
-                        .put("bounce_filter", "v6-evidence-choice-safe")
+                        .put("bounce_filter", "v7-current-text-authoritative")
                         .put("media_capture", when {
                             media != null -> "available"
                             imageHint -> "detected"
@@ -350,10 +350,15 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     }
 
     private fun extractCurrentMediaCandidate(notification: Notification, postTime: Long, rawText: String): MediaCandidate? {
-        extractLatestMessagingStyleMedia(notification, postTime, "messaging_style_uri")?.let { return it }
-        if (rawText.isBlank() || looksLikeImageText(rawText)) {
-            extractPictureExtra(notification, postTime)?.let { return it }
+        // A non-empty visible text that is not an image marker is authoritative.
+        // Do not reuse media left in WhatsApp's notification history from the
+        // previous message. This is what was swallowing menu replies after a photo.
+        if (rawText.isNotBlank() && !looksLikeImageText(rawText)) {
+            return null
         }
+
+        extractLatestMessagingStyleMedia(notification, postTime, "messaging_style_uri")?.let { return it }
+        extractPictureExtra(notification, postTime)?.let { return it }
         return null
     }
 
@@ -571,11 +576,29 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
     }
 
     private fun extractText(notification: Notification): String {
-        val extras = notification.extras; val messaging = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
-        if (!messaging.isNullOrEmpty()) {
-            val latest = messaging.lastOrNull(); if (latest is android.os.Bundle) latest.getCharSequence("text")?.toString()?.let { if (it.isNotBlank()) return it }
+        val extras = notification.extras
+
+        // EXTRA_TEXT is the visible/current WhatsApp message. After an inline
+        // RemoteInput reply, EXTRA_MESSAGES may still contain the previous photo
+        // as its last media entry. Reading the history first caused replies such
+        // as 1 or 2 to be interpreted again as "[Imagen recibida]".
+        extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.let {
+            if (it.isNotBlank()) return it
         }
-        return extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString() ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+        extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.let {
+            if (it.isNotBlank()) return it
+        }
+
+        val messaging = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        if (!messaging.isNullOrEmpty()) {
+            val latest = messaging.lastOrNull()
+            if (latest is android.os.Bundle) {
+                latest.getCharSequence("text")?.toString()?.let {
+                    if (it.isNotBlank()) return it
+                }
+            }
+        }
+        return ""
     }
 
     private fun looksLikeGroup(notification: Notification, title: String): Boolean {

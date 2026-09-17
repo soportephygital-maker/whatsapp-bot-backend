@@ -10,7 +10,7 @@ android {
         applicationId = "com.phygital.bot"
         minSdk = 26
         targetSdk = 36
-        versionCode = 57
+        versionCode = 58
         versionName = "0.6.32"
     }
 
@@ -52,8 +52,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
 }
 
-// Diagnostic instrumentation is injected at build time so we can see exactly
-// where a WhatsApp notification stops before/after the backend request.
 val patchBridgeDiagnostics = tasks.register("patchBridgeDiagnostics") {
     doLast {
         val service = file("src/main/java/com/phygital/bot/LocalWhatsAppBridgeService.kt")
@@ -63,8 +61,8 @@ val patchBridgeDiagnostics = tasks.register("patchBridgeDiagnostics") {
             "        if (!allowedPackages.contains(sbn.packageName)) return\n        BridgeDiagnostics.record(this, \"NOTIFICATION_DETECTED\", packageName = sbn.packageName)\n"
         )
         s = s.replace(
-            "        if (!prefs.getBoolean(\"app_enabled_$suffix\", false)) return\n",
-            "        if (!prefs.getBoolean(\"app_enabled_$suffix\", false)) { BridgeDiagnostics.record(this, \"DISCARDED\", \"Aplicación de WhatsApp desactivada en Phygital Bot\", sbn.packageName); return }\n"
+            "        if (!prefs.getBoolean(\"app_enabled_\$suffix\", false)) return\n",
+            "        if (!prefs.getBoolean(\"app_enabled_\$suffix\", false)) { BridgeDiagnostics.record(this, \"DISCARDED\", \"Aplicación de WhatsApp desactivada en Phygital Bot\", sbn.packageName); return }\n"
         )
         s = s.replace(
             "        if (selectedStoreIds.isEmpty()) return\n",
@@ -88,7 +86,7 @@ val patchBridgeDiagnostics = tasks.register("patchBridgeDiagnostics") {
         )
         s = s.replace(
             "                    outboundMessageId = response.optInt(\"outbound_message_id\", 0)\n",
-            "                    outboundMessageId = response.optInt(\"outbound_message_id\", 0)\n                    BridgeDiagnostics.record(this, \"BACKEND_RESPONSE\", \"should_reply=$shouldReply, ticket_id=$ticketId, outbound_message_id=$outboundMessageId\", sbn.packageName, title, text, replyAction != null)\n"
+            "                    outboundMessageId = response.optInt(\"outbound_message_id\", 0)\n                    BridgeDiagnostics.record(this, \"BACKEND_RESPONSE\", \"should_reply=\$shouldReply, ticket_id=\$ticketId, outbound_message_id=\$outboundMessageId\", sbn.packageName, title, text, replyAction != null)\n"
         )
         s = s.replace(
             "                        reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else \"Android no pudo ejecutar RemoteInput\")\n",

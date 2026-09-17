@@ -18,23 +18,22 @@ IMAGE_CONFIRM_TEXT = (
     '📷 Recibí una imagen.\n\n'
     '¿Esta foto es la correcta?\n'
     '1️⃣ Sí, cerrar el ticket con esta evidencia\n'
-    '2️⃣ No, quiero agregar o reemplazar evidencia\n\n'
-    'Si eliges 2 podrás conservar esta foto y agregar otra, o reemplazarla.'
+    '2️⃣ No, agregar o cambiar la foto'
 )
 IMAGE_EVIDENCE_ACTION_TEXT = (
-    '📷 ¿Qué deseas hacer con la evidencia?\n'
-    '1️⃣ Agregar otra evidencia y conservar esta foto\n'
-    '2️⃣ Reemplazar esta foto por una nueva'
+    '📷 ¿Desea agregar o cambiar la foto?\n'
+    '1️⃣ Agregar\n'
+    '2️⃣ Cambiar'
 )
 IMAGE_ANOTHER_TEXT = (
-    '📎 Perfecto. Esta foto se conserva en el expediente.\n\n'
-    'Envía la evidencia adicional cuando quieras. '
-    'Cuando la reciba te preguntaré si es correcta.'
+    '📎 Perfecto. La foto actual se conserva.\n\n'
+    'Envía la nueva evidencia que deseas agregar. '
+    'Al recibirla volveré a mostrarte la confirmación de foto recibida.'
 )
 IMAGE_REPLACE_TEXT = (
     '♻️ Entendido. La foto anterior se retiró del expediente.\n\n'
-    'Envía ahora la nueva foto que la reemplazará. '
-    'Cuando la reciba te preguntaré si es correcta.'
+    'Envía ahora la nueva foto. '
+    'Al recibirla volveré a mostrarte la confirmación de foto recibida.'
 )
 IMAGE_INCIDENT_QUESTION = (
     '✅ La foto quedó registrada en el expediente de tu reporte.\n\n'

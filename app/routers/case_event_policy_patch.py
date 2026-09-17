@@ -57,6 +57,7 @@ def _policy_close_ticket(db, *, conversation, username: str, result: str):
     ticket = _original_close_ticket(db, conversation=conversation, username=username, result=result)
     if not ticket or was_closed:
         return ticket
+
     normalized = str(result or '').strip().lower()
     success = normalized in {'resolved', 'resuelto', 'success', 'successful', 'ok', 'cerrado', 'solved'} or 'resuelt' in normalized or 'exito' in normalized or 'éxito' in normalized
     if success:
@@ -65,8 +66,39 @@ def _policy_close_ticket(db, *, conversation, username: str, result: str):
         event = 'closed_no_human'
     else:
         event = 'status_changed'
-    send_case_event_email(db, ticket=ticket, event=event)
-    create_learning_candidate(db, ticket)
+
+    # Closing the ticket is the primary operation. PDF generation, e-mail and AI
+    # learning are secondary side effects and must NEVER turn a valid WhatsApp
+    # menu reply into HTTP 500. Record failures for diagnosis and keep the close.
+    try:
+        send_case_event_email(db, ticket=ticket, event=event)
+    except Exception as exc:
+        db.add(ticketing.AuditLog(
+            username=username,
+            action='case_event_email_error',
+            entity='support_ticket',
+            entity_id=str(ticket.id),
+            details={
+                'event': event,
+                'error': str(exc)[:1000],
+                'non_blocking': True,
+            },
+        ))
+
+    try:
+        create_learning_candidate(db, ticket)
+    except Exception as exc:
+        db.add(ticketing.AuditLog(
+            username=username,
+            action='case_learning_error',
+            entity='support_ticket',
+            entity_id=str(ticket.id),
+            details={
+                'error': str(exc)[:1000],
+                'non_blocking': True,
+            },
+        ))
+
     return ticket
 
 

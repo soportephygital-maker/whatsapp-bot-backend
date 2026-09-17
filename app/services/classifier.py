@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from sqlalchemy.orm import Session
-from ..models import SupportContact
+from ..models import Contact
 
 HUMAN_HELP_PHRASES = (
     'humano',
@@ -42,21 +42,15 @@ def is_group_message(incoming: dict) -> bool:
 
 
 def is_authorized_support_contact(db: Session, phone: str | None) -> bool:
-    """Only explicit company support contacts bypass the bot.
-
-    Regular rows in the general contacts/address-book table are customers or
-    ordinary known contacts and must still be able to start a bot conversation.
-    """
     normalized = normalize_phone(phone)
     if not normalized:
         return False
-    rows = db.query(SupportContact).filter(SupportContact.is_active.is_(True)).all()
-    return any(normalize_phone(row.phone) == normalized for row in rows)
+    return db.query(Contact).filter(Contact.phone == normalized, Contact.is_active.is_(True)).first() is not None
 
 
 def is_known_contact(db: Session, phone: str | None) -> bool:
-    # Backward-compatible alias used by the local bridge. "Known" here means
-    # explicitly configured support staff, not a normal saved/customer contact.
+    # Backward-compatible alias. Contact rows now represent only the
+    # administrator-managed authorized support pool, not customers.
     return is_authorized_support_contact(db, phone)
 
 

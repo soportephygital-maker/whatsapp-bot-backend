@@ -51,6 +51,29 @@ def _normalized(value: str) -> str:
     return local_bridge._normalize_text(value)
 
 
+def _is_confirmation_choice(value: str) -> bool:
+    text = _normalized(value)
+    return text in {
+        '1', '2', 'si', 'no', 'correcta', 'correcto', 'esta bien', 'es correcta',
+        'esa es', 'esa esta bien', 'esta foto es la correcta', 'si esta foto es la correcta',
+        'cerrar', 'cerrar ticket', 'finalizar', 'terminar', 'listo', 'fin', 'salir',
+        'otra', 'otra foto', 'otra evidencia', 'enviar otra', 'quiero otra',
+        'deseo enviar otra', 'agregar', 'reemplazar', 'remplazar', 'cambiar foto',
+    }
+
+
+def _is_evidence_action_choice(value: str) -> bool:
+    text = _normalized(value)
+    return text in {
+        '1', '2', 'agregar', 'agrega', 'agregar otra', 'agregar evidencia',
+        'agregar otra evidencia', 'otra', 'otra foto', 'otra evidencia',
+        'conservar', 'conservar esta', 'conservar foto', 'mas evidencia',
+        'reemplazar', 'reemplaza', 'reemplazar foto', 'reemplazar evidencia',
+        'remplazar', 'remplaza', 'remplazar foto', 'remplazar evidencia',
+        'cambiar', 'cambiar foto', 'cambiar evidencia', 'sustituir', 'sustituir foto',
+    }
+
+
 def _is_image(data: local_bridge.LocalInbound) -> bool:
     metadata = data.metadata or {}
     capture = str(metadata.get('media_capture') or '').strip().lower()
@@ -687,6 +710,32 @@ def image_evidence_inbound(
     local_user_id, conversation, company, store, ticket = _active_context(db, data)
 
     if conversation and company and store and conversation.status not in {'help_pending', 'human_active'}:
+        # Menu text is authoritative BEFORE media detection. WhatsApp can retain
+        # the previous photo's media metadata on the next notification. Without
+        # this guard, replies such as 1/2 were misclassified as another image and
+        # then discarded as a duplicate, which looked like the backend stopped.
+        if conversation.state == IMAGE_CONFIRM_STATE and _is_confirmation_choice(data.text):
+            return _handle_confirmation_reply(
+                db,
+                data=data,
+                operator=operator,
+                conversation=conversation,
+                company=company,
+                store=store,
+                ticket=ticket,
+            )
+
+        if conversation.state == IMAGE_EVIDENCE_ACTION_STATE and _is_evidence_action_choice(data.text):
+            return _handle_evidence_action_reply(
+                db,
+                data=data,
+                operator=operator,
+                conversation=conversation,
+                company=company,
+                store=store,
+                ticket=ticket,
+            )
+
         # El primer texto después de "¿cómo sucedió?" siempre se guarda como explicación
         # y pasa a la pregunta de si existe otro problema; todavía NO cierra el ticket.
         if conversation.state == IMAGE_INCIDENT_STATE:
@@ -712,10 +761,8 @@ def image_evidence_inbound(
                 ticket=ticket,
             )
 
-        # La opción 2 de la confirmación abre una segunda decisión:
-        # conservar la foto y agregar otra evidencia, o reemplazarla.
-        # Si el usuario manda directamente una imagen, se conserva la anterior
-        # y la nueva se procesa como evidencia adicional.
+        # If the action-state message is ordinary text (not a new image), keep
+        # repeating the add/change submenu even when it is not a recognized synonym.
         if conversation.state == IMAGE_EVIDENCE_ACTION_STATE and not _is_image(data):
             return _handle_evidence_action_reply(
                 db,

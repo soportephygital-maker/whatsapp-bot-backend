@@ -31,3 +31,16 @@ def test_prompt_recovery_maps_the_evidence_menus():
     assert image_evidence_listo_patch._state_from_prompt(
         image_evidence_patch.IMAGE_ANOTHER_TEXT
     ) == image_evidence_patch.IMAGE_WAIT_STATE
+
+
+def test_numeric_photo_menu_choices_override_stale_media_metadata():
+    assert image_evidence_patch._is_confirmation_choice('1') is True
+    assert image_evidence_patch._is_confirmation_choice('2') is True
+    assert image_evidence_patch._is_evidence_action_choice('1') is True
+    assert image_evidence_patch._is_evidence_action_choice('2') is True
+
+
+def test_natural_add_change_choices_override_stale_media_metadata():
+    assert image_evidence_patch._is_evidence_action_choice('Agregar') is True
+    assert image_evidence_patch._is_evidence_action_choice('Cambiar') is True
+    assert image_evidence_patch._is_evidence_action_choice('Reemplazar foto') is True

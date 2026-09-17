@@ -37,13 +37,17 @@ def _save_listo_message(db: Session, data: local_bridge.LocalInbound, conversati
     ))
 
 
-def _last_outbound_is_image_confirmation(db: Session, conversation_id: int) -> bool:
+def _last_outbound_is_legacy_image_confirmation(db: Session, conversation_id: int) -> bool:
     row = db.query(Message).filter(
         Message.conversation_id == conversation_id,
         Message.direction == 'outbound',
     ).order_by(Message.id.desc()).first()
     text = str(row.body or '') if row else ''
-    return 'foto quedó registrada' in text.lower() or 'evidencia quedó registrada' in text.lower()
+    lowered = text.lower()
+    return (
+        'perfecto. la foto quedó registrada' in lowered
+        or 'evidencia quedó registrada en el reporte. puedes continuar' in lowered
+    )
 
 
 @router.post('/inbound')
@@ -54,13 +58,23 @@ def image_evidence_finish_inbound(
 ):
     normalized = image_evidence_patch._normalized(data.text)
     local_user_id, conversation, company, store, ticket = image_evidence_patch._active_context(db, data)
+
+    # Once the photo is confirmed, every text response belongs to the
+    # "¿cómo sucedió?" step. Do not let words such as listo/finalizar bypass it.
+    if conversation and conversation.state == image_evidence_patch.IMAGE_INCIDENT_STATE:
+        return image_evidence_patch.image_evidence_inbound(data=data, operator=operator, db=db)
+
     if conversation and company and store and normalized in LISTO_WORDS:
         in_photo_state = conversation.state in {image_evidence_patch.IMAGE_CONFIRM_STATE, image_evidence_patch.IMAGE_WAIT_STATE}
-        just_confirmed = _last_outbound_is_image_confirmation(db, conversation.id)
-        if in_photo_state or just_confirmed:
+        legacy_confirmation = _last_outbound_is_legacy_image_confirmation(db, conversation.id)
+        if in_photo_state or legacy_confirmation:
             context = image_evidence_patch._latest_image_context(db, conversation.id)
             return_state = str(context.get('return_state') or '').strip()
-            if return_state and return_state not in {image_evidence_patch.IMAGE_CONFIRM_STATE, image_evidence_patch.IMAGE_WAIT_STATE}:
+            if return_state and return_state not in {
+                image_evidence_patch.IMAGE_CONFIRM_STATE,
+                image_evidence_patch.IMAGE_WAIT_STATE,
+                image_evidence_patch.IMAGE_INCIDENT_STATE,
+            }:
                 conversation.state = return_state
             _save_listo_message(db, data, conversation)
             outbound = image_evidence_patch._reply(

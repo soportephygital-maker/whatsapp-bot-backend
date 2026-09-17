@@ -241,6 +241,18 @@ class MainActivity : Activity() {
         setOnClickListener { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
     }
 
+    private fun diagnosticsButton(): Button = Button(this).apply {
+        text = "Diagnóstico del puente"
+        setOnClickListener {
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Diagnóstico WhatsApp")
+                .setMessage(BridgeDiagnostics.snapshot(this@MainActivity))
+                .setNegativeButton("Limpiar") { _, _ -> BridgeDiagnostics.clear(this@MainActivity) }
+                .setPositiveButton("Cerrar", null)
+                .show()
+        }
+    }
+
     private fun showNotificationOnlySettings() {
         buildBridgeSettingsDialog(JSONArray())
     }
@@ -312,6 +324,7 @@ class MainActivity : Activity() {
         })
         content.addView(notificationAccessButton())
         content.addView(appSettingsButton())
+        content.addView(diagnosticsButton())
         content.addView(updateButton())
         content.addView(TextView(this).apply {
             text = "Versión instalada: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"

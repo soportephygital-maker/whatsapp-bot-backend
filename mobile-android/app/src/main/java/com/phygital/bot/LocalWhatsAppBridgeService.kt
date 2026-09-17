@@ -101,9 +101,15 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         val senderKey = extras.getString(Notification.EXTRA_CONVERSATION_TITLE)
             ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
             ?: title
-        val directMedia = extractMediaCandidate(notification, sbn.postTime)
+
+        // IMPORTANT: WhatsApp keeps previous image messages in notification history.
+        // Only the LATEST current message may classify this notification as an image.
+        // Otherwise the text that follows a photo (for example "cómo sucedió") is
+        // incorrectly converted back to "[Imagen recibida]" and then discarded as a
+        // duplicate of the previous image.
         val rawText = extractText(notification).trim()
-        val imageHint = directMedia != null || looksLikeImageNotification(notification, rawText)
+        val directMedia = extractCurrentMediaCandidate(notification, sbn.postTime, rawText)
+        val imageHint = directMedia != null || looksLikeImageText(rawText)
         val text = when {
             imageHint -> "[Imagen recibida]"
             rawText.isNotBlank() -> rawText
@@ -113,7 +119,14 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             }
         }
 
-        BridgeDiagnostics.record(this, "MESSAGE_PARSED", "Notificación leída", sbn.packageName, title, text)
+        BridgeDiagnostics.record(
+            this,
+            "MESSAGE_PARSED",
+            "Notificación leída; media_actual=${directMedia != null}; raw=${rawText.take(120)}",
+            sbn.packageName,
+            title,
+            text,
+        )
 
         if (looksLikeGroup(notification, title)) {
             BridgeDiagnostics.record(this, "DISCARDED", "Detectada como grupo", sbn.packageName, title, text)
@@ -160,7 +173,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("category", notification.category ?: "")
                         .put("saved_contact", isSavedContact(title))
                         .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
-                        .put("bounce_filter", "v3")
+                        .put("bounce_filter", "v4-current-message-media")
                         .put("media_capture", when {
                             media != null -> "available"
                             imageHint -> "detected"
@@ -237,23 +250,19 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         }.start()
     }
 
-    private fun looksLikeImageNotification(notification: Notification, rawText: String): Boolean {
-        if (notification.extras.containsKey(Notification.EXTRA_PICTURE)) return true
+    private fun looksLikeImageText(rawText: String): Boolean {
         val text = normalizeName(rawText)
         if (text in setOf(
                 "foto", "photo", "imagen", "image",
                 "foto recibida", "photo received", "imagen recibida", "image received",
                 "envio una foto", "envio una imagen", "sent a photo", "sent an image"
             )) return true
-        if (
+        return (
             text.startsWith("foto ") || text.startsWith("photo ") ||
             text.startsWith("imagen ") || text.startsWith("image ") ||
             text.contains("envio una foto") || text.contains("envio una imagen") ||
             text.contains("sent a photo") || text.contains("sent an image")
-        ) return true
-        val messages = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES).orEmpty()
-        val parsed = runCatching { Notification.MessagingStyle.Message.getMessagesFromBundleArray(messages) }.getOrNull().orEmpty()
-        return parsed.any { it.dataMimeType?.startsWith("image/") == true || it.dataUri != null }
+        )
     }
 
     private fun hasImageReadPermission(): Boolean =
@@ -319,36 +328,43 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         } catch (_: Exception) { false }
     }
 
-    private fun extractMediaCandidate(notification: Notification, postTime: Long): MediaCandidate? {
-        extractMessagingStyleMedia(notification, Notification.EXTRA_MESSAGES, postTime, "messaging_style_uri")?.let { return it }
-        extractMessagingStyleMedia(notification, Notification.EXTRA_HISTORIC_MESSAGES, postTime, "historic_messaging_style_uri")?.let { return it }
-        extractPictureExtra(notification, postTime)?.let { return it }
+    private fun extractCurrentMediaCandidate(notification: Notification, postTime: Long, rawText: String): MediaCandidate? {
+        extractLatestMessagingStyleMedia(notification, postTime, "messaging_style_uri")?.let { return it }
+        // EXTRA_PICTURE may remain attached after a previous image. Only trust it
+        // when the current visible text itself looks like an image notification or
+        // there is no current text at all.
+        if (rawText.isBlank() || looksLikeImageText(rawText)) {
+            extractPictureExtra(notification, postTime)?.let { return it }
+        }
         return null
     }
 
-    private fun extractMessagingStyleMedia(notification: Notification, extraKey: String, postTime: Long, source: String): MediaCandidate? {
-        val bundles = notification.extras.getParcelableArray(extraKey) ?: return null
+    private fun extractLatestMessagingStyleMedia(notification: Notification, postTime: Long, source: String): MediaCandidate? {
+        val bundles = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
+        if (bundles.isEmpty()) return null
+
         val official = runCatching { Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundles) }.getOrNull().orEmpty()
-        for (message in official.asReversed()) {
-            val mime = message.dataMimeType?.trim().orEmpty()
-            val uri = message.dataUri
-            if (!mime.startsWith("image/") || uri == null) continue
-            readUriBytes(uri)?.let { bytes ->
-                return MediaCandidate(bytes, "whatsapp-${postTime}.${extensionForMime(mime)}", mime, source)
+        val latestOfficial = official.lastOrNull()
+        if (latestOfficial != null) {
+            val mime = latestOfficial.dataMimeType?.trim().orEmpty()
+            val uri = latestOfficial.dataUri
+            if (mime.startsWith("image/") && uri != null) {
+                readUriBytes(uri)?.let { bytes ->
+                    return MediaCandidate(bytes, "whatsapp-${postTime}.${extensionForMime(mime)}", mime, source)
+                }
             }
         }
-        for (item in bundles.reversed()) {
-            val bundle = item as? android.os.Bundle ?: continue
-            val mime = bundle.getString("type")?.trim().orEmpty()
-            val uri = when (val raw = bundle.get("uri")) {
-                is Uri -> raw
-                is String -> runCatching { Uri.parse(raw) }.getOrNull()
-                else -> null
-            } ?: continue
-            if (!mime.startsWith("image/")) continue
-            readUriBytes(uri)?.let { bytes ->
-                return MediaCandidate(bytes, "whatsapp-${postTime}.${extensionForMime(mime)}", mime, "${source}_raw")
-            }
+
+        val latestRaw = bundles.lastOrNull() as? android.os.Bundle ?: return null
+        val mime = latestRaw.getString("type")?.trim().orEmpty()
+        val uri = when (val raw = latestRaw.get("uri")) {
+            is Uri -> raw
+            is String -> runCatching { Uri.parse(raw) }.getOrNull()
+            else -> null
+        }
+        if (!mime.startsWith("image/") || uri == null) return null
+        readUriBytes(uri)?.let { bytes ->
+            return MediaCandidate(bytes, "whatsapp-${postTime}.${extensionForMime(mime)}", mime, "${source}_raw")
         }
         return null
     }

@@ -137,5 +137,28 @@ def test_report_review_confirmation_keeps_ticket_open_for_review():
 
 def test_report_edit_menu_contains_required_fields():
     text = image_evidence_patch._edit_fields_text()
-    for expected in ('Motivo del reporte','Motivo del problema','Evidencia / fotos','Número de contacto','Nombre de tienda y empresa','Nombre de quien se comunica','Fecha'):
+    for expected in ('Motivo del reporte','Motivo del problema','Evidencia / fotos','Número de contacto','Nombre de tienda y empresa','Nombre y puesto de quien se comunica','Fecha'):
         assert expected in text
+
+
+def test_report_reason_ignores_generic_support_subject():
+    class FakeTicket:
+        subject = 'Incidencia de soporte Coppel'
+    assert 'incidencia de soporte' not in image_evidence_patch._normalized(
+        image_evidence_patch._fallback_report_reason(FakeTicket()) if hasattr(image_evidence_patch, '_fallback_report_reason') else 'otro'
+    )
+
+
+def test_report_review_uses_name_and_position_label():
+    values = {
+        'report_reason':'AIMMS no funciona',
+        'problem_reason':'Se fue la luz',
+        'evidence':'2 fotos',
+        'contact_number':'5512345678',
+        'store_company':'Coppel Santa Fe',
+        'contact_name':'Juan Pérez - Gerente',
+        'date':'18/09/2026 14:47',
+    }
+    text = image_evidence_patch._report_review_text(values)
+    assert 'Nombre y puesto de quien se comunica: Juan Pérez - Gerente' in text
+    assert 'Evidencia: 2 fotos' in text

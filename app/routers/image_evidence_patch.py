@@ -737,41 +737,147 @@ def _contact_identity(db: Session, conversation: Conversation, data: local_bridg
     return phone, (name or 'No identificado')
 
 
-def _incident_reason(ticket: SupportTicket | None) -> str:
+def _incident_reason(db: Session, conversation: Conversation, ticket: SupportTicket | None) -> str:
+    row = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.direction == 'inbound',
+    ).order_by(Message.id.desc()).all()
+    for message in row:
+        payload = message.raw_payload if isinstance(message.raw_payload, dict) else {}
+        if payload.get('incident_description'):
+            value = str(message.body or '').strip()
+            if value:
+                return value[:240]
+
     description = str(ticket.description or '').strip() if ticket else ''
     match = re.search(r'(?im)^\s*Cómo sucedió\s*:\s*(.+)$', description)
     if match:
         return match.group(1).strip()[:240]
-    return description[:240] or 'No especificado'
+    return 'No especificado'
 
 
-def _fallback_report_reason(ticket: SupportTicket | None) -> str:
-    source = f'{ticket.subject if ticket else ""} {ticket.description if ticket else ""}'.strip()
-    if not source:
-        return 'Incidencia reportada'
-    cleaned = re.sub(r'(?im)Cómo sucedió\s*:\s*.+$', '', source).strip(' \n-:')
-    return cleaned[:180] or 'Incidencia reportada'
+def _company_store_source_text(
+    db: Session,
+    conversation: Conversation,
+    company: Company,
+    store: Store,
+) -> str:
+    rows = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.direction == 'inbound',
+    ).order_by(Message.id.asc()).limit(25).all()
+
+    company_key = _normalized(company.name)
+    store_key = _normalized(store.name)
+    company_candidate = ''
+    store_candidate = ''
+
+    for row in rows:
+        text = str(row.body or '').strip()
+        normalized = _normalized(text)
+        if not text:
+            continue
+        if company_key and company_key in normalized and not company_candidate:
+            company_candidate = text
+        if store_key and store_key not in {'principal', 'general'} and store_key in normalized and not store_candidate:
+            store_candidate = text
+        if company_candidate and store_candidate:
+            break
+
+    if company_candidate and store_candidate and company_candidate != store_candidate:
+        return f'{company_candidate} / {store_candidate}'[:240]
+    if company_candidate:
+        return company_candidate[:240]
+    if store_candidate:
+        return store_candidate[:240]
+    return f'{company.name} - {store.name}'
 
 
-def _ai_report_reason(ticket: SupportTicket | None) -> str:
-    fallback = _fallback_report_reason(ticket)
+def _conversation_report_reason(
+    db: Session,
+    conversation: Conversation,
+    company: Company,
+    store: Store,
+    ticket: SupportTicket | None,
+) -> str:
+    rows = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.direction == 'inbound',
+    ).order_by(Message.id.asc()).all()
+
+    customer_name = _normalized(ticketed_local_bridge._conversation_name(db, conversation.id))
+    company_key = _normalized(company.name)
+    store_key = _normalized(store.name)
+    excluded_markers = {
+        'incident_description',
+        'image_confirmation_answer',
+        'report_review_confirmed',
+        'report_review_edit_requested',
+    }
+
+    candidates = []
+    for row in rows:
+        payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+        if payload.get('image_evidence'):
+            continue
+        if any(payload.get(marker) for marker in excluded_markers):
+            continue
+
+        raw = str(row.body or '').strip()
+        normalized = _normalized(raw)
+        if not normalized or normalized in {'1','2','si','sí','no','menu','menú','listo','finalizar','cerrar'}:
+            continue
+        if customer_name and normalized == customer_name:
+            continue
+        if company_key and company_key in normalized and len(normalized.split()) <= 8:
+            continue
+        if store_key and store_key not in {'principal','general'} and store_key in normalized and len(normalized.split()) <= 8:
+            continue
+        if normalized in {'hola','buen dia','buenos dias','buenas tardes','buenas noches'}:
+            continue
+        candidates.append(raw)
+
+    if candidates:
+        # The most recent meaningful user description before the photo is normally
+        # the actual symptom being reported: "AIMMS no jala", "precio incorrecto",
+        # "pantalla rota", etc.
+        return candidates[-1][:240]
+
+    subject = str(ticket.subject or '').strip() if ticket else ''
+    generic = _normalized(subject)
+    if subject and 'incidencia de soporte' not in generic and generic not in {_normalized(company.name), _normalized(store.name)}:
+        return subject[:240]
+    return 'Incidencia reportada'
+
+
+def _ai_report_reason(
+    db: Session,
+    conversation: Conversation,
+    company: Company,
+    store: Store,
+    ticket: SupportTicket | None,
+) -> str:
+    fallback = _conversation_report_reason(db, conversation, company, store, ticket)
     try:
         provider = ai_learning._provider()
         if provider not in {'openai', 'ollama'}:
             return fallback
-        source = f'Asunto: {ticket.subject if ticket else ""}\nDescripción: {ticket.description if ticket else ""}'
         result = ai_learning._generate(
             provider,
             instructions=(
-                'Resume incidencias técnicas en español. Devuelve únicamente un motivo del reporte '
-                'de máximo 8 palabras, concreto, sin explicación, sin prefijos y sin inventar datos.'
+                'Resume el síntoma técnico reportado por el usuario en español. '
+                'Devuelve únicamente el problema actual, máximo 8 palabras. '
+                'Ejemplos: "AIMMS no funciona", "precio incorrecto", "pantalla rota". '
+                'No escribas "incidencia de soporte", empresa, tienda, causa ni explicación.'
             ),
-            prompt=source[:3500],
+            prompt=f'Mensaje del usuario: {fallback}',
         )
         result = re.sub(r'\s+', ' ', str(result or '')).strip(' ."')
-        return result[:180] or fallback
+        if result and 'incidencia de soporte' not in _normalized(result):
+            return result[:180]
     except Exception:
-        return fallback
+        pass
+    return fallback
 
 
 def _report_date(ticket: SupportTicket | None, data: local_bridge.LocalInbound) -> str:
@@ -787,6 +893,34 @@ def _report_date(ticket: SupportTicket | None, data: local_bridge.LocalInbound) 
         return datetime.utcnow().strftime('%d/%m/%Y %H:%M')
 
 
+def _evidence_count(db: Session, conversation: Conversation, ticket: SupportTicket | None) -> int:
+    attachment_count = (
+        db.query(CaseAttachment)
+        .filter(CaseAttachment.ticket_id == ticket.id, CaseAttachment.content_type.ilike('image/%'))
+        .count()
+        if ticket else 0
+    )
+    image_messages = db.query(Message).filter(
+        Message.conversation_id == conversation.id,
+        Message.direction == 'inbound',
+    ).all()
+    message_count = 0
+    seen = set()
+    for row in image_messages:
+        payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+        if not payload.get('image_evidence'):
+            continue
+        payload_ticket = payload.get('ticket_id')
+        if ticket and payload_ticket not in (None, ticket.id):
+            continue
+        key = row.provider_message_id or f'message:{row.id}'
+        if key in seen:
+            continue
+        seen.add(key)
+        message_count += 1
+    return max(attachment_count, message_count)
+
+
 def _report_review_data(
     db: Session,
     *,
@@ -797,20 +931,17 @@ def _report_review_data(
     data: local_bridge.LocalInbound,
 ) -> dict:
     overrides = _report_overrides(db, conversation.id)
-    phone, contact_name = _contact_identity(db, conversation, data)
-    evidence_count = (
-        db.query(CaseAttachment)
-        .filter(CaseAttachment.ticket_id == ticket.id, CaseAttachment.content_type.ilike('image/%'))
-        .count()
-        if ticket else 0
-    )
+    phone, fallback_contact_name = _contact_identity(db, conversation, data)
+    saved_name_and_role = ticketed_local_bridge._conversation_name(db, conversation.id).strip()
+    evidence_count = _evidence_count(db, conversation, ticket)
+
     values = {
-        'report_reason': _ai_report_reason(ticket),
-        'problem_reason': _incident_reason(ticket),
+        'report_reason': _ai_report_reason(db, conversation, company, store, ticket),
+        'problem_reason': _incident_reason(db, conversation, ticket),
         'evidence': f'{evidence_count} foto' + ('' if evidence_count == 1 else 's'),
         'contact_number': phone,
-        'store_company': f'{company.name} - {store.name}',
-        'contact_name': contact_name,
+        'store_company': _company_store_source_text(db, conversation, company, store),
+        'contact_name': saved_name_and_role or fallback_contact_name,
         'date': _report_date(ticket, data),
     }
     values.update({k: v for k, v in overrides.items() if k in values and str(v).strip()})
@@ -825,7 +956,7 @@ def _report_review_text(values: dict) -> str:
         f'• Evidencia: {values["evidence"]}\n'
         f'• Número de contacto: {values["contact_number"]}\n'
         f'• Tienda y empresa: {values["store_company"]}\n'
-        f'• Nombre de quien se comunica: {values["contact_name"]}\n'
+        f'• Nombre y puesto de quien se comunica: {values["contact_name"]}\n'
         f'• Fecha: {values["date"]}\n\n'
         '¿Es correcta la información?\n'
         '1️⃣ Sí\n'
@@ -841,7 +972,7 @@ def _edit_fields_text() -> str:
         '3️⃣ Evidencia / fotos\n'
         '4️⃣ Número de contacto\n'
         '5️⃣ Nombre de tienda y empresa\n'
-        '6️⃣ Nombre de quien se comunica\n'
+        '6️⃣ Nombre y puesto de quien se comunica\n'
         '7️⃣ Fecha\n'
         '0️⃣ Volver al resumen'
     )
@@ -852,7 +983,7 @@ _EDIT_FIELD_MAP = {
     '2': ('problem_reason', 'Motivo del problema'),
     '4': ('contact_number', 'Número de contacto'),
     '5': ('store_company', 'Nombre de tienda y empresa'),
-    '6': ('contact_name', 'Nombre de quien se comunica'),
+    '6': ('contact_name', 'Nombre y puesto de quien se comunica'),
     '7': ('date', 'Fecha'),
 }
 

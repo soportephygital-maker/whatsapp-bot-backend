@@ -737,23 +737,72 @@ def _contact_identity(db: Session, conversation: Conversation, data: local_bridg
     return phone, (name or 'No identificado')
 
 
+def _is_meaningful_text(value: str) -> bool:
+    normalized = _normalized(value)
+    if not normalized:
+        return False
+    if re.fullmatch(r'\d+', normalized):
+        return False
+    if normalized in {
+        'si', 'sí', 'no', 'ok', 'listo', 'menu', 'menú', 'cerrar', 'finalizar',
+        'continuar', 'siguiente', 'agregar', 'cambiar', 'reemplazar',
+    }:
+        return False
+    return len(normalized) >= 3
+
+
+def _looks_like_problem_prompt(value: str) -> bool:
+    normalized = _normalized(value)
+    prompt_markers = (
+        'que observ', 'qué observ',
+        'que paso', 'qué pasó',
+        'que ocurrio', 'qué ocurrió',
+        'que sucedio', 'qué sucedió',
+        'como sucedio', 'cómo sucedió',
+        'que problema', 'qué problema',
+        'que falla', 'qué falla',
+        'describe el problema', 'describe la falla',
+        'que esta pasando', 'qué está pasando',
+    )
+    return any(marker in normalized for marker in prompt_markers)
+
+
 def _incident_reason(db: Session, conversation: Conversation, ticket: SupportTicket | None) -> str:
-    row = db.query(Message).filter(
+    rows = db.query(Message).filter(
         Message.conversation_id == conversation.id,
-        Message.direction == 'inbound',
-    ).order_by(Message.id.desc()).all()
-    for message in row:
+    ).order_by(Message.id.asc()).all()
+
+    # 1) Prefer the explicitly marked answer captured by the image flow.
+    for message in reversed(rows):
+        if message.direction != 'inbound':
+            continue
         payload = message.raw_payload if isinstance(message.raw_payload, dict) else {}
         if payload.get('incident_description'):
             value = str(message.body or '').strip()
-            if value:
+            if _is_meaningful_text(value):
                 return value[:240]
 
+    # 2) Recover the answer to any existing tree prompt such as
+    # "¿Qué observas?", "¿Qué pasó?", "¿Qué ocurrió?" or "¿Cómo sucedió?".
+    waiting_for_answer = False
+    for message in rows:
+        body = str(message.body or '').strip()
+        if message.direction == 'outbound' and _looks_like_problem_prompt(body):
+            waiting_for_answer = True
+            continue
+        if waiting_for_answer and message.direction == 'inbound':
+            if _is_meaningful_text(body):
+                return body[:240]
+            # Ignore numeric/menu answers and keep looking until a real text answer arrives.
+
+    # 3) Fall back to the structured line stored in the ticket description.
     description = str(ticket.description or '').strip() if ticket else ''
-    match = re.search(r'(?im)^\s*Cómo sucedió\s*:\s*(.+)$', description)
-    if match:
+    match = re.search(r'(?im)^\s*(?:Cómo sucedió|Qué pasó|Qué ocurrió|Qué observó|Qué observa)\s*:\s*(.+)$', description)
+    if match and _is_meaningful_text(match.group(1)):
         return match.group(1).strip()[:240]
-    return 'No especificado'
+
+    return 'Sin descripción registrada'
+
 
 
 def _company_store_source_text(
@@ -793,6 +842,20 @@ def _company_store_source_text(
     return f'{company.name} - {store.name}'
 
 
+def _looks_like_report_prompt(value: str) -> bool:
+    normalized = _normalized(value)
+    markers = (
+        'que deseas reportar', 'qué deseas reportar',
+        'cual es el problema', 'cuál es el problema',
+        'que equipo falla', 'qué equipo falla',
+        'que sucede', 'qué sucede',
+        'que no funciona', 'qué no funciona',
+        'indica la falla', 'describe la falla',
+        'motivo del reporte',
+    )
+    return any(marker in normalized for marker in markers)
+
+
 def _conversation_report_reason(
     db: Session,
     conversation: Conversation,
@@ -802,30 +865,59 @@ def _conversation_report_reason(
 ) -> str:
     rows = db.query(Message).filter(
         Message.conversation_id == conversation.id,
-        Message.direction == 'inbound',
     ).order_by(Message.id.asc()).all()
 
     customer_name = _normalized(ticketed_local_bridge._conversation_name(db, conversation.id))
     company_key = _normalized(company.name)
     store_key = _normalized(store.name)
+
+    # 1) Prefer the user's direct answer to a report/failure prompt in the tree.
+    waiting_for_report = False
+    for row in rows:
+        raw = str(row.body or '').strip()
+        normalized = _normalized(raw)
+        if row.direction == 'outbound' and _looks_like_report_prompt(raw):
+            waiting_for_report = True
+            continue
+        if waiting_for_report and row.direction == 'inbound':
+            if not _is_meaningful_text(raw):
+                continue
+            if customer_name and normalized == customer_name:
+                continue
+            if company_key and company_key in normalized and len(normalized.split()) <= 8:
+                continue
+            if store_key and store_key not in {'principal','general'} and store_key in normalized and len(normalized.split()) <= 8:
+                continue
+            return raw[:240]
+
+    # 2) Prefer a specific ticket subject when it is real text, never a number/menu option.
+    subject = str(ticket.subject or '').strip() if ticket else ''
+    generic = _normalized(subject)
+    if (
+        _is_meaningful_text(subject)
+        and 'incidencia de soporte' not in generic
+        and generic not in {_normalized(company.name), _normalized(store.name)}
+    ):
+        return subject[:240]
+
+    # 3) Fall back to the latest meaningful inbound text, excluding control/menu data.
     excluded_markers = {
         'incident_description',
         'image_confirmation_answer',
         'report_review_confirmed',
         'report_review_edit_requested',
     }
-
     candidates = []
     for row in rows:
-        payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
-        if payload.get('image_evidence'):
+        if row.direction != 'inbound':
             continue
-        if any(payload.get(marker) for marker in excluded_markers):
+        payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+        if payload.get('image_evidence') or any(payload.get(marker) for marker in excluded_markers):
             continue
 
         raw = str(row.body or '').strip()
         normalized = _normalized(raw)
-        if not normalized or normalized in {'1','2','si','sí','no','menu','menú','listo','finalizar','cerrar'}:
+        if not _is_meaningful_text(raw):
             continue
         if customer_name and normalized == customer_name:
             continue
@@ -838,16 +930,9 @@ def _conversation_report_reason(
         candidates.append(raw)
 
     if candidates:
-        # The most recent meaningful user description before the photo is normally
-        # the actual symptom being reported: "AIMMS no jala", "precio incorrecto",
-        # "pantalla rota", etc.
         return candidates[-1][:240]
-
-    subject = str(ticket.subject or '').strip() if ticket else ''
-    generic = _normalized(subject)
-    if subject and 'incidencia de soporte' not in generic and generic not in {_normalized(company.name), _normalized(store.name)}:
-        return subject[:240]
     return 'Incidencia reportada'
+
 
 
 def _ai_report_reason(
@@ -873,7 +958,12 @@ def _ai_report_reason(
             prompt=f'Mensaje del usuario: {fallback}',
         )
         result = re.sub(r'\s+', ' ', str(result or '')).strip(' ."')
-        if result and 'incidencia de soporte' not in _normalized(result):
+        normalized_result = _normalized(result)
+        if (
+            _is_meaningful_text(result)
+            and 'incidencia de soporte' not in normalized_result
+            and not re.fullmatch(r'\d+', normalized_result)
+        ):
             return result[:180]
     except Exception:
         pass

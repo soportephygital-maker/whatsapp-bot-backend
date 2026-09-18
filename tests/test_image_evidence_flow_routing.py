@@ -162,3 +162,20 @@ def test_report_review_uses_name_and_position_label():
     text = image_evidence_patch._report_review_text(values)
     assert 'Nombre y puesto de quien se comunica: Juan Pérez - Gerente' in text
     assert 'Evidencia: 2 fotos' in text
+
+
+def test_meaningful_report_text_rejects_numeric_menu_values():
+    assert image_evidence_patch._is_meaningful_text('6') is False
+    assert image_evidence_patch._is_meaningful_text('2') is False
+    assert image_evidence_patch._is_meaningful_text('AIMMS no funciona') is True
+
+
+def test_problem_prompt_detection_covers_observa_paso_ocurrio():
+    assert image_evidence_patch._looks_like_problem_prompt('¿Qué observas en el equipo?')
+    assert image_evidence_patch._looks_like_problem_prompt('¿Qué pasó?')
+    assert image_evidence_patch._looks_like_problem_prompt('Cuéntame qué ocurrió')
+
+
+def test_report_prompt_detection_for_real_symptom():
+    assert image_evidence_patch._looks_like_report_prompt('¿Cuál es el problema?')
+    assert image_evidence_patch._looks_like_report_prompt('Indica la falla')

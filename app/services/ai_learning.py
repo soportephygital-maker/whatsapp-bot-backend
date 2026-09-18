@@ -199,14 +199,52 @@ def repeated_store_issue(
         AILearningPoint.company_id == company_id,
         AILearningPoint.problem.like('[CASO]%'),
     ).order_by(AILearningPoint.confidence.desc(), AILearningPoint.updated_at.desc()).limit(200).all()
-    best = None
     for row in rows:
         if f'TiendaID:{store_id}' not in str(row.problem or ''):
             continue
         reps = _repetition_count(row.solution)
         if reps < min_repetitions:
             continue
-        match = re.search(r'(?i)Motivo:\s*(.+)    requested = (settings.ai_provider or 'auto').lower()
+        match = re.search(r'(?i)Motivo:\s*(.+)$', str(row.problem or ''))
+        reason = match.group(1).strip() if match else ''
+        if reason:
+            return reason
+    return ''
+
+
+def archive_conversation(db: Session, conversation: Conversation) -> AILearningPoint | None:
+    rows = db.query(Message).filter(
+        Message.conversation_id == conversation.id
+    ).order_by(Message.id.asc()).all()
+    if not rows:
+        return None
+    channel = db.query(ConversationChannel).filter(
+        ConversationChannel.conversation_id == conversation.id
+    ).first()
+    transcript = []
+    for row in rows[-30:]:
+        body = re.sub(r'\s+', ' ', str(row.body or '')).strip()
+        if body:
+            transcript.append(f'{row.direction}: {body}')
+    if not transcript:
+        return None
+    text = ' | '.join(transcript)[:3400]
+    row = AILearningPoint(
+        company_id=conversation.company_id,
+        ticket_id=None,
+        problem=f'[ARCHIVO] TiendaID:{channel.store_id if channel else 0} Conversación eliminada: {text}'[:4000],
+        solution='Memoria histórica conservada después de eliminar el chat. No utilizable como respuesta hasta aprobación.',
+        confidence=20,
+        status='pending',
+    )
+    db.add(row)
+    db.flush()
+    _prune_learning_points(db)
+    return row
+
+
+def _provider() -> str:
+    requested = (settings.ai_provider or 'auto').lower()
     if requested == 'openai':
         return 'openai' if settings.openai_api_key else 'retrieval'
     if requested == 'ollama':

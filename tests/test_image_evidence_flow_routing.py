@@ -9,9 +9,9 @@ def test_active_image_states_are_owned_by_image_flow():
     assert image_evidence_patch.IMAGE_MORE_PROBLEM_STATE in image_evidence_listo_patch.ACTIVE_IMAGE_STATES
 
 
-def test_photo_confirmation_menu_is_the_close_or_evidence_branch():
+def test_photo_confirmation_menu_is_the_review_or_evidence_branch():
     text = image_evidence_patch.IMAGE_CONFIRM_TEXT
-    assert '1️⃣ Sí, cerrar el ticket con esta evidencia' in text
+    assert '1️⃣ Sí, usar esta evidencia y revisar los datos del reporte' in text
     assert '2️⃣ No, agregar o cambiar la foto' in text
 
 
@@ -110,12 +110,13 @@ def test_ticket_close_side_effects_are_isolated_by_savepoints():
     assert 'with db.begin_nested()' in original
 
 
-def test_image_close_has_route_trace_before_and_after_action():
+def test_image_confirmation_routes_to_review_trace():
     import inspect
     source = inspect.getsource(image_evidence_patch._handle_confirmation_reply)
-    assert "stage='action_start'" in source
-    assert "stage='action_done'" in source
-    assert "action='cerrar_ticket_validacion'" in source
+    assert "stage='route_selected'" in source
+    assert "action='mostrar_resumen_revision'" in source
+    assert "next_node='revision_datos_reporte'" in source
+    assert "result='ok'" in source
 
 
 def test_photo_yes_routes_to_report_review_instead_of_closing():

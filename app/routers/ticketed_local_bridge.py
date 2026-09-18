@@ -1,5 +1,6 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
@@ -10,7 +11,7 @@ from ..database import get_db
 from ..models import AuditLog, Company, Conversation, ConversationChannel, Message, Store, SupportTicket, User
 from ..services import ai_learning
 from ..services.company_routing import detect_company, normalize
-from ..services.ticketing import close_ticket, ensure_ticket, notify_ticket, ticket_code, ticket_tracking
+from ..services.ticketing import add_ticket_followup, close_ticket, ensure_ticket, notify_ticket, ticket_code, ticket_tracking
 from . import local_bridge
 from .global_entry import global_entry_settings
 
@@ -19,6 +20,8 @@ router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-tickets'])
 IDENTITY_REQUIRED_STATE = '__identity_required__'
 REPEAT_ISSUE_CONFIRM_STATE = '__repeat_issue_confirm__'
 REPEAT_ISSUE_WAIT_EVIDENCE_STATE = '__repeat_issue_wait_evidence__'
+STORE_DUPLICATE_CHECK_STATE = '__store_duplicate_check__'
+STORE_DUPLICATE_UPDATE_STATE = '__store_duplicate_update__'
 
 
 def _global_welcome(db: Session, *, retry: bool = False) -> str:
@@ -183,6 +186,91 @@ def _repeat_issue_candidate(db: Session, conversation: Conversation) -> str:
         AuditLog.entity_id == str(conversation.id),
     ).order_by(AuditLog.id.desc()).first()
     return str((row.details or {}).get('issue') or '').strip() if row else ''
+
+
+def _today_start_utc_naive() -> datetime:
+    now_local = datetime.now(ZoneInfo('America/Mexico_City'))
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _ticket_issue_text(ticket: SupportTicket) -> str:
+    subject = str(ticket.subject or '').strip()
+    if subject and normalize(subject) not in {'incidencia de soporte', 'soporte', 'incidencia'}:
+        return subject[:240]
+    description = str(ticket.description or '').strip()
+    if description:
+        first = re.sub(r'\s+', ' ', description.splitlines()[0]).strip()
+        if first:
+            return first[:240]
+    return 'Incidencia en revisión'
+
+
+def _recent_open_store_ticket(
+    db: Session,
+    *,
+    company_id: int,
+    store_id: int,
+    exclude_conversation_id: int | None = None,
+) -> SupportTicket | None:
+    query = db.query(SupportTicket).filter(
+        SupportTicket.company_id == company_id,
+        SupportTicket.store_id == store_id,
+        SupportTicket.status == 'open',
+        SupportTicket.opened_at >= _today_start_utc_naive(),
+    )
+    if exclude_conversation_id is not None:
+        query = query.filter(SupportTicket.conversation_id != exclude_conversation_id)
+    return query.order_by(SupportTicket.opened_at.desc(), SupportTicket.id.desc()).first()
+
+
+def _remember_store_duplicate_candidate(
+    db: Session,
+    conversation: Conversation,
+    ticket: SupportTicket,
+) -> None:
+    db.add(AuditLog(
+        action='store_duplicate_ticket_candidate',
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={
+            'ticket_id': ticket.id,
+            'store_id': ticket.store_id,
+            'company_id': ticket.company_id,
+            'issue': _ticket_issue_text(ticket),
+        },
+    ))
+
+
+def _store_duplicate_candidate(
+    db: Session,
+    conversation: Conversation,
+) -> SupportTicket | None:
+    row = db.query(AuditLog).filter(
+        AuditLog.action == 'store_duplicate_ticket_candidate',
+        AuditLog.entity == 'conversation',
+        AuditLog.entity_id == str(conversation.id),
+    ).order_by(AuditLog.id.desc()).first()
+    ticket_id = (row.details or {}).get('ticket_id') if row else None
+    ticket = db.get(SupportTicket, int(ticket_id)) if str(ticket_id or '').isdigit() else None
+    return ticket if ticket and ticket.status == 'open' else None
+
+
+def _store_duplicate_prompt(
+    db: Session,
+    *,
+    ticket: SupportTicket,
+    company: Company,
+    store: Store,
+) -> str:
+    return (
+        f'⚠️ Ya existe un ticket abierto hoy para {store.name}.\n'
+        f'🎫 Ticket: {ticket_code(ticket, company, store)}\n'
+        f'📌 Motivo registrado: {_ticket_issue_text(ticket)}\n\n'
+        '¿Este reporte corresponde al mismo problema?\n'
+        '1️⃣ Sí, es el mismo\n'
+        '2️⃣ No, es otro problema'
+    )
 
 
 def _store_prompt(data: local_bridge.LocalInbound, company: Company, db: Session) -> str:
@@ -785,6 +873,58 @@ def ticketed_local_inbound(
             db.commit()
             return result
 
+        # Before opening a new ticket, check the STORE rather than the phone
+        # number. Different contacts from the same location therefore converge on
+        # the same active case instead of creating duplicates.
+        existing_store_ticket = _recent_open_store_ticket(
+            db,
+            company_id=company.id,
+            store_id=store.id,
+            exclude_conversation_id=conversation.id,
+        ) if store else None
+        if existing_store_ticket:
+            _remember_store_duplicate_candidate(db, conversation, existing_store_ticket)
+            conversation.state = STORE_DUPLICATE_CHECK_STATE
+            duplicate_message = (
+                f'Gracias, {name}.\n\n'
+                + _store_duplicate_prompt(
+                    db,
+                    ticket=existing_store_ticket,
+                    company=company,
+                    store=store,
+                )
+            )
+            _set_reply(
+                db,
+                result,
+                duplicate_message,
+                effective_data,
+                conversation=conversation,
+                company=company,
+                store=store,
+            )
+            result.update({
+                'action': 'store_duplicate_check',
+                'company_identified': True,
+                'ticket_id': existing_store_ticket.id,
+                'ticket_code': ticket_code(existing_store_ticket, company, store),
+                'possible_duplicate': True,
+            })
+            db.add(AuditLog(
+                username=operator.username,
+                action='store_duplicate_ticket_detected',
+                entity='conversation',
+                entity_id=str(conversation.id),
+                details={
+                    'ticket_id': existing_store_ticket.id,
+                    'store_id': store.id,
+                    'contact': conversation.wa_user_id,
+                    'issue': _ticket_issue_text(existing_store_ticket),
+                },
+            ))
+            db.commit()
+            return result
+
         ticket = _ticket_for_conversation(
             db,
             company=company,
@@ -820,6 +960,125 @@ def ticketed_local_inbound(
             'company_identified': True,
             'ticket_id': ticket.id,
             'ticket_code': ticket_code(ticket, company, store),
+        })
+        db.commit()
+        return result
+
+    if pre_state == STORE_DUPLICATE_CHECK_STATE:
+        answer = normalize(effective_data.text)
+        existing_ticket = _store_duplicate_candidate(db, conversation)
+        if not existing_ticket:
+            conversation.state = 'menu'
+            name = _conversation_name(db, conversation.id)
+            message = str((tree.get('nodos') or {}).get('menu', {}).get('mensaje') or '¿En qué puedo ayudarte?')
+            message = _render_placeholders(message, name=name)
+            _set_reply(db, result, message, effective_data, conversation=conversation, company=company, store=store)
+            result['action'] = 'store_duplicate_candidate_missing'
+            db.commit()
+            return result
+
+        code = ticket_code(existing_ticket, company, store)
+        if answer in {'1', 'si', 'sí', 'mismo', 'es el mismo', 'igual'}:
+            conversation.state = STORE_DUPLICATE_UPDATE_STATE
+            message = (
+                f'✅ Perfecto. Seguiremos con el ticket existente {code}.\n\n'
+                '¿Has visto algún cambio, síntoma nuevo o información adicional sobre el problema?\n'
+                'Escríbelo en un mensaje. Si todo sigue igual, responde SIN CAMBIOS.'
+            )
+            result['action'] = 'store_duplicate_same_issue'
+        elif answer in {'2', 'no', 'otro', 'otro problema', 'diferente', 'es diferente'}:
+            conversation.state = 'menu'
+            name = _conversation_name(db, conversation.id)
+            message = (
+                '✅ Entendido. Lo trataré como un problema diferente y podremos levantar un ticket nuevo.\n\n'
+                + _render_placeholders(
+                    str((tree.get('nodos') or {}).get('menu', {}).get('mensaje') or '¿En qué puedo ayudarte?'),
+                    name=name,
+                )
+            )
+            result['action'] = 'store_duplicate_different_issue'
+        else:
+            message = _store_duplicate_prompt(db, ticket=existing_ticket, company=company, store=store)
+            result['action'] = 'store_duplicate_check_repeat'
+
+        _set_reply(db, result, message, effective_data, conversation=conversation, company=company, store=store)
+        result['ticket_id'] = existing_ticket.id
+        result['ticket_code'] = code
+        db.commit()
+        return result
+
+    if pre_state == STORE_DUPLICATE_UPDATE_STATE:
+        existing_ticket = _store_duplicate_candidate(db, conversation)
+        if not existing_ticket:
+            conversation.state = 'menu'
+            message = 'No pude recuperar el ticket anterior. Continuemos con un reporte nuevo.'
+            _set_reply(db, result, message, effective_data, conversation=conversation, company=company, store=store)
+            result['action'] = 'store_duplicate_update_missing'
+            db.commit()
+            return result
+
+        update_text = ' '.join(str(effective_data.text or '').split()).strip()
+        normalized_update = normalize(update_text)
+        has_change = normalized_update not in {
+            '', 'sin cambios', 'sin cambio', 'igual', 'todo igual', 'sigue igual', 'no', 'ninguno'
+        }
+
+        if has_change:
+            current = str(existing_ticket.description or '').strip()
+            line = f'Actualización desde la tienda: {update_text}'
+            if line not in current:
+                existing_ticket.description = (current + ('\n\n' if current else '') + line)[:4000]
+            followup_message = f'La tienda reportó una actualización: {update_text}'
+        else:
+            followup_message = 'La tienda confirmó que el problema continúa sin cambios.'
+
+        add_ticket_followup(
+            db,
+            ticket=existing_ticket,
+            username=operator.username,
+            status_label='En atención',
+            message=followup_message,
+        )
+        db.add(AuditLog(
+            username=operator.username,
+            action='store_duplicate_update_added',
+            entity='support_ticket',
+            entity_id=str(existing_ticket.id),
+            details={
+                'source_conversation_id': conversation.id,
+                'source_contact': conversation.wa_user_id,
+                'has_change': has_change,
+                'text': update_text[:1000],
+            },
+        ))
+        try:
+            with db.begin_nested():
+                ai_learning.observe_report_issue(
+                    db,
+                    company_id=existing_ticket.company_id,
+                    store_id=existing_ticket.store_id,
+                    ticket_id=existing_ticket.id,
+                    reason=_ticket_issue_text(existing_ticket),
+                )
+                db.flush()
+        except Exception:
+            pass
+
+        conversation.status = 'closed'
+        conversation.state = 'duplicate_existing_ticket'
+        code = ticket_code(existing_ticket, company, store)
+        message = (
+            f'✅ Gracias. Actualicé el ticket existente {code}.\n'
+            + ('La nueva información quedó agregada al seguimiento.' if has_change else 'Registré que el problema continúa sin cambios.')
+            + '\n\nNo se generó un ticket duplicado.'
+        )
+        _set_reply(db, result, message, effective_data, conversation=conversation, company=company, store=store)
+        result.update({
+            'action': 'store_duplicate_existing_ticket_updated',
+            'ticket_id': existing_ticket.id,
+            'ticket_code': code,
+            'duplicate_prevented': True,
+            'chatbot_paused': False,
         })
         db.commit()
         return result

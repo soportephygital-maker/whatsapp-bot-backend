@@ -223,3 +223,24 @@ def test_report_confirmation_sends_review_email_with_case_pdfs():
     assert 'send_case_event_email' in source
     assert "event='ticket_opened'" in source
     assert 'image_review_email_sent' in source
+
+
+def test_same_store_duplicate_detection_is_phone_independent():
+    from app.routers import ticketed_local_bridge
+    import inspect
+    source = inspect.getsource(ticketed_local_bridge)
+    assert 'STORE_DUPLICATE_CHECK_STATE' in source
+    assert 'STORE_DUPLICATE_UPDATE_STATE' in source
+    assert 'store_duplicate_ticket_detected' in source
+    assert 'SupportTicket.store_id == store_id' in source
+    assert 'SupportTicket.status == \'open\'' in source
+
+
+def test_same_store_duplicate_flow_asks_same_or_different_then_change():
+    from app.routers import ticketed_local_bridge
+    import inspect
+    source = inspect.getsource(ticketed_local_bridge)
+    assert '¿Este reporte corresponde al mismo problema?' in source
+    assert '¿Has visto algún cambio, síntoma nuevo o información adicional sobre el problema?' in source
+    assert 'No se generó un ticket duplicado.' in source
+    assert 'Lo trataré como un problema diferente' in source

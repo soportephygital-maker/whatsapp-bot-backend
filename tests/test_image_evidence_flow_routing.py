@@ -99,3 +99,20 @@ def test_image_flow_route_trace_is_present():
     endpoint = inspect.getsource(image_evidence_patch.image_evidence_inbound)
     assert "inbound_received" in endpoint
     assert "route_selected" in endpoint
+
+
+def test_ticket_close_side_effects_are_isolated_by_savepoints():
+    import inspect
+    from app.routers import case_event_policy_patch
+    source = inspect.getsource(case_event_policy_patch._policy_close_ticket)
+    original = inspect.getsource(case_event_policy_patch._original_close_ticket)
+    assert 'with db.begin_nested()' in source
+    assert 'with db.begin_nested()' in original
+
+
+def test_image_close_has_route_trace_before_and_after_action():
+    import inspect
+    source = inspect.getsource(image_evidence_patch._handle_confirmation_reply)
+    assert "stage='action_start'" in source
+    assert "stage='action_done'" in source
+    assert "action='cerrar_ticket_validacion'" in source

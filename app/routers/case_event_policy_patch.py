@@ -71,7 +71,9 @@ def _policy_close_ticket(db, *, conversation, username: str, result: str):
     # learning are secondary side effects and must NEVER turn a valid WhatsApp
     # menu reply into HTTP 500. Record failures for diagnosis and keep the close.
     try:
-        send_case_event_email(db, ticket=ticket, event=event)
+        with db.begin_nested():
+            send_case_event_email(db, ticket=ticket, event=event)
+            db.flush()
     except Exception as exc:
         db.add(ticketing.AuditLog(
             username=username,
@@ -80,13 +82,17 @@ def _policy_close_ticket(db, *, conversation, username: str, result: str):
             entity_id=str(ticket.id),
             details={
                 'event': event,
+                'error_type': type(exc).__name__,
                 'error': str(exc)[:1000],
                 'non_blocking': True,
+                'isolated_by_savepoint': True,
             },
         ))
 
     try:
-        create_learning_candidate(db, ticket)
+        with db.begin_nested():
+            create_learning_candidate(db, ticket)
+            db.flush()
     except Exception as exc:
         db.add(ticketing.AuditLog(
             username=username,
@@ -94,8 +100,10 @@ def _policy_close_ticket(db, *, conversation, username: str, result: str):
             entity='support_ticket',
             entity_id=str(ticket.id),
             details={
+                'error_type': type(exc).__name__,
                 'error': str(exc)[:1000],
                 'non_blocking': True,
+                'isolated_by_savepoint': True,
             },
         ))
 

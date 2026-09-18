@@ -816,12 +816,39 @@ def _handle_confirmation_reply(
             'image_mode': cfg.get('mode_key'),
         }
 
+    _trace_flow(
+        db,
+        operator=operator,
+        conversation=conversation,
+        ticket=ticket,
+        data=data,
+        stage='action_start',
+        node='confirmar_imagen',
+        rule='confirm_yes',
+        action='cerrar_ticket_validacion',
+        next_node='closed_previous_ticket',
+        result='running',
+    )
     closed = _close_for_validation(
         db,
         operator=operator,
         conversation=conversation,
         ticket=ticket,
         result='Evidencia fotográfica confirmada por el usuario. Ticket cerrado y enviado a validación.',
+    )
+    _trace_flow(
+        db,
+        operator=operator,
+        conversation=conversation,
+        ticket=closed or ticket,
+        data=data,
+        stage='action_done',
+        node='confirmar_imagen',
+        rule='confirm_yes',
+        action='cerrar_ticket_validacion',
+        next_node='closed_previous_ticket',
+        result='ok',
+        extra={'ticket_status_after_close': (closed or ticket).status if (closed or ticket) else None},
     )
     conversation.status = 'closed'
     conversation.state = 'closed_previous_ticket'

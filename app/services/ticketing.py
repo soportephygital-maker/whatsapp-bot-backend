@@ -320,7 +320,9 @@ def close_ticket(db: Session, *, conversation: Conversation, username: str, resu
     # and left the ticket visually ABIERTO even though option 1 was correct.
     if company:
         try:
-            notify_ticket(db, ticket, company, store, conversation, 'closed')
+            with db.begin_nested():
+                notify_ticket(db, ticket, company, store, conversation, 'closed')
+                db.flush()
         except Exception as exc:
             db.add(AuditLog(
                 username=username,
@@ -328,8 +330,10 @@ def close_ticket(db: Session, *, conversation: Conversation, username: str, resu
                 entity='support_ticket',
                 entity_id=str(ticket.id),
                 details={
+                    'error_type': type(exc).__name__,
                     'error': str(exc)[:1000],
                     'non_blocking': True,
+                    'isolated_by_savepoint': True,
                 },
             ))
     return ticket

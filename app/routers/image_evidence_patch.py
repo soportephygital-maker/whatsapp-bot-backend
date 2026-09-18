@@ -1,3 +1,5 @@
+import traceback
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -194,8 +196,12 @@ def _reply(db: Session, *, conversation: Conversation, company: Company, store: 
 
 def _save_inbound_text(db: Session, *, data: local_bridge.LocalInbound, conversation: Conversation, marker: str) -> None:
     provider_message_id = local_bridge._provider_message_id(data)
-    if db.query(Message).filter(Message.provider_message_id == provider_message_id).first():
-        return
+    existing = db.query(Message).filter(Message.provider_message_id == provider_message_id).first()
+    if existing:
+        same_text = _normalized(existing.body) == _normalized(data.text)
+        if same_text:
+            return
+        provider_message_id = f'{provider_message_id}:image-menu:{abs(hash(_normalized(data.text))) % 1000000}'
     db.add(Message(
         conversation_id=conversation.id,
         direction='inbound',
@@ -779,6 +785,107 @@ def _handle_confirmation_reply(
     }
 
 
+def _record_image_flow_error(
+    db: Session,
+    *,
+    operator: User,
+    conversation: Conversation | None,
+    data: local_bridge.LocalInbound,
+    stage: str,
+    exc: Exception,
+) -> None:
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    try:
+        db.add(AuditLog(
+            username=operator.username,
+            action='image_flow_runtime_error',
+            entity='conversation',
+            entity_id=str(conversation.id) if conversation else None,
+            details={
+                'stage': stage,
+                'error_type': type(exc).__name__,
+                'error': str(exc)[:3000],
+                'traceback': traceback.format_exc()[-12000:],
+                'text': str(data.text or '')[:1000],
+                'package_name': data.package_name,
+                'device_id': data.device_id,
+                'notification_key': data.notification_key,
+                'post_time': data.post_time,
+                'can_reply': bool(data.can_reply),
+            },
+        ))
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _fallback_confirmation_no(
+    db: Session,
+    *,
+    data: local_bridge.LocalInbound,
+    operator: User,
+    conversation_id: int,
+) -> dict:
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation or not conversation.company_id:
+        raise RuntimeError('No se pudo recuperar la conversación después del error')
+    company = db.get(Company, conversation.company_id)
+    channel = db.query(ConversationChannel).filter(
+        ConversationChannel.conversation_id == conversation.id
+    ).first()
+    store = db.get(Store, channel.store_id) if channel and channel.store_id else None
+    ticket = db.query(SupportTicket).filter(
+        SupportTicket.conversation_id == conversation.id
+    ).first()
+    if not company or not store:
+        raise RuntimeError('No se pudo recuperar empresa/tienda para el submenú')
+
+    cfg = _image_runtime_config(db, company, ticket)
+    conversation.status = 'open'
+    conversation.state = IMAGE_EVIDENCE_ACTION_STATE
+    response = cfg.get('submenu_text') or IMAGE_EVIDENCE_ACTION_TEXT
+    outbound = _reply(
+        db,
+        conversation=conversation,
+        company=company,
+        store=store,
+        data=data,
+        text=response,
+    )
+    db.add(AuditLog(
+        username=operator.username,
+        action='image_flow_recovered_confirmation_no',
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={
+            'ticket_id': ticket.id if ticket else None,
+            'text': str(data.text or '')[:500],
+            'recovered_to_state': IMAGE_EVIDENCE_ACTION_STATE,
+        },
+    ))
+    db.commit()
+    return {
+        'status': 'ok',
+        'conversation_id': conversation.id,
+        'company_key': company.company_key,
+        'company_name': company.name,
+        'store_name': store.name,
+        'action': 'image_choose_add_or_replace_recovered',
+        'reply_text': response if data.can_reply else '',
+        'should_reply': bool(data.can_reply),
+        'outbound_message_id': outbound.id,
+        'ticket_id': ticket.id if ticket else None,
+        'chatbot_paused': False,
+        'recovered_from_error': True,
+    }
+
+
 @router.post('/inbound')
 def image_evidence_inbound(
     data: local_bridge.LocalInbound,
@@ -793,15 +900,38 @@ def image_evidence_inbound(
         # this guard, replies such as 1/2 were misclassified as another image and
         # then discarded as a duplicate, which looked like the backend stopped.
         if conversation.state == IMAGE_CONFIRM_STATE and _is_confirmation_choice(data.text):
-            return _handle_confirmation_reply(
-                db,
-                data=data,
-                operator=operator,
-                conversation=conversation,
-                company=company,
-                store=store,
-                ticket=ticket,
-            )
+            try:
+                return _handle_confirmation_reply(
+                    db,
+                    data=data,
+                    operator=operator,
+                    conversation=conversation,
+                    company=company,
+                    store=store,
+                    ticket=ticket,
+                )
+            except Exception as exc:
+                conversation_id = conversation.id
+                _record_image_flow_error(
+                    db,
+                    operator=operator,
+                    conversation=conversation,
+                    data=data,
+                    stage='confirm_image_choice',
+                    exc=exc,
+                )
+                # Option 2 must never strand the user. Recover the intended state
+                # and send the add/change submenu even if an auxiliary write fails.
+                if _normalized(data.text) in _command_values(
+                    (_image_runtime_config(db, company, ticket).get('confirm_no_commands') or '')
+                ):
+                    return _fallback_confirmation_no(
+                        db,
+                        data=data,
+                        operator=operator,
+                        conversation_id=conversation_id,
+                    )
+                raise
 
         if conversation.state == IMAGE_EVIDENCE_ACTION_STATE and _is_evidence_action_choice(data.text):
             return _handle_evidence_action_reply(

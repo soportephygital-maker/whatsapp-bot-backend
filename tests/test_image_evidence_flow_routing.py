@@ -82,3 +82,11 @@ def test_close_result_is_truncated_to_database_limit():
     from app.routers import case_event_policy_patch
     source = inspect.getsource(case_event_policy_patch._original_close_ticket)
     assert "ticket.close_result = normalized_result[:30]" in source
+
+
+def test_image_flow_has_runtime_error_capture_and_option2_recovery():
+    import inspect
+    source = inspect.getsource(image_evidence_patch.image_evidence_inbound)
+    assert '_record_image_flow_error' in source
+    assert '_fallback_confirmation_no' in source
+    assert 'confirm_image_choice' in source

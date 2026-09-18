@@ -15,6 +15,8 @@ object NetworkClient {
     private const val BASE_URL = "https://whatsapp-bot-backend-142e.onrender.com"
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
+    fun absoluteUrl(path: String): String = BASE_URL + path
+
     private val bootstrapClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)

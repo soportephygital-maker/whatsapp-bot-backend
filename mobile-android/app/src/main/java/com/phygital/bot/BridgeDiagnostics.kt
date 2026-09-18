@@ -3,6 +3,8 @@ package com.phygital.bot
 import android.content.ComponentName
 import android.content.Context
 import android.provider.Settings
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -36,6 +38,54 @@ object BridgeDiagnostics {
                 }
                 .apply()
         }
+        uploadToAdminDashboard(context, now, stage, detail, packageName, title, text, canReply)
+    }
+
+    private fun requestUrl(stage: String, detail: String): String {
+        val fromError = Regex("""URL=([^|\\s]+)""").find(detail)?.groupValues?.getOrNull(1).orEmpty()
+        if (fromError.isNotBlank()) return fromError
+        return when (stage.uppercase()) {
+            "POST_SENDING", "BACKEND_RESPONSE", "ERROR" -> NetworkClient.absoluteUrl("/api/local-bridge/inbound")
+            else -> ""
+        }
+    }
+
+    private fun uploadToAdminDashboard(
+        context: Context,
+        now: Long,
+        stage: String,
+        detail: String,
+        packageName: String,
+        title: String,
+        text: String,
+        canReply: Boolean?,
+    ) {
+        val token = context.getSharedPreferences(SESSION_PREFS, Context.MODE_PRIVATE).getString("token", null)
+        if (token.isNullOrBlank()) return
+        val bridge = context.getSharedPreferences(BRIDGE_PREFS, Context.MODE_PRIVATE)
+        val stores = bridge.getStringSet("selected_store_ids", emptySet()).orEmpty().sorted()
+        val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "android-device"
+        val payload = JSONObject()
+            .put("event_time_ms", now)
+            .put("device_id", deviceId)
+            .put("app_version", BuildConfig.VERSION_NAME)
+            .put("build_code", BuildConfig.VERSION_CODE)
+            .put("stage", stage.take(80))
+            .put("detail", detail.take(4000))
+            .put("package_name", packageName.take(160))
+            .put("conversation", title.take(240))
+            .put("text", text.take(2000))
+            .put("request_url", requestUrl(stage, detail))
+            .put("whatsapp_enabled", bridge.getBoolean("app_enabled_com_whatsapp", false))
+            .put("whatsapp_business_enabled", bridge.getBoolean("app_enabled_com_whatsapp_w4b", false))
+            .put("selected_store_ids", JSONArray(stores))
+        if (canReply == null) payload.put("can_reply", JSONObject.NULL) else payload.put("can_reply", canReply)
+
+        Thread {
+            runCatching {
+                NetworkClient.request("POST", "/api/local-bridge/diagnostics", payload.toString(), token)
+            }
+        }.start()
     }
 
     private fun fmtTime(value: Long): String {

@@ -53,6 +53,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         createNotificationChannel()
         requestNotificationPermissionIfNeeded()
+        migrateBridgePackageSettings()
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val toolbar = LinearLayout(this).apply {
@@ -107,6 +108,22 @@ class MainActivity : Activity() {
         restoreSavedSession()
         handleNotificationAction(intent)
         checkForUpdate(false)
+    }
+
+    private fun migrateBridgePackageSettings() {
+        val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        if (!prefs.getBoolean("package_gate_v2_migrated", false)) {
+            prefs.edit()
+                .putBoolean("app_enabled_com_whatsapp", true)
+                .putBoolean("app_enabled_com_whatsapp_w4b", true)
+                .putBoolean("package_gate_v2_migrated", true)
+                .apply()
+            BridgeDiagnostics.record(
+                this,
+                "CONFIG_MIGRATED",
+                "Se eliminó el bloqueo por app: WhatsApp y WhatsApp Business quedan habilitados para el puente",
+            )
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -322,19 +339,8 @@ class MainActivity : Activity() {
             textSize = 17f
         })
         content.addView(TextView(this).apply {
-            text = "Selecciona la aplicación de WhatsApp cuyas notificaciones atenderá Phygital Bot."
+            text = "Phygital Bot atenderá automáticamente WhatsApp y WhatsApp Business instalados en este teléfono. Ya no existe un filtro separado que pueda bloquear una de las dos apps."
         })
-
-        val waSwitch = Switch(this).apply {
-            text = "WhatsApp"
-            isChecked = prefs.getBoolean("app_enabled_com_whatsapp", false)
-        }
-        val businessSwitch = Switch(this).apply {
-            text = "WhatsApp Business"
-            isChecked = prefs.getBoolean("app_enabled_com_whatsapp_w4b", false)
-        }
-        content.addView(waSwitch)
-        content.addView(businessSwitch)
 
         content.addView(TextView(this).apply {
             text = "\nTiendas que atenderá este teléfono"
@@ -391,8 +397,10 @@ class MainActivity : Activity() {
             .setPositiveButton("Guardar") { _, _ ->
                 val selectedIds = checks.filter { it.second.isChecked }.map { it.first.toString() }.toSet()
                 val edit = prefs.edit()
-                    .putBoolean("app_enabled_com_whatsapp", waSwitch.isChecked)
-                    .putBoolean("app_enabled_com_whatsapp_w4b", businessSwitch.isChecked)
+                    // Kept as true only for backward-compatible diagnostics.
+                    // Package selection is no longer a blocking gate.
+                    .putBoolean("app_enabled_com_whatsapp", true)
+                    .putBoolean("app_enabled_com_whatsapp_w4b", true)
                 if (checks.isNotEmpty()) edit.putStringSet("selected_store_ids", selectedIds)
                 edit.apply()
                 startBridgeKeepAlive()

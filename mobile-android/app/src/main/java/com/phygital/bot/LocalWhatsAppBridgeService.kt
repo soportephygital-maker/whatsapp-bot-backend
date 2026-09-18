@@ -66,11 +66,17 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         BridgeDiagnostics.record(this, "NOTIFICATION_DETECTED", packageName = sbn.packageName)
 
         val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
-        val suffix = packageSuffix(sbn.packageName)
-        if (!prefs.getBoolean("app_enabled_$suffix", false)) {
-            BridgeDiagnostics.record(this, "DISCARDED", "WhatsApp desactivado en configuración", sbn.packageName)
-            return
-        }
+
+        // Rebuilt intake gate: any supported WhatsApp package is accepted.
+        // The old per-package switch could silently discard valid notifications
+        // (e.g. com.whatsapp=false while WhatsApp Business=true), which made the
+        // bot appear dead even though the listener was healthy.
+        BridgeDiagnostics.record(
+            this,
+            "PACKAGE_ACCEPTED",
+            "Paquete WhatsApp soportado aceptado por el puente",
+            sbn.packageName,
+        )
 
         val selectedStoreIds = prefs.getStringSet("selected_store_ids", emptySet())
             ?.mapNotNull { it.toIntOrNull() }

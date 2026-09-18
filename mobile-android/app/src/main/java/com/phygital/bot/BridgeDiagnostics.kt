@@ -155,8 +155,9 @@ object BridgeDiagnostics {
             append("\nSesión/token: ").append(if (tokenPresent) "OK" else "FALTA")
             append("\nWhatsApp instalado: ").append(if (waInstalled) "Sí" else "No")
             append("\nWhatsApp Business instalado: ").append(if (wabInstalled) "Sí" else "No")
-            append("\nWhatsApp habilitado en Phygital: ").append(if (waEnabled) "Sí" else "No")
-            append("\nWhatsApp Business habilitado en Phygital: ").append(if (wabEnabled) "Sí" else "No")
+            append("\nWhatsApp aceptado por el puente: Sí")
+            append("\nWhatsApp Business aceptado por el puente: Sí")
+            append("\nCompatibilidad flags WA/WAB: ").append(if (waEnabled && wabEnabled) "OK" else "MIGRANDO")
             append("\nTiendas seleccionadas: ").append(if (stores.isEmpty()) "NINGUNA" else stores.joinToString(","))
 
             append("\n\n=== ÚLTIMO EVENTO ===")
@@ -178,7 +179,7 @@ object BridgeDiagnostics {
                 !keepAliveActive || heartbeatAge !in 0..90 -> append("\n• El servicio de mantenimiento no está vivo. Usa 'Reiniciar escucha'.")
                 !tokenPresent -> append("\n• Falta sesión móvil válida.")
                 stores.isEmpty() -> append("\n• No hay tienda seleccionada.")
-                !waEnabled && !wabEnabled -> append("\n• Ninguna app de WhatsApp está habilitada en Phygital Bot.")
+                !waEnabled || !wabEnabled -> append("\n• La configuración antigua de apps está migrando; el puente actual acepta ambas aplicaciones.")
                 time <= 0L -> append("\n• El acceso parece correcto, pero el listener no ha registrado eventos. Reinicia la escucha y manda un mensaje de prueba con WhatsApp cerrado o en segundo plano.")
                 else -> append("\n• Hay actividad del listener. Revisa el Estado y Detalle del último evento.")
             }

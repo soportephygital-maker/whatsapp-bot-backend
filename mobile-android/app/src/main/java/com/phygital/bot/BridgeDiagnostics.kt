@@ -42,7 +42,9 @@ object BridgeDiagnostics {
     }
 
     private fun requestUrl(stage: String, detail: String): String {
-        val fromError = Regex("""URL=([^|\\s]+)""").find(detail)?.groupValues?.getOrNull(1).orEmpty()
+        // In a Kotlin raw string, \\s inside a character class excluded the
+        // letter "s", so "https://..." was being truncated to "http".
+        val fromError = Regex("""URL=([^|\\s]+)""".replace("\\\\s", "\\s")).find(detail)?.groupValues?.getOrNull(1).orEmpty()
         if (fromError.isNotBlank()) return fromError
         return when (stage.uppercase()) {
             "POST_SENDING", "BACKEND_RESPONSE", "ERROR" -> NetworkClient.absoluteUrl("/api/local-bridge/inbound")

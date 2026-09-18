@@ -75,3 +75,10 @@ def test_ticket_close_path_uses_nonblocking_side_effect_policy():
     assert 'ticket_close_notification_error' in original_source
     assert 'notify_ticket' in original_source
     assert 'except Exception as exc' in original_source
+
+
+def test_close_result_is_truncated_to_database_limit():
+    import inspect
+    from app.routers import case_event_policy_patch
+    source = inspect.getsource(case_event_policy_patch._original_close_ticket)
+    assert "ticket.close_result = normalized_result[:30]" in source

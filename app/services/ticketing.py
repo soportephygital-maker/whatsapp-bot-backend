@@ -306,8 +306,13 @@ def close_ticket(db: Session, *, conversation: Conversation, username: str, resu
     ticket.status = 'closed'
     ticket.closed_at = datetime.utcnow()
     ticket.closed_by = username
-    ticket.close_result = result
-    db.add(AuditLog(username=username, action='ticket_closed', entity='support_ticket', entity_id=str(ticket.id), details={'result': result}))
+    # support_tickets.close_result is VARCHAR(30). Long human-readable reasons
+    # used by the WhatsApp image flow previously caused PostgreSQL
+    # StringDataRightTruncation and the whole inbound request returned HTTP 500.
+    # Keep the full reason in AuditLog and store only a compact DB-safe value.
+    normalized_result = str(result or '').strip()
+    ticket.close_result = normalized_result[:30]
+    db.add(AuditLog(username=username, action='ticket_closed', entity='support_ticket', entity_id=str(ticket.id), details={'result': normalized_result}))
 
     # Closing the ticket is the primary operation. Dashboard notifications are
     # secondary and must never abort the WhatsApp request. Previously an error in

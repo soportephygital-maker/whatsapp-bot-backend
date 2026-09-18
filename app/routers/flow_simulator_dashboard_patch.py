@@ -22,6 +22,16 @@ IMAGE_RECEPTION_FIELDS = (
     'add_title', 'add_text',
     'change_title', 'change_text',
     'loop_title', 'loop_text',
+    'receive_node', 'receive_type', 'receive_next', 'receive_action',
+    'confirm_node', 'confirm_type',
+    'confirm_yes_commands', 'confirm_yes_response', 'confirm_yes_next', 'confirm_yes_action',
+    'confirm_no_commands', 'confirm_no_response', 'confirm_no_next', 'confirm_no_action',
+    'submenu_node', 'submenu_type',
+    'submenu_add_commands', 'submenu_add_response', 'submenu_add_next', 'submenu_add_action',
+    'submenu_change_commands', 'submenu_change_response', 'submenu_change_next', 'submenu_change_action',
+    'add_node', 'add_type', 'add_next', 'add_action',
+    'change_node', 'change_type', 'change_next', 'change_action',
+    'loop_node', 'loop_type', 'loop_next', 'loop_action',
 )
 
 _IMAGE_RECEPTION_BASE = {
@@ -39,6 +49,42 @@ _IMAGE_RECEPTION_BASE = {
     'change_text': 'Retirar la foto anterior del expediente y esperar la nueva.',
     'loop_title': 'Nueva foto recibida',
     'loop_text': 'Volver al paso “¿Esta foto es la correcta?” y repetir la confirmación.',
+    'receive_node': 'recepcion_imagen',
+    'receive_type': 'evento',
+    'receive_next': 'confirmar_imagen',
+    'receive_action': 'asociar_imagen_ticket',
+    'confirm_node': 'confirmar_imagen',
+    'confirm_type': 'opciones',
+    'confirm_yes_commands': '1, sí, si, correcta, es correcta',
+    'confirm_yes_response': 'Cerrar ticket con esta evidencia.',
+    'confirm_yes_next': 'cerrar_ticket',
+    'confirm_yes_action': 'cerrar_ticket_validacion',
+    'confirm_no_commands': '2, no, otra, agregar, cambiar',
+    'confirm_no_response': 'Mostrar opciones para agregar o cambiar evidencia.',
+    'confirm_no_next': 'evidencia_agregar_cambiar',
+    'confirm_no_action': 'accion_normal',
+    'submenu_node': 'evidencia_agregar_cambiar',
+    'submenu_type': 'opciones',
+    'submenu_add_commands': '1, agregar, agregar otra, otra evidencia',
+    'submenu_add_response': 'Conservar evidencia actual y esperar otra imagen.',
+    'submenu_add_next': 'agregar_evidencia',
+    'submenu_add_action': 'esperar_imagen',
+    'submenu_change_commands': '2, cambiar, reemplazar, remplazar',
+    'submenu_change_response': 'Retirar evidencia anterior y esperar la nueva imagen.',
+    'submenu_change_next': 'cambiar_evidencia',
+    'submenu_change_action': 'reemplazar_evidencia',
+    'add_node': 'agregar_evidencia',
+    'add_type': 'accion',
+    'add_next': 'confirmar_imagen',
+    'add_action': 'esperar_imagen',
+    'change_node': 'cambiar_evidencia',
+    'change_type': 'accion',
+    'change_next': 'confirmar_imagen',
+    'change_action': 'reemplazar_y_esperar_imagen',
+    'loop_node': 'nueva_imagen',
+    'loop_type': 'evento',
+    'loop_next': 'confirmar_imagen',
+    'loop_action': 'volver_confirmacion',
 }
 IMAGE_RECEPTION_DEFAULTS = {
     'accesorios': {**_IMAGE_RECEPTION_BASE, 'label': 'Accesorios'},
@@ -138,7 +184,7 @@ def _html() -> str:
         '</style></head>',
         '''<style>
 .flow-card{overflow:auto}.flow-canvas{min-width:900px;padding:20px 10px 30px}.flow-level{display:flex;justify-content:center;gap:18px;align-items:stretch;margin:20px 0;position:relative}.flow-level:not(:last-child):after{content:"↓";position:absolute;bottom:-24px;left:50%;font-size:20px;color:#4cb6ff}.flow-node{width:230px;min-height:108px;border:1px solid rgba(76,182,255,.42);border-radius:14px;padding:12px;background:rgba(5,15,28,.88);box-shadow:0 8px 28px rgba(0,0,0,.18)}.flow-node.root{border-color:#79f0b3}.flow-node.human{border-color:#ff9ea8}.flow-node .flow-key{font-size:11px;color:#8fa8c3;text-transform:uppercase;letter-spacing:.06em}.flow-node .flow-msg{font-size:13px;margin-top:6px}.flow-branches{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.flow-branches span{font-size:10px;padding:3px 6px;border-radius:999px;background:rgba(76,182,255,.15)}
-.image-reception-card{margin-top:22px}.image-reception-grid{display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:14px;margin-top:14px}.image-mode{border:1px solid rgba(76,182,255,.38);border-radius:14px;padding:14px;background:rgba(5,15,28,.72)}.image-mode h4{margin:0 0 10px;font-size:15px}.image-mode-flow{display:grid;gap:7px}.image-step{border-left:3px solid rgba(76,182,255,.65);padding:8px 10px;background:rgba(76,182,255,.08);border-radius:8px;font-size:12px;line-height:1.4}.image-step strong{display:block;margin-bottom:2px}.image-branch{display:grid;grid-template-columns:1fr 1fr;gap:7px}.image-close{border-left-color:#79f0b3}.image-change{border-left-color:#f2b96b}.image-loop{border-left-color:#9f8cff}.image-mode-badge{display:inline-block;font-size:10px;padding:3px 7px;border-radius:999px;background:rgba(76,182,255,.15);margin-bottom:8px}.image-reception-note{margin-top:12px;padding:10px 12px;border-radius:10px;background:rgba(121,240,179,.08);border:1px solid rgba(121,240,179,.25);font-size:12px}.image-reception-actions{display:flex;gap:8px;align-items:center}.image-reception-actions button{width:auto;margin:0}.ir-editable{white-space:pre-wrap;border-radius:5px;outline:none;transition:background .15s ease,box-shadow .15s ease}.ir-editable[contenteditable="true"]{cursor:text}.ir-editable[contenteditable="true"]:hover{background:rgba(76,182,255,.08)}.ir-editable[contenteditable="true"]:focus{background:rgba(76,182,255,.12);box-shadow:0 0 0 1px rgba(76,182,255,.55);padding:2px 4px;margin:-2px -4px}.image-edit-hint{font-size:11px;color:#8fa8c3;margin-top:8px}.image-save-state{font-size:11px;color:#79f0b3}@media(max-width:900px){.image-reception-grid{grid-template-columns:1fr}.image-branch{grid-template-columns:1fr}}
+.image-reception-card{margin-top:22px}.image-reception-mode{border:1px solid rgba(76,182,255,.38);border-radius:16px;padding:14px;margin-top:16px;background:rgba(5,15,28,.6)}.image-mode-title{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}.image-mode-title h4{margin:0}.image-node-editor{border:1px solid rgba(76,182,255,.38);border-radius:15px;padding:14px;margin:12px 0;background:rgba(4,15,28,.76)}.image-node-head{display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,260px);gap:10px;align-items:center}.image-node-head input{font-weight:700;font-size:15px}.image-node-editor textarea{min-height:92px;resize:vertical;white-space:pre-wrap;line-height:1.4}.image-node-message{margin-top:10px}.image-option-row{border-left:3px solid #4cb6ff;background:rgba(76,182,255,.08);padding:12px;border-radius:10px;margin-top:10px}.image-option-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}.image-option-grid textarea{min-height:92px}.image-action-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.image-auto-note{font-size:11px;color:#f3c56a;margin-top:8px}.image-node-arrow{text-align:center;color:#4cb6ff;font-size:20px;line-height:1}.image-reception-actions{display:flex;gap:8px;align-items:center}.image-reception-actions button{width:auto;margin:0}.image-save-state{font-size:11px;color:#79f0b3}.image-tree-help{font-size:11px;color:#8fa8c3;margin-top:8px}.image-mode-badge{display:inline-block;font-size:10px;padding:3px 7px;border-radius:999px;background:rgba(76,182,255,.15)}@media(max-width:900px){.image-node-head,.image-option-grid,.image-action-row{grid-template-columns:1fr}}
 #botSimulatorLaunch{position:fixed;right:24px;bottom:22px;z-index:1000;width:auto;padding:12px 18px;border-radius:999px;box-shadow:0 8px 30px rgba(0,0,0,.35)}#botSimulatorPanel{position:fixed;right:24px;bottom:76px;z-index:1001;width:min(390px,calc(100vw - 32px));height:560px;max-height:calc(100vh - 110px);display:flex;flex-direction:column;background:#07111f;border:1px solid rgba(76,182,255,.5);border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.5);overflow:hidden}#botSimulatorPanel.h{display:none!important}.sim-head{padding:12px 14px;border-bottom:1px solid rgba(130,180,230,.18);display:flex;align-items:center;justify-content:space-between}.sim-head button{width:auto;margin:0}.sim-chat{flex:1;overflow:auto;padding:12px}.sim-bubble{max-width:88%;padding:9px 11px;border-radius:13px;margin:8px 0;white-space:pre-wrap;font-size:13px}.sim-bot{background:#10243a;margin-right:auto}.sim-user{background:#153a2c;margin-left:auto}.sim-system{background:#351421;margin-right:auto}.sim-input{padding:10px;border-top:1px solid rgba(130,180,230,.18)}.sim-input .toolbar{display:grid;grid-template-columns:1fr auto}.sim-input button{width:auto}.flow-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.flow-toolbar button{width:auto}.iqos-template-btn{width:auto}
 </style></head>''',
     )
@@ -219,36 +265,48 @@ function addFlowCard(){
 }
 function looksLikeCoppelCompany(){const row=COMPANY_ROWS.find(c=>c.empresa_id===activeCompanyKey);return /coppel|cpp/i.test((row?.nombre||'')+' '+(row?.empresa_id||''))}
 const IMAGE_RECEPTION_FALLBACK={
-    accesorios:{label:'Accesorios',receive_title:'1. Recepción de imagen',receive_text:'El sistema identifica la foto y la asocia al ticket activo.',confirm_title:'2. Confirmación',confirm_text:'📷 ¿Esta foto es la correcta?\n1️⃣ Sí, cerrar el ticket con esta evidencia\n2️⃣ No, agregar o cambiar la foto',close_title:'Si responde 1',close_text:'Cerrar ticket → Pendiente de validación → generar expediente final.',submenu_title:'Si responde 2',submenu_text:'Mostrar submenú: 1️⃣ Agregar · 2️⃣ Cambiar.',add_title:'1️⃣ Agregar',add_text:'Conservar la foto actual y esperar una evidencia adicional.',change_title:'2️⃣ Cambiar',change_text:'Retirar la foto anterior del expediente y esperar la nueva.',loop_title:'Nueva foto recibida',loop_text:'Volver al paso “¿Esta foto es la correcta?” y repetir la confirmación.'},
+    accesorios:{label:'Accesorios',receive_title:'1. Recepción de imagen',receive_text:'El sistema identifica la foto y la asocia al ticket activo.',confirm_title:'2. Confirmación',confirm_text:'📷 ¿Esta foto es la correcta?\n1️⃣ Sí, cerrar el ticket con esta evidencia\n2️⃣ No, agregar o cambiar la foto',close_title:'Si responde 1',close_text:'Cerrar ticket → Pendiente de validación → generar expediente final.',submenu_title:'Si responde 2',submenu_text:'¿Desea agregar o cambiar la foto?\n1️⃣ Agregar\n2️⃣ Cambiar',add_title:'1️⃣ Agregar',add_text:'Conservar la foto actual y esperar una evidencia adicional.',change_title:'2️⃣ Cambiar',change_text:'Retirar la foto anterior del expediente y esperar la nueva.',loop_title:'Nueva foto recibida',loop_text:'Volver al paso “¿Esta foto es la correcta?” y repetir la confirmación.',receive_node:'recepcion_imagen',receive_type:'evento',receive_next:'confirmar_imagen',receive_action:'asociar_imagen_ticket',confirm_node:'confirmar_imagen',confirm_type:'opciones',confirm_yes_commands:'1, sí, si, correcta, es correcta',confirm_yes_response:'Cerrar ticket con esta evidencia.',confirm_yes_next:'cerrar_ticket',confirm_yes_action:'cerrar_ticket_validacion',confirm_no_commands:'2, no, otra, agregar, cambiar',confirm_no_response:'Mostrar opciones para agregar o cambiar evidencia.',confirm_no_next:'evidencia_agregar_cambiar',confirm_no_action:'accion_normal',submenu_node:'evidencia_agregar_cambiar',submenu_type:'opciones',submenu_add_commands:'1, agregar, agregar otra, otra evidencia',submenu_add_response:'Conservar evidencia actual y esperar otra imagen.',submenu_add_next:'agregar_evidencia',submenu_add_action:'esperar_imagen',submenu_change_commands:'2, cambiar, reemplazar, remplazar',submenu_change_response:'Retirar evidencia anterior y esperar la nueva imagen.',submenu_change_next:'cambiar_evidencia',submenu_change_action:'reemplazar_evidencia',add_node:'agregar_evidencia',add_type:'accion',add_next:'confirmar_imagen',add_action:'esperar_imagen',change_node:'cambiar_evidencia',change_type:'accion',change_next:'confirmar_imagen',change_action:'reemplazar_y_esperar_imagen',loop_node:'nueva_imagen',loop_type:'evento',loop_next:'confirmar_imagen',loop_action:'volver_confirmacion'},
     aimms_pda:{label:'AIMMS de la PDA'},gateway_accesorios:{label:'Gateway de los accesorios'},preciadores:{label:'Preciadores'}
 };
 ['aimms_pda','gateway_accesorios','preciadores'].forEach(k=>IMAGE_RECEPTION_FALLBACK[k]={...IMAGE_RECEPTION_FALLBACK.accesorios,...IMAGE_RECEPTION_FALLBACK[k]});
 let IMAGE_RECEPTION_CONFIG=null;
-function irField(mode,field,value,tag='div',cls=''){
-    const editable=admin()?'true':'false';
-    return `<${tag} class="ir-editable ${cls}" data-ir-mode="${esc(mode)}" data-ir-field="${esc(field)}" contenteditable="${editable}" spellcheck="true">${esc(value||'')}</${tag}>`;
+function irInput(mode,field,value,placeholder=''){
+    return `<input data-ir-mode="${esc(mode)}" data-ir-field="${esc(field)}" value="${esc(value||'')}" placeholder="${esc(placeholder)}" ${admin()?'':'readonly'}>`;
+}
+function irTextarea(mode,field,value,placeholder=''){
+    return `<textarea data-ir-mode="${esc(mode)}" data-ir-field="${esc(field)}" placeholder="${esc(placeholder)}" ${admin()?'':'readonly'}>${esc(value||'')}</textarea>`;
+}
+function irSelect(mode,field,value,items){
+    const disabled=admin()?'':'disabled';
+    return `<select data-ir-mode="${esc(mode)}" data-ir-field="${esc(field)}" ${disabled}>${items.map(([v,l])=>`<option value="${esc(v)}" ${String(value||'')===v?'selected':''}>${esc(l)}</option>`).join('')}</select>`;
+}
+const IR_TYPES=[['opciones','Opciones normales'],['accion','Acción'],['evento','Evento / recepción']];
+const IR_ACTIONS=[['accion_normal','Acción normal'],['asociar_imagen_ticket','Asociar imagen al ticket'],['cerrar_ticket_validacion','Cerrar ticket y enviar a validación'],['esperar_imagen','Esperar nueva imagen'],['reemplazar_evidencia','Reemplazar evidencia'],['reemplazar_y_esperar_imagen','Reemplazar y esperar nueva imagen'],['volver_confirmacion','Volver a confirmar imagen']];
+function imageOptionRow(key,commandField,responseField,nextField,actionField,mode){
+    return `<div class="image-option-row"><div class="image-option-grid"><div><label>Comando / palabras</label>${irTextarea(key,commandField,mode[commandField],'1, sí, correcta')}</div><div><label>Respuesta</label>${irTextarea(key,responseField,mode[responseField],'Respuesta que verá el usuario')}</div><div><label>Siguiente nodo</label>${irInput(key,nextField,mode[nextField],'siguiente_nodo')}</div></div><div class="image-action-row"><div><label>Acción automática</label>${irSelect(key,actionField,mode[actionField],IR_ACTIONS)}</div><div class="image-auto-note">Acción automática del flujo: consérvala cuando el nodo deba cerrar, esperar o reemplazar evidencia.</div></div></div>`;
+}
+function imageSimpleNode(key,nodeField,typeField,titleField,textField,nextField,actionField,mode){
+    return `<div class="image-node-editor"><div class="image-node-head"><div>${irInput(key,nodeField,mode[nodeField],'nombre_nodo')}</div><div>${irSelect(key,typeField,mode[typeField],IR_TYPES)}</div></div><div class="image-node-message"><label>Mensaje / descripción</label>${irTextarea(key,textField,mode[textField])}</div><div class="image-action-row"><div><label>Siguiente nodo</label>${irInput(key,nextField,mode[nextField])}</div><div><label>Acción automática</label>${irSelect(key,actionField,mode[actionField],IR_ACTIONS)}</div></div></div>`;
 }
 function imageReceptionModeHtml(key,mode){
-    return `<div class="image-mode" data-image-mode="${esc(key)}"><span class="image-mode-badge">Modo de evidencia</span>${irField(key,'label',mode.label,'h4')}<div class="image-mode-flow">
-        <div class="image-step">${irField(key,'receive_title',mode.receive_title,'strong')}${irField(key,'receive_text',mode.receive_text)}</div>
-        <div class="image-step">${irField(key,'confirm_title',mode.confirm_title,'strong')}${irField(key,'confirm_text',mode.confirm_text)}</div>
-        <div class="image-branch">
-            <div class="image-step image-close">${irField(key,'close_title',mode.close_title,'strong')}${irField(key,'close_text',mode.close_text)}</div>
-            <div class="image-step image-change">${irField(key,'submenu_title',mode.submenu_title,'strong')}${irField(key,'submenu_text',mode.submenu_text)}</div>
-        </div>
-        <div class="image-branch">
-            <div class="image-step">${irField(key,'add_title',mode.add_title,'strong')}${irField(key,'add_text',mode.add_text)}</div>
-            <div class="image-step">${irField(key,'change_title',mode.change_title,'strong')}${irField(key,'change_text',mode.change_text)}</div>
-        </div>
-        <div class="image-step image-loop">${irField(key,'loop_title',mode.loop_title,'strong')}${irField(key,'loop_text',mode.loop_text)}</div>
-    </div></div>`;
+    return `<div class="image-reception-mode" data-image-mode="${esc(key)}"><div class="image-mode-title"><div><span class="image-mode-badge">Modo de evidencia</span><h4>${irInput(key,'label',mode.label,'Nombre del modo')}</h4></div></div>
+        ${imageSimpleNode(key,'receive_node','receive_type','receive_title','receive_text','receive_next','receive_action',mode)}
+        <div class="image-node-arrow">↓</div>
+        <div class="image-node-editor"><div class="image-node-head"><div>${irInput(key,'confirm_node',mode.confirm_node,'confirmar_imagen')}</div><div>${irSelect(key,'confirm_type',mode.confirm_type,IR_TYPES)}</div></div><div class="image-node-message"><label>Mensaje</label>${irTextarea(key,'confirm_text',mode.confirm_text)}</div>${imageOptionRow(key,'confirm_yes_commands','confirm_yes_response','confirm_yes_next','confirm_yes_action',mode)}${imageOptionRow(key,'confirm_no_commands','confirm_no_response','confirm_no_next','confirm_no_action',mode)}</div>
+        <div class="image-node-arrow">↓</div>
+        <div class="image-node-editor"><div class="image-node-head"><div>${irInput(key,'submenu_node',mode.submenu_node,'evidencia_agregar_cambiar')}</div><div>${irSelect(key,'submenu_type',mode.submenu_type,IR_TYPES)}</div></div><div class="image-node-message"><label>Mensaje</label>${irTextarea(key,'submenu_text',mode.submenu_text)}</div>${imageOptionRow(key,'submenu_add_commands','submenu_add_response','submenu_add_next','submenu_add_action',mode)}${imageOptionRow(key,'submenu_change_commands','submenu_change_response','submenu_change_next','submenu_change_action',mode)}</div>
+        <div class="image-node-arrow">↓</div>
+        ${imageSimpleNode(key,'add_node','add_type','add_title','add_text','add_next','add_action',mode)}
+        ${imageSimpleNode(key,'change_node','change_type','change_title','change_text','change_next','change_action',mode)}
+        ${imageSimpleNode(key,'loop_node','loop_type','loop_title','loop_text','loop_next','loop_action',mode)}
+    </div>`;
 }
 function readImageReceptionEditor(){
     const modes=JSON.parse(JSON.stringify(IMAGE_RECEPTION_CONFIG?.modes||IMAGE_RECEPTION_FALLBACK));
     document.querySelectorAll('#imageReceptionSection [data-ir-mode][data-ir-field]').forEach(el=>{
         const mode=el.dataset.irMode,field=el.dataset.irField;
         if(!modes[mode])modes[mode]={};
-        modes[mode][field]=(el.innerText||el.textContent||'').trim();
+        modes[mode][field]=String(el.value??el.textContent??'').trim();
     });
     return {modes};
 }
@@ -261,7 +319,7 @@ async function saveImageReceptionFlow(){
         const r=await api('/api/empresas/'+encodeURIComponent(activeCompanyKey)+'/image-reception-flow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
         IMAGE_RECEPTION_CONFIG=r.config||payload;
         if(state)state.textContent='✅ Cambios guardados';
-        err('Recepción de imagen actualizada.');
+        err('Árbol de recepción de imagen actualizado.');
     }catch(x){if(state)state.textContent='❌ No se pudo guardar';err(x.message)}
     finally{if(btn)btn.disabled=false}
 }
@@ -272,7 +330,7 @@ async function addImageReceptionSection(){
     IMAGE_RECEPTION_CONFIG=config;
     const card=document.createElement('div');card.id='imageReceptionSection';card.className='card image-reception-card';
     const order=['accesorios','aimms_pda','gateway_accesorios','preciadores'];
-    card.innerHTML=`<div class="section-title"><div><h3>📷 Recepción de imagen</h3><div class="muted">Acciones automáticas que se ejecutan cuando cada modo recibe evidencia fotográfica.</div></div><div class="image-reception-actions">${admin()?'<span id="imageReceptionSaveState" class="image-save-state"></span><button id="saveImageReceptionFlow">Guardar cambios</button>':'<span class="badge">Solo lectura</span>'}</div></div><div class="image-reception-grid">${order.map(k=>imageReceptionModeHtml(k,config.modes?.[k]||IMAGE_RECEPTION_FALLBACK[k])).join('')}</div><div class="image-reception-note"><b>Regla común:</b> en cualquiera de los cuatro modos, la opción 1 de la confirmación cierra el ticket; la opción 2 abre el submenú Agregar / Cambiar. Cada nueva foto vuelve a la confirmación inicial.</div>${admin()?'<div class="image-edit-hint">✏️ Haz clic directamente sobre cualquier título o texto para editarlo y después pulsa <b>Guardar cambios</b>.</div>':''}`;
+    card.innerHTML=`<div class="section-title"><div><h3>📷 Recepción de imagen</h3><div class="muted">Árbol editable por modo. Cada bloque funciona como los nodos normales del árbol de decisiones.</div></div><div class="image-reception-actions">${admin()?'<span id="imageReceptionSaveState" class="image-save-state"></span><button id="saveImageReceptionFlow">Guardar árbol de imágenes</button>':'<span class="badge">Solo lectura</span>'}</div></div><div class="image-tree-help">Puedes editar nombre del nodo, tipo, mensaje, comandos, respuesta, siguiente nodo y acción automática.</div>${order.map(k=>imageReceptionModeHtml(k,config.modes?.[k]||IMAGE_RECEPTION_FALLBACK[k])).join('')}`;
     content.appendChild(card);
     if($('saveImageReceptionFlow'))$('saveImageReceptionFlow').onclick=saveImageReceptionFlow;
 }

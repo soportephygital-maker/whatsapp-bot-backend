@@ -16,6 +16,7 @@ def _html() -> str:
         '</style></head>',
         '''<style>
 .flow-card{overflow:auto}.flow-canvas{min-width:900px;padding:20px 10px 30px}.flow-level{display:flex;justify-content:center;gap:18px;align-items:stretch;margin:20px 0;position:relative}.flow-level:not(:last-child):after{content:"↓";position:absolute;bottom:-24px;left:50%;font-size:20px;color:#4cb6ff}.flow-node{width:230px;min-height:108px;border:1px solid rgba(76,182,255,.42);border-radius:14px;padding:12px;background:rgba(5,15,28,.88);box-shadow:0 8px 28px rgba(0,0,0,.18)}.flow-node.root{border-color:#79f0b3}.flow-node.human{border-color:#ff9ea8}.flow-node .flow-key{font-size:11px;color:#8fa8c3;text-transform:uppercase;letter-spacing:.06em}.flow-node .flow-msg{font-size:13px;margin-top:6px}.flow-branches{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.flow-branches span{font-size:10px;padding:3px 6px;border-radius:999px;background:rgba(76,182,255,.15)}
+.image-reception-card{margin-top:22px}.image-reception-grid{display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:14px;margin-top:14px}.image-mode{border:1px solid rgba(76,182,255,.38);border-radius:14px;padding:14px;background:rgba(5,15,28,.72)}.image-mode h4{margin:0 0 10px;font-size:15px}.image-mode-flow{display:grid;gap:7px}.image-step{border-left:3px solid rgba(76,182,255,.65);padding:8px 10px;background:rgba(76,182,255,.08);border-radius:8px;font-size:12px;line-height:1.4}.image-step strong{display:block;margin-bottom:2px}.image-branch{display:grid;grid-template-columns:1fr 1fr;gap:7px}.image-close{border-left-color:#79f0b3}.image-change{border-left-color:#f2b96b}.image-loop{border-left-color:#9f8cff}.image-mode-badge{display:inline-block;font-size:10px;padding:3px 7px;border-radius:999px;background:rgba(76,182,255,.15);margin-bottom:8px}.image-reception-note{margin-top:12px;padding:10px 12px;border-radius:10px;background:rgba(121,240,179,.08);border:1px solid rgba(121,240,179,.25);font-size:12px}@media(max-width:900px){.image-reception-grid{grid-template-columns:1fr}.image-branch{grid-template-columns:1fr}}
 #botSimulatorLaunch{position:fixed;right:24px;bottom:22px;z-index:1000;width:auto;padding:12px 18px;border-radius:999px;box-shadow:0 8px 30px rgba(0,0,0,.35)}#botSimulatorPanel{position:fixed;right:24px;bottom:76px;z-index:1001;width:min(390px,calc(100vw - 32px));height:560px;max-height:calc(100vh - 110px);display:flex;flex-direction:column;background:#07111f;border:1px solid rgba(76,182,255,.5);border-radius:18px;box-shadow:0 18px 60px rgba(0,0,0,.5);overflow:hidden}#botSimulatorPanel.h{display:none!important}.sim-head{padding:12px 14px;border-bottom:1px solid rgba(130,180,230,.18);display:flex;align-items:center;justify-content:space-between}.sim-head button{width:auto;margin:0}.sim-chat{flex:1;overflow:auto;padding:12px}.sim-bubble{max-width:88%;padding:9px 11px;border-radius:13px;margin:8px 0;white-space:pre-wrap;font-size:13px}.sim-bot{background:#10243a;margin-right:auto}.sim-user{background:#153a2c;margin-left:auto}.sim-system{background:#351421;margin-right:auto}.sim-input{padding:10px;border-top:1px solid rgba(130,180,230,.18)}.sim-input .toolbar{display:grid;grid-template-columns:1fr auto}.sim-input button{width:auto}.flow-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.flow-toolbar button{width:auto}.iqos-template-btn{width:auto}
 </style></head>''',
     )
@@ -94,6 +95,29 @@ function addFlowCard(){
     $('treeVisual').insertAdjacentHTML('beforebegin',`<div id="decisionFlowCard" class="card flow-card"><div class="section-title"><div><h3>Vista del flujo</h3><div class="muted">Visualiza cómo se conecta cada paso antes de editarlo.</div></div><div class="flow-toolbar"><button id="refreshFlow">Actualizar vista</button></div></div><div id="decisionFlow" class="flow-canvas"></div></div>`);
     $('refreshFlow').onclick=()=>{try{syncTree()}catch(_){}renderDecisionFlow();resetSimulator()};renderDecisionFlow();
 }
+function looksLikeCoppelCompany(){const row=COMPANY_ROWS.find(c=>c.empresa_id===activeCompanyKey);return /coppel|cpp/i.test((row?.nombre||'')+' '+(row?.empresa_id||''))}
+function imageReceptionModeHtml(name){
+    return `<div class="image-mode"><span class="image-mode-badge">Modo de evidencia</span><h4>${esc(name)}</h4><div class="image-mode-flow">
+        <div class="image-step"><strong>1. Recepción de imagen</strong>El sistema identifica la foto y la asocia al ticket activo.</div>
+        <div class="image-step"><strong>2. Confirmación</strong>📷 ¿Esta foto es la correcta?<br>1️⃣ Sí, cerrar el ticket con esta evidencia<br>2️⃣ No, agregar o cambiar la foto</div>
+        <div class="image-branch">
+            <div class="image-step image-close"><strong>Si responde 1</strong>Cerrar ticket → Pendiente de validación → generar expediente final.</div>
+            <div class="image-step image-change"><strong>Si responde 2</strong>Mostrar submenú: 1️⃣ Agregar · 2️⃣ Cambiar.</div>
+        </div>
+        <div class="image-branch">
+            <div class="image-step"><strong>1️⃣ Agregar</strong>Conservar la foto actual y esperar una evidencia adicional.</div>
+            <div class="image-step"><strong>2️⃣ Cambiar</strong>Retirar la foto anterior del expediente y esperar la nueva.</div>
+        </div>
+        <div class="image-step image-loop"><strong>Nueva foto recibida</strong>Volver al paso “¿Esta foto es la correcta?” y repetir la confirmación.</div>
+    </div></div>`;
+}
+function addImageReceptionSection(){
+    const content=$('content');if(!content||$('imageReceptionSection')||!looksLikeCoppelCompany())return;
+    const card=document.createElement('div');card.id='imageReceptionSection';card.className='card image-reception-card';
+    const modes=['Accesorios','AIMMS de la PDA','Gateway de los accesorios','Preciadores'];
+    card.innerHTML=`<div class="section-title"><div><h3>📷 Recepción de imagen</h3><div class="muted">Acciones automáticas que se ejecutan cuando cada modo recibe evidencia fotográfica.</div></div><span class="badge">Flujo automático</span></div><div class="image-reception-grid">${modes.map(imageReceptionModeHtml).join('')}</div><div class="image-reception-note"><b>Regla común:</b> en cualquiera de los cuatro modos, la opción 1 de la confirmación cierra el ticket; la opción 2 abre el submenú Agregar / Cambiar. Cada nueva foto vuelve a la confirmación inicial.</div>`;
+    content.appendChild(card);
+}
 function looksLikeIqosCompany(){const row=COMPANY_ROWS.find(c=>c.empresa_id===activeCompanyKey);return /iqos|seven[- ]?cck/i.test((row?.nombre||'')+' '+(row?.empresa_id||''))}
 function addIqosTemplateButton(){
     if(!admin()||!looksLikeIqosCompany()||$('applyIqosTemplate'))return;
@@ -104,7 +128,7 @@ function addIqosTemplateButton(){
 }
 
 const _companyPanelFlow=companyPanel;
-companyPanel=async function(key){await _companyPanelFlow(key);addFlowCard();addIqosTemplateButton();showSimulator();resetSimulator()};
+companyPanel=async function(key){await _companyPanelFlow(key);addFlowCard();addImageReceptionSection();addIqosTemplateButton();showSimulator();resetSimulator()};
 const _companiesFlow=companies;
 companies=async function(){hideSimulator();await _companiesFlow()};
 const _helpFlow=help;help=async function(){hideSimulator();await _helpFlow()};

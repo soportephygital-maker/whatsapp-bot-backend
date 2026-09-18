@@ -8,12 +8,17 @@ from sqlalchemy.orm import Session
 from ..auth import require_operator
 from ..database import get_db
 from ..models import AuditLog, Company, Conversation, ConversationChannel, Message, Store, SupportTicket, User
+from ..services import ai_learning
 from ..services.company_routing import detect_company, normalize
 from ..services.ticketing import close_ticket, ensure_ticket, notify_ticket, ticket_code, ticket_tracking
 from . import local_bridge
 from .global_entry import global_entry_settings
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-tickets'])
+
+IDENTITY_REQUIRED_STATE = '__identity_required__'
+REPEAT_ISSUE_CONFIRM_STATE = '__repeat_issue_confirm__'
+REPEAT_ISSUE_WAIT_EVIDENCE_STATE = '__repeat_issue_wait_evidence__'
 
 
 def _global_welcome(db: Session, *, retry: bool = False) -> str:
@@ -140,6 +145,44 @@ def _match_selected_store(
         key=lambda item: (-item[0], item[1].id),
     )
     return scored[0][1] if scored and scored[0][0] > 0 else None
+
+
+def _strict_store_match(
+    data: local_bridge.LocalInbound,
+    company: Company,
+    db: Session,
+) -> Store | None:
+    rows = _selected_company_stores(data, company.id, db)
+    if not rows:
+        return None
+    normalized_choice = normalize(data.text)
+    if normalized_choice.isdigit():
+        index = int(normalized_choice) - 1
+        if 0 <= index < len(rows):
+            return rows[index]
+    scored = sorted(
+        ((_store_match_score(row, data.text), row) for row in rows),
+        key=lambda item: (-item[0], item[1].id),
+    )
+    return scored[0][1] if scored and scored[0][0] > 0 else None
+
+
+def _remember_repeat_issue_candidate(db: Session, conversation: Conversation, issue: str) -> None:
+    db.add(AuditLog(
+        action='repeat_issue_candidate',
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={'issue': issue[:500]},
+    ))
+
+
+def _repeat_issue_candidate(db: Session, conversation: Conversation) -> str:
+    row = db.query(AuditLog).filter(
+        AuditLog.action == 'repeat_issue_candidate',
+        AuditLog.entity == 'conversation',
+        AuditLog.entity_id == str(conversation.id),
+    ).order_by(AuditLog.id.desc()).first()
+    return str((row.details or {}).get('issue') or '').strip() if row else ''
 
 
 def _store_prompt(data: local_bridge.LocalInbound, company: Company, db: Session) -> str:
@@ -504,6 +547,24 @@ def ticketed_local_inbound(
     current_inbound_id = current_inbound.id if current_inbound else None
     action_base, action_detail = _action_parts(result.get('action'))
 
+    if current_inbound:
+        try:
+            memory_channel = db.query(ConversationChannel).filter(
+                ConversationChannel.conversation_id == conversation.id
+            ).first()
+            with db.begin_nested():
+                ai_learning.observe_conversation_message(
+                    db,
+                    company_id=conversation.company_id,
+                    store_id=memory_channel.store_id if memory_channel else None,
+                    conversation_id=conversation.id,
+                    text=current_inbound.body,
+                    state=pre_state or conversation.state,
+                )
+                db.flush()
+        except Exception:
+            pass
+
     if result.get('status') == 'human_support_paused' or conversation.status in ('help_pending', 'human_active'):
         result['should_reply'] = False
         result['reply_text'] = ''
@@ -580,6 +641,8 @@ def ticketed_local_inbound(
         pre_state = None
 
     selected_store = _match_selected_store(effective_data, company, db)
+    if pre_state == 'identificar_tienda':
+        selected_store = _strict_store_match(effective_data, company, db)
     current_store = db.get(Store, channel.store_id) if channel.store_id else None
     if current_store and current_store.company_id != company.id:
         current_store = None
@@ -588,6 +651,10 @@ def ticketed_local_inbound(
     needs_store = switching_company or first_company_identification or pre_state == 'identificar_tienda' or conversation.state == 'identificar_tienda'
 
     if needs_store:
+        # Company recognition never skips the explicit store question. Even when
+        # Android has only one store selected, the user must identify/confirm it.
+        if first_company_identification or switching_company:
+            selected_store = None
         if selected_store is None:
             conversation.company_id = company.id
             channel.company_id = company.id
@@ -619,10 +686,12 @@ def ticketed_local_inbound(
         channel.company_id = company.id
         channel.store_id = selected_store.id
         conversation.company_id = company.id
-        conversation.state = local_bridge._root_state(company.decision_tree or {})
-        tree = company.decision_tree or {}
-        root = local_bridge._root_state(tree)
-        root_message = str((tree.get('nodos') or {}).get(root, {}).get('mensaje') or '').strip()
+        conversation.state = IDENTITY_REQUIRED_STATE
+        root_message = (
+            f'✅ Tienda identificada: {selected_store.name}.\n\n'
+            '👤 Antes de continuar, indícame tu nombre y puesto.\n'
+            'Ejemplo: Juan Pérez - Gerente.'
+        )
         _set_reply(
             db,
             result,
@@ -687,6 +756,104 @@ def ticketed_local_inbound(
 
     tree = company.decision_tree or {}
     root = local_bridge._root_state(tree)
+
+    if pre_state == IDENTITY_REQUIRED_STATE:
+        name = _remember_customer_name(current_inbound, effective_data.text)
+        if not name:
+            _set_reply(
+                db, result,
+                '👤 Indícame tu nombre y puesto para continuar.',
+                effective_data,
+                conversation=conversation,
+                company=company,
+                store=store,
+            )
+            conversation.state = IDENTITY_REQUIRED_STATE
+            db.commit()
+            return result
+
+        ticket = _ticket_for_conversation(
+            db,
+            company=company,
+            store=store,
+            conversation=conversation,
+            description=effective_data.text,
+        )
+        issue = ai_learning.repeated_store_issue(
+            db,
+            company_id=company.id,
+            store_id=store.id,
+            min_repetitions=3,
+        ) if store else ''
+        if issue:
+            _remember_repeat_issue_candidate(db, conversation, issue)
+            conversation.state = REPEAT_ISSUE_CONFIRM_STATE
+            message = (
+                f'Gracias, {name}.\n\n'
+                f'🔁 Esta tienda ha reportado varias veces un caso similar: {issue}.\n'
+                '¿Es el mismo problema?\n'
+                '1️⃣ Sí, es el mismo\n'
+                '2️⃣ No, es otro problema'
+            )
+            _set_reply(db, result, message, effective_data, conversation=conversation, company=company, store=store)
+            result['action'] = 'repeat_issue_confirmation'
+        else:
+            conversation.state = 'menu'
+            menu_message = str((tree.get('nodos') or {}).get('menu', {}).get('mensaje') or 'Gracias. ¿En qué puedo ayudarte?')
+            menu_message = _render_placeholders(menu_message, name=name)
+            _set_reply(db, result, menu_message, effective_data, conversation=conversation, company=company, store=store)
+            result['action'] = 'capture_name'
+        result.update({
+            'company_identified': True,
+            'ticket_id': ticket.id,
+            'ticket_code': ticket_code(ticket, company, store),
+        })
+        db.commit()
+        return result
+
+    if pre_state == REPEAT_ISSUE_CONFIRM_STATE:
+        answer = normalize(effective_data.text)
+        issue = _repeat_issue_candidate(db, conversation)
+        ticket = _ticket_for_conversation(
+            db,
+            company=company,
+            store=store,
+            conversation=conversation,
+            description=effective_data.text,
+        )
+        if answer in {'1', 'si', 'sí', 'mismo', 'es el mismo', 'igual'} and issue:
+            ticket.subject = issue[:240]
+            conversation.state = REPEAT_ISSUE_WAIT_EVIDENCE_STATE
+            message = (
+                f'✅ Entendido. Registraré el mismo problema: {issue}.\n\n'
+                '📷 Envía una foto o evidencia del problema para continuar.'
+            )
+            result['action'] = 'repeat_issue_confirmed'
+        elif answer in {'2', 'no', 'otro', 'otro problema', 'diferente'}:
+            conversation.state = 'menu'
+            name = _conversation_name(db, conversation.id)
+            message = str((tree.get('nodos') or {}).get('menu', {}).get('mensaje') or '¿En qué puedo ayudarte?')
+            message = _render_placeholders(message, name=name)
+            result['action'] = 'repeat_issue_different'
+        else:
+            message = (
+                f'¿Es el mismo problema{": " + issue if issue else ""}?\n'
+                '1️⃣ Sí, es el mismo\n'
+                '2️⃣ No, es otro problema'
+            )
+            result['action'] = 'repeat_issue_confirmation_repeat'
+        _set_reply(db, result, message, effective_data, conversation=conversation, company=company, store=store)
+        result['ticket_id'] = ticket.id
+        result['ticket_code'] = ticket_code(ticket, company, store)
+        db.commit()
+        return result
+
+    if pre_state == REPEAT_ISSUE_WAIT_EVIDENCE_STATE:
+        message = '📷 Envía una foto o evidencia del problema para continuar.'
+        _set_reply(db, result, message, effective_data, conversation=conversation, company=company, store=store)
+        result['action'] = 'repeat_issue_waiting_evidence'
+        db.commit()
+        return result
 
     if pre_state == root and action_base.startswith('no_match'):
         name = _remember_customer_name(current_inbound, effective_data.text)

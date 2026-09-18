@@ -20,6 +20,7 @@ IMAGE_EVIDENCE_ACTION_STATE = '__image_evidence_add_or_replace__'
 IMAGE_WAIT_STATE = '__image_evidence_wait_another__'
 IMAGE_INCIDENT_STATE = '__image_evidence_incident_description__'
 IMAGE_MORE_PROBLEM_STATE = '__image_evidence_more_problem__'
+IMAGE_REPORT_REASON_STATE = '__image_report_reason__'
 IMAGE_REPORT_REVIEW_STATE = '__image_report_review__'
 IMAGE_REPORT_EDIT_FIELD_STATE = '__image_report_edit_field__'
 IMAGE_REPORT_EDIT_VALUE_STATE = '__image_report_edit_value__'
@@ -27,7 +28,7 @@ IMAGE_REPORT_UNDER_REVIEW_STATE = '__image_report_under_review__'
 IMAGE_CONFIRM_TEXT = (
     '📷 Recibí una imagen.\n\n'
     '¿Esta foto es la correcta?\n'
-    '1️⃣ Sí, usar esta evidencia y revisar los datos del reporte\n'
+    '1️⃣ Sí, usar esta evidencia\n'
     '2️⃣ No, agregar o cambiar la foto'
 )
 IMAGE_EVIDENCE_ACTION_TEXT = (
@@ -1027,7 +1028,6 @@ def _report_review_data(
 
     values = {
         'report_reason': _ai_report_reason(db, conversation, company, store, ticket),
-        'problem_reason': _incident_reason(db, conversation, ticket),
         'evidence': f'{evidence_count} foto' + ('' if evidence_count == 1 else 's'),
         'contact_number': phone,
         'store_company': _company_store_source_text(db, conversation, company, store),
@@ -1042,7 +1042,6 @@ def _report_review_text(values: dict) -> str:
     return (
         '📋 Se enviará el ticket a revisión por el siguiente caso:\n\n'
         f'• Motivo del reporte: {values["report_reason"]}\n'
-        f'• Motivo del problema: {values["problem_reason"]}\n'
         f'• Evidencia: {values["evidence"]}\n'
         f'• Número de contacto: {values["contact_number"]}\n'
         f'• Tienda y empresa: {values["store_company"]}\n'
@@ -1058,24 +1057,23 @@ def _edit_fields_text() -> str:
     return (
         '✏️ ¿Qué dato deseas cambiar?\n'
         '1️⃣ Motivo del reporte\n'
-        '2️⃣ Motivo del problema\n'
-        '3️⃣ Evidencia / fotos\n'
-        '4️⃣ Número de contacto\n'
-        '5️⃣ Nombre de tienda y empresa\n'
-        '6️⃣ Nombre y puesto de quien se comunica\n'
-        '7️⃣ Fecha\n'
+        '2️⃣ Evidencia / fotos\n'
+        '3️⃣ Número de contacto\n'
+        '4️⃣ Nombre de tienda y empresa\n'
+        '5️⃣ Nombre y puesto de quien se comunica\n'
+        '6️⃣ Fecha\n'
         '0️⃣ Volver al resumen'
     )
 
 
 _EDIT_FIELD_MAP = {
     '1': ('report_reason', 'Motivo del reporte'),
-    '2': ('problem_reason', 'Motivo del problema'),
-    '4': ('contact_number', 'Número de contacto'),
-    '5': ('store_company', 'Nombre de tienda y empresa'),
-    '6': ('contact_name', 'Nombre y puesto de quien se comunica'),
-    '7': ('date', 'Fecha'),
+    '3': ('contact_number', 'Número de contacto'),
+    '4': ('store_company', 'Nombre de tienda y empresa'),
+    '5': ('contact_name', 'Nombre y puesto de quien se comunica'),
+    '6': ('date', 'Fecha'),
 }
+
 
 
 def _latest_edit_field(db: Session, conversation_id: int) -> tuple[str, str] | None:
@@ -1088,6 +1086,76 @@ def _latest_edit_field(db: Session, conversation_id: int) -> tuple[str, str] | N
     field = str(details.get('field') or '')
     label = str(details.get('label') or '')
     return (field, label) if field else None
+
+
+def _capture_report_reason_and_show_summary(
+    db: Session,
+    *,
+    data: local_bridge.LocalInbound,
+    operator: User,
+    conversation: Conversation,
+    company: Company,
+    store: Store,
+    ticket: SupportTicket | None,
+):
+    reason = re.sub(r'\s+', ' ', str(data.text or '')).strip()
+    if not reason:
+        reason = 'Sin descripción'
+    _save_inbound_text(db, data=data, conversation=conversation, marker='report_reason')
+    db.add(AuditLog(
+        username=operator.username,
+        action='image_report_review_override',
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={
+            'ticket_id': ticket.id if ticket else None,
+            'field': 'report_reason',
+            'label': 'Motivo del reporte',
+            'value': reason[:500],
+        },
+    ))
+    if ticket:
+        ticket.subject = reason[:240]
+    try:
+        with db.begin_nested():
+            ai_learning.observe_report_issue(
+                db,
+                company_id=company.id,
+                store_id=store.id,
+                ticket_id=ticket.id if ticket else None,
+                reason=reason,
+            )
+            db.flush()
+    except Exception:
+        pass
+
+    conversation.status = 'open'
+    conversation.state = IMAGE_REPORT_REVIEW_STATE
+    values = _report_review_data(
+        db,
+        conversation=conversation,
+        company=company,
+        store=store,
+        ticket=ticket,
+        data=data,
+    )
+    response = _report_review_text(values)
+    outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
+    db.add(AuditLog(
+        username=operator.username,
+        action='image_report_summary_presented',
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={'ticket_id': ticket.id if ticket else None, 'summary': values},
+    ))
+    db.commit()
+    return {
+        'status':'ok','conversation_id':conversation.id,'company_key':company.company_key,
+        'company_name':company.name,'store_name':store.name,'action':'report_review_summary',
+        'reply_text':response if data.can_reply else '','should_reply':bool(data.can_reply),
+        'outbound_message_id':outbound.id,'ticket_id':ticket.id if ticket else None,
+        'chatbot_paused':False,'pending_user_review':True,
+    }
 
 
 def _handle_report_review_reply(
@@ -1112,8 +1180,8 @@ def _handle_report_review_reply(
                 db,
                 ticket=ticket,
                 username=operator.username,
-                status_label='En revisión',
-                message='El usuario confirmó los datos del reporte. Expediente abierto y enviado a revisión.',
+                status_label='Pendiente de validación',
+                message='El usuario confirmó los datos del reporte. Expediente abierto y enviado a revisión/validación.',
             )
         conversation.status = 'closed'
         conversation.state = IMAGE_REPORT_UNDER_REVIEW_STATE
@@ -1122,10 +1190,17 @@ def _handle_report_review_reply(
             '✅ Tu reporte quedó registrado correctamente.\n\n'
             + (f'🎫 Ticket: {code}\n' if code else '')
             + 'Estado: ABIERTO 🟠\n'
-            + 'Seguimiento: EN REVISIÓN 🔎\n\n'
-            + 'El equipo correspondiente revisará la información y las evidencias del expediente.'
+            + 'Seguimiento: PENDIENTE DE VALIDACIÓN 🔎\n\n'
+            + 'El equipo correspondiente revisará y validará la información y las evidencias del expediente.'
         )
         outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
+        if ticket:
+            try:
+                with db.begin_nested():
+                    ai_learning.learn_from_conversation(db, ticket)
+                    db.flush()
+            except Exception:
+                pass
         db.commit()
         return {
             'status':'ok','conversation_id':conversation.id,'company_key':company.company_key,
@@ -1176,7 +1251,7 @@ def _handle_report_edit_field(
         conversation.state = IMAGE_REPORT_REVIEW_STATE
         values = _report_review_data(db, conversation=conversation, company=company, store=store, ticket=ticket, data=data)
         response = _report_review_text(values)
-    elif answer == '3' or answer in {'evidencia', 'foto', 'fotos'}:
+    elif answer == '2' or answer in {'evidencia', 'foto', 'fotos'}:
         conversation.state = IMAGE_EVIDENCE_ACTION_STATE
         response = '📷 Para corregir la evidencia:\n1️⃣ Agregar otra foto\n2️⃣ Cambiar la foto actual'
     else:
@@ -1231,9 +1306,6 @@ def _handle_report_edit_value(
         if ticket:
             if field == 'report_reason':
                 ticket.subject = value[:240]
-            elif field == 'problem_reason':
-                base = re.sub(r'(?im)\n*Cómo sucedió\s*:\s*.+$', '', str(ticket.description or '')).strip()
-                ticket.description = f'{base}\n\nCómo sucedió: {value}'.strip()[:4000]
         conversation.state = IMAGE_REPORT_REVIEW_STATE
         values = _report_review_data(db, conversation=conversation, company=company, store=store, ticket=ticket, data=data)
         response = '✅ Dato actualizado.\n\n' + _report_review_text(values)
@@ -1364,19 +1436,11 @@ def _handle_confirmation_reply(
             'chatbot_paused': False, 'image_mode': cfg.get('mode_key'),
         }
 
-    # A correct photo no longer closes the ticket immediately. Show the
-    # report summary first so the user can verify or correct every field.
+    # A correct photo first asks for a fresh free-text report reason. The answer
+    # becomes the authoritative "Motivo del reporte" shown in the final review.
     conversation.status = 'open'
-    conversation.state = IMAGE_REPORT_REVIEW_STATE
-    values = _report_review_data(
-        db,
-        conversation=conversation,
-        company=company,
-        store=store,
-        ticket=ticket,
-        data=data,
-    )
-    response = _report_review_text(values)
+    conversation.state = IMAGE_REPORT_REASON_STATE
+    response = '📝 Describe brevemente en un solo mensaje el motivo del reporte.'
     _trace_flow(
         db,
         operator=operator,
@@ -1386,10 +1450,9 @@ def _handle_confirmation_reply(
         stage='route_selected',
         node='confirmar_imagen',
         rule='confirm_yes',
-        action='mostrar_resumen_revision',
-        next_node='revision_datos_reporte',
+        action='pedir_motivo_reporte',
+        next_node='capturar_motivo_reporte',
         result='ok',
-        extra={'report_summary': values},
     )
     outbound = _reply(
         db,
@@ -1399,20 +1462,13 @@ def _handle_confirmation_reply(
         data=data,
         text=response,
     )
-    db.add(AuditLog(
-        username=operator.username,
-        action='image_report_summary_presented',
-        entity='conversation',
-        entity_id=str(conversation.id),
-        details={'ticket_id': ticket.id if ticket else None, 'summary': values},
-    ))
     db.commit()
     return {
         'status':'ok','conversation_id':conversation.id,'company_key':company.company_key,
-        'company_name':company.name,'store_name':store.name,'action':'report_review_summary',
+        'company_name':company.name,'store_name':store.name,'action':'ask_report_reason',
         'reply_text':response if data.can_reply else '','should_reply':bool(data.can_reply),
         'outbound_message_id':outbound.id,'ticket_id':ticket.id if ticket else None,
-        'chatbot_paused':False,'pending_user_review':True,
+        'chatbot_paused':False,'waiting_report_reason':True,
     }
 
 def _record_image_flow_error(
@@ -1586,6 +1642,17 @@ def image_evidence_inbound(
                     )
                 raise
 
+        if conversation.state == IMAGE_REPORT_REASON_STATE:
+            return _capture_report_reason_and_show_summary(
+                db,
+                data=data,
+                operator=operator,
+                conversation=conversation,
+                company=company,
+                store=store,
+                ticket=ticket,
+            )
+
         if conversation.state == IMAGE_REPORT_REVIEW_STATE:
             return _handle_report_review_reply(
                 db,
@@ -1671,7 +1738,7 @@ def image_evidence_inbound(
         if _is_image(data):
             context = _latest_image_context(db, conversation.id)
             return_state = str(context.get('return_state') or '').strip()
-            photo_states = {IMAGE_CONFIRM_STATE, IMAGE_EVIDENCE_ACTION_STATE, IMAGE_WAIT_STATE, IMAGE_INCIDENT_STATE, IMAGE_MORE_PROBLEM_STATE, IMAGE_REPORT_REVIEW_STATE, IMAGE_REPORT_EDIT_FIELD_STATE, IMAGE_REPORT_EDIT_VALUE_STATE}
+            photo_states = {IMAGE_CONFIRM_STATE, IMAGE_EVIDENCE_ACTION_STATE, IMAGE_WAIT_STATE, IMAGE_INCIDENT_STATE, IMAGE_MORE_PROBLEM_STATE, IMAGE_REPORT_REASON_STATE, IMAGE_REPORT_REVIEW_STATE, IMAGE_REPORT_EDIT_FIELD_STATE, IMAGE_REPORT_EDIT_VALUE_STATE}
             if not return_state or return_state in photo_states:
                 return_state = conversation.state if conversation.state not in photo_states else ''
             message, duplicate = _save_image_message(

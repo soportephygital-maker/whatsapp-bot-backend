@@ -14,6 +14,10 @@ ACTIVE_IMAGE_STATES = {
     image_evidence_patch.IMAGE_WAIT_STATE,
     image_evidence_patch.IMAGE_INCIDENT_STATE,
     image_evidence_patch.IMAGE_MORE_PROBLEM_STATE,
+    image_evidence_patch.IMAGE_REPORT_REASON_STATE,
+    image_evidence_patch.IMAGE_REPORT_REVIEW_STATE,
+    image_evidence_patch.IMAGE_REPORT_EDIT_FIELD_STATE,
+    image_evidence_patch.IMAGE_REPORT_EDIT_VALUE_STATE,
 }
 
 
@@ -31,6 +35,12 @@ def _state_from_prompt(text: str) -> str | None:
         return image_evidence_patch.IMAGE_INCIDENT_STATE
     if '¿deseas reportar otro problema?' in low or 'deseas reportar otro problema?' in low:
         return image_evidence_patch.IMAGE_MORE_PROBLEM_STATE
+    if 'describe brevemente en un solo mensaje el motivo del reporte' in low:
+        return image_evidence_patch.IMAGE_REPORT_REASON_STATE
+    if '¿es correcta la información?' in low or 'es correcta la informacion?' in low:
+        return image_evidence_patch.IMAGE_REPORT_REVIEW_STATE
+    if '¿qué dato deseas cambiar?' in low or 'que dato deseas cambiar?' in low:
+        return image_evidence_patch.IMAGE_REPORT_EDIT_FIELD_STATE
     return None
 
 

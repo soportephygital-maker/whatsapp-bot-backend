@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from ..auth import require_case_closer
 from ..database import get_db
 from ..models import AppNotification, AuditLog, Company, Conversation, ConversationChannel, HelpRequest, Message, User
+from ..services import ai_learning
 
 router = APIRouter(prefix='/api', tags=['conversation-admin'])
 
@@ -67,6 +68,21 @@ def forget_conversation(
 
     help_rows = db.query(HelpRequest).filter(HelpRequest.conversation_id == conversation_id).all()
     help_ids = {row.id for row in help_rows}
+
+    # Preserve a compact AI memory before the visible conversation/messages are
+    # deleted. This memory has no conversation FK, so deleting the chat does not
+    # erase what the learning system observed. It remains pending until approved.
+    try:
+        with db.begin_nested():
+            ai_learning.archive_conversation(db, conversation)
+            db.flush()
+    except Exception as exc:
+        db.add(AuditLog(
+            username=admin.username,
+            action='ai_archive_before_forget_error',
+            entity='maintenance',
+            details={'conversation_id': conversation_id, 'error': str(exc)[:1000]},
+        ))
 
     for notification in db.query(AppNotification).all():
         details = notification.details or {}

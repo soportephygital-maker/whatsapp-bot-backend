@@ -7,11 +7,13 @@ def test_active_image_states_are_owned_by_image_flow():
     assert image_evidence_patch.IMAGE_WAIT_STATE in image_evidence_listo_patch.ACTIVE_IMAGE_STATES
     assert image_evidence_patch.IMAGE_INCIDENT_STATE in image_evidence_listo_patch.ACTIVE_IMAGE_STATES
     assert image_evidence_patch.IMAGE_MORE_PROBLEM_STATE in image_evidence_listo_patch.ACTIVE_IMAGE_STATES
+    assert image_evidence_patch.IMAGE_REPORT_REASON_STATE in image_evidence_listo_patch.ACTIVE_IMAGE_STATES
+    assert image_evidence_patch.IMAGE_REPORT_REVIEW_STATE in image_evidence_listo_patch.ACTIVE_IMAGE_STATES
 
 
 def test_photo_confirmation_menu_is_the_review_or_evidence_branch():
     text = image_evidence_patch.IMAGE_CONFIRM_TEXT
-    assert '1️⃣ Sí, usar esta evidencia y revisar los datos del reporte' in text
+    assert '1️⃣ Sí, usar esta evidencia' in text
     assert '2️⃣ No, agregar o cambiar la foto' in text
 
 
@@ -110,20 +112,20 @@ def test_ticket_close_side_effects_are_isolated_by_savepoints():
     assert 'with db.begin_nested()' in original
 
 
-def test_image_confirmation_routes_to_review_trace():
+def test_image_confirmation_routes_to_report_reason_trace():
     import inspect
     source = inspect.getsource(image_evidence_patch._handle_confirmation_reply)
     assert "stage='route_selected'" in source
-    assert "action='mostrar_resumen_revision'" in source
-    assert "next_node='revision_datos_reporte'" in source
+    assert "action='pedir_motivo_reporte'" in source
+    assert "next_node='capturar_motivo_reporte'" in source
     assert "result='ok'" in source
 
 
-def test_photo_yes_routes_to_report_review_instead_of_closing():
+def test_photo_yes_asks_for_report_reason_before_review():
     import inspect
     source = inspect.getsource(image_evidence_patch._handle_confirmation_reply)
-    assert 'IMAGE_REPORT_REVIEW_STATE' in source
-    assert 'mostrar_resumen_revision' in source
+    assert 'IMAGE_REPORT_REASON_STATE' in source
+    assert 'Describe brevemente en un solo mensaje el motivo del reporte' in source
     assert '_close_for_validation' not in source
 
 
@@ -131,13 +133,13 @@ def test_report_review_confirmation_keeps_ticket_open_for_review():
     import inspect
     source = inspect.getsource(image_evidence_patch._handle_report_review_reply)
     assert "ticket.status = 'open'" in source
-    assert "status_label='En revisión'" in source
+    assert "status_label='Pendiente de validación'" in source
     assert 'Estado: ABIERTO' in source
 
 
 def test_report_edit_menu_contains_required_fields():
     text = image_evidence_patch._edit_fields_text()
-    for expected in ('Motivo del reporte','Motivo del problema','Evidencia / fotos','Número de contacto','Nombre de tienda y empresa','Nombre y puesto de quien se comunica','Fecha'):
+    for expected in ('Motivo del reporte','Evidencia / fotos','Número de contacto','Nombre de tienda y empresa','Nombre y puesto de quien se comunica','Fecha'):
         assert expected in text
 
 
@@ -152,7 +154,6 @@ def test_report_reason_ignores_generic_support_subject():
 def test_report_review_uses_name_and_position_label():
     values = {
         'report_reason':'AIMMS no funciona',
-        'problem_reason':'Se fue la luz',
         'evidence':'2 fotos',
         'contact_number':'5512345678',
         'store_company':'Coppel Santa Fe',
@@ -179,3 +180,35 @@ def test_problem_prompt_detection_covers_observa_paso_ocurrio():
 def test_report_prompt_detection_for_real_symptom():
     assert image_evidence_patch._looks_like_report_prompt('¿Cuál es el problema?')
     assert image_evidence_patch._looks_like_report_prompt('Indica la falla')
+
+
+def test_report_summary_does_not_include_problem_reason():
+    values = {
+        'report_reason':'Pantalla rota',
+        'evidence':'2 fotos',
+        'contact_number':'5512345678',
+        'store_company':'Coppel Santa Fe',
+        'contact_name':'Juan Pérez - Gerente',
+        'date':'18/09/2026 15:10',
+    }
+    text = image_evidence_patch._report_review_text(values)
+    assert 'Motivo del reporte: Pantalla rota' in text
+    assert 'Motivo del problema' not in text
+
+
+def test_ai_learning_is_capped_and_auto_observations_are_pending():
+    from app.services import ai_learning
+    assert ai_learning.MAX_LEARNING_POINTS == 2000
+    import inspect
+    source = inspect.getsource(ai_learning.observe_conversation_message)
+    assert "status='pending'" in source
+    assert '_prune_learning_points' in source
+
+
+def test_store_and_identity_are_mandatory_before_repeat_shortcut():
+    from app.routers import ticketed_local_bridge
+    import inspect
+    source = inspect.getsource(ticketed_local_bridge.ticketed_local_inbound)
+    assert 'first_company_identification or switching_company' in source
+    assert 'IDENTITY_REQUIRED_STATE' in source
+    assert 'REPEAT_ISSUE_CONFIRM_STATE' in source

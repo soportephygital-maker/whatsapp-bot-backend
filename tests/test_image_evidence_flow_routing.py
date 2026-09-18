@@ -61,8 +61,17 @@ def test_ticket_mode_detection_for_image_flow():
 
 def test_ticket_close_path_uses_nonblocking_side_effect_policy():
     import inspect
-    from app.services import ticketing
-    source = inspect.getsource(ticketing.close_ticket)
-    assert 'ticket_close_notification_error' in source
-    assert 'notify_ticket' in source
-    assert 'except Exception as exc' in source
+    from app.routers import case_event_policy_patch
+
+    # At runtime ticketing.close_ticket is intentionally monkey-patched to the
+    # milestone policy wrapper. Validate both layers instead of inspecting only
+    # the rebound public symbol.
+    policy_source = inspect.getsource(case_event_policy_patch._policy_close_ticket)
+    original_source = inspect.getsource(case_event_policy_patch._original_close_ticket)
+
+    assert 'case_event_email_error' in policy_source
+    assert 'case_learning_error' in policy_source
+    assert 'except Exception as exc' in policy_source
+    assert 'ticket_close_notification_error' in original_source
+    assert 'notify_ticket' in original_source
+    assert 'except Exception as exc' in original_source

@@ -116,3 +116,25 @@ def test_image_close_has_route_trace_before_and_after_action():
     assert "stage='action_start'" in source
     assert "stage='action_done'" in source
     assert "action='cerrar_ticket_validacion'" in source
+
+
+def test_photo_yes_routes_to_report_review_instead_of_closing():
+    import inspect
+    source = inspect.getsource(image_evidence_patch._handle_confirmation_reply)
+    assert 'IMAGE_REPORT_REVIEW_STATE' in source
+    assert 'mostrar_resumen_revision' in source
+    assert '_close_for_validation' not in source
+
+
+def test_report_review_confirmation_keeps_ticket_open_for_review():
+    import inspect
+    source = inspect.getsource(image_evidence_patch._handle_report_review_reply)
+    assert "ticket.status = 'open'" in source
+    assert "status_label='En revisión'" in source
+    assert 'Estado: ABIERTO' in source
+
+
+def test_report_edit_menu_contains_required_fields():
+    text = image_evidence_patch._edit_fields_text()
+    for expected in ('Motivo del reporte','Motivo del problema','Evidencia / fotos','Número de contacto','Nombre de tienda y empresa','Nombre de quien se comunica','Fecha'):
+        assert expected in text

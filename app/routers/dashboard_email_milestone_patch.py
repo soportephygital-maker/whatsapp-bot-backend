@@ -47,6 +47,15 @@ def _diagnostic_url(detail: str, explicit: str = '') -> str:
     return match.group(1)[:1200] if match else ''
 
 
+def _utc_iso(value) -> str | None:
+    if not value:
+        return None
+    # Database timestamps are written with datetime.utcnow() and are therefore
+    # UTC even though the SQLAlchemy columns are timezone-naive. Add the explicit
+    # UTC suffix so the browser can convert them to the viewer's local timezone.
+    return value.isoformat() + 'Z'
+
+
 @router.post('/api/local-bridge/diagnostics')
 def receive_mobile_bridge_diagnostic(
     data: MobileBridgeDiagnostic,
@@ -117,7 +126,7 @@ def admin_diagnostics(
         details = dict(row.details or {})
         diagnostics.append({
             'id': row.id,
-            'created_at': row.created_at.isoformat() if row.created_at else None,
+            'created_at': _utc_iso(row.created_at),
             'username': row.username,
             **details,
         })
@@ -129,7 +138,7 @@ def admin_diagnostics(
         raw = dict(row.raw_payload or {}) if isinstance(row.raw_payload, dict) else {}
         message_rows.append({
             'id': row.id,
-            'created_at': row.created_at.isoformat() if row.created_at else None,
+            'created_at': _utc_iso(row.created_at),
             'conversation_id': row.conversation_id,
             'conversation_status': conv.status if conv else None,
             'conversation_state': conv.state if conv else None,
@@ -146,7 +155,7 @@ def admin_diagnostics(
 
     errors = [{
         'id': row.id,
-        'created_at': row.created_at.isoformat() if row.created_at else None,
+        'created_at': _utc_iso(row.created_at),
         'username': row.username,
         'action': row.action,
         'entity': row.entity,
@@ -217,17 +226,24 @@ const _openChat99=typeof openChat==='function'?openChat:null;if(_openChat99){ope
 function diagnosticsIsAdmin(){try{return (typeof role==='function'?role():localStorage.getItem('phygital_role')||'')==='admin'}catch(_){return false}}
 function diagEsc(v){return typeof esc==='function'?esc(String(v??'')):String(v??'').replace(/[&<>"]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[s]))}
 function diagJson(v){try{return JSON.stringify(v||{},null,2)}catch(_){return String(v||'')}}
+function diagLocalTime(value,eventMs){
+  try{
+    const d=eventMs?new Date(Number(eventMs)):new Date(value);
+    if(Number.isNaN(d.getTime()))return value||'';
+    return new Intl.DateTimeFormat(undefined,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true,timeZoneName:'short'}).format(d);
+  }catch(_){return value||''}
+}
 function diagEventClass(stage){const s=String(stage||'').toUpperCase();if(s.includes('ERROR')||s.includes('FAILED'))return 'error';if(s.includes('DISCARDED'))return 'discarded';return 'ok'}
 function diagAppRow(r){
   const url=r.request_url||'Sin petición HTTP en este evento';
-  return `<div class="diag-event ${diagEventClass(r.stage)}"><div class="diag-head"><span class="diag-stage">APP · ${diagEsc(r.stage||'EVENTO')}</span><span class="muted">${diagEsc(r.created_at||'')}</span></div><div><b>Conversación:</b> ${diagEsc(r.conversation||'-')} · <b>App:</b> ${diagEsc(r.package_name||'-')}</div><div class="diag-text"><b>Texto:</b> ${diagEsc(r.text||'-')}</div><div class="diag-text"><b>Detalle:</b> ${diagEsc(r.detail||'-')}</div><div class="diag-url"><b>URL:</b> ${diagEsc(url)}</div><div class="muted">Dispositivo: ${diagEsc(r.device_id||'-')} · Android app: ${diagEsc(r.app_version||'-')} build ${diagEsc(r.build_code??'-')} · Responder: ${r.can_reply===true?'Sí':(r.can_reply===false?'No':'Sin comprobar')}</div><details><summary>Datos completos</summary><pre class="diag-raw">${diagEsc(diagJson(r))}</pre></details></div>`;
+  return `<div class="diag-event ${diagEventClass(r.stage)}"><div class="diag-head"><span class="diag-stage">APP · ${diagEsc(r.stage||'EVENTO')}</span><span class="muted">${diagEsc(diagLocalTime(r.created_at,r.event_time_ms))}</span></div><div><b>Conversación:</b> ${diagEsc(r.conversation||'-')} · <b>App:</b> ${diagEsc(r.package_name||'-')}</div><div class="diag-text"><b>Texto:</b> ${diagEsc(r.text||'-')}</div><div class="diag-text"><b>Detalle:</b> ${diagEsc(r.detail||'-')}</div><div class="diag-url"><b>URL:</b> ${diagEsc(url)}</div><div class="muted">Dispositivo: ${diagEsc(r.device_id||'-')} · Android app: ${diagEsc(r.app_version||'-')} build ${diagEsc(r.build_code??'-')} · Responder: ${r.can_reply===true?'Sí':(r.can_reply===false?'No':'Sin comprobar')}</div><details><summary>Datos completos</summary><pre class="diag-raw">${diagEsc(diagJson(r))}</pre></details></div>`;
 }
 function diagMessageRow(r){
   const cls=r.direction==='inbound'?'ok':'';
-  return `<div class="diag-event ${cls}"><div class="diag-head"><span class="diag-stage">BACKEND · ${diagEsc(String(r.direction||'').toUpperCase())}</span><span class="muted">${diagEsc(r.created_at||'')}</span></div><div><b>Chat:</b> ${diagEsc(r.wa_user_id||'-')} · conversación #${diagEsc(r.conversation_id||'-')} · estado ${diagEsc(r.conversation_state||'-')}</div><div><b>Ticket:</b> ${diagEsc(r.ticket_id||'-')} · ${diagEsc(r.ticket_status||'-')}</div><div class="diag-text"><b>${r.direction==='inbound'?'Escribió':'Respondió'}:</b> ${diagEsc(r.body||'')}</div><div class="diag-url"><b>URL:</b> ${diagEsc(r.request_url||'')}</div><details><summary>Payload completo</summary><pre class="diag-raw">${diagEsc(diagJson(r.raw_payload))}</pre></details></div>`;
+  return `<div class="diag-event ${cls}"><div class="diag-head"><span class="diag-stage">BACKEND · ${diagEsc(String(r.direction||'').toUpperCase())}</span><span class="muted">${diagEsc(diagLocalTime(r.created_at))}</span></div><div><b>Chat:</b> ${diagEsc(r.wa_user_id||'-')} · conversación #${diagEsc(r.conversation_id||'-')} · estado ${diagEsc(r.conversation_state||'-')}</div><div><b>Ticket:</b> ${diagEsc(r.ticket_id||'-')} · ${diagEsc(r.ticket_status||'-')}</div><div class="diag-text"><b>${r.direction==='inbound'?'Escribió':'Respondió'}:</b> ${diagEsc(r.body||'')}</div><div class="diag-url"><b>URL:</b> ${diagEsc(r.request_url||'')}</div><details><summary>Payload completo</summary><pre class="diag-raw">${diagEsc(diagJson(r.raw_payload))}</pre></details></div>`;
 }
 function diagErrorRow(r){
- return `<div class="diag-event error"><div class="diag-head"><span class="diag-stage">BACKEND ERROR · ${diagEsc(r.action||'error')}</span><span class="muted">${diagEsc(r.created_at||'')}</span></div><div>${diagEsc(r.entity||'')} #${diagEsc(r.entity_id||'')}</div><pre class="diag-raw">${diagEsc(diagJson(r.details))}</pre></div>`;
+ return `<div class="diag-event error"><div class="diag-head"><span class="diag-stage">BACKEND ERROR · ${diagEsc(r.action||'error')}</span><span class="muted">${diagEsc(diagLocalTime(r.created_at))}</span></div><div>${diagEsc(r.entity||'')} #${diagEsc(r.entity_id||'')}</div><pre class="diag-raw">${diagEsc(diagJson(r.details))}</pre></div>`;
 }
 async function adminDiagnostics(){
  if(!diagnosticsIsAdmin())return err('Solo el administrador puede abrir el diagnóstico integral.');
@@ -237,7 +253,7 @@ async function adminDiagnostics(){
    const failures=app.filter(x=>/ERROR|FAILED/i.test(x.stage||'')).length;
    const discarded=app.filter(x=>/DISCARDED/i.test(x.stage||'')).length;
    const http500=app.filter(x=>/HTTP 500/i.test(x.detail||'')).length;
-   $('content').innerHTML=`<div id="adminDiagnosticsRoot"><div class="section-title"><div><h2>🧪 Diagnóstico integral</h2><div class="muted">Solo administrador · seguimiento App Android ↔ Backend ↔ WhatsApp</div></div><button id="diagRefresh" style="width:auto">Actualizar</button></div><div class="diag-admin-grid"><div class="card"><div class="diag-count">${app.length}</div><div class="diag-label">Eventos de la app</div></div><div class="card"><div class="diag-count">${failures}</div><div class="diag-label">Errores / fallos</div></div><div class="card"><div class="diag-count">${discarded}</div><div class="diag-label">Descartados</div></div><div class="card"><div class="diag-count">${http500}</div><div class="diag-label">HTTP 500</div></div></div><div class="diag-filter"><label>Buscar<input id="diagSearch" placeholder="texto, teléfono, URL, error..."></label><label>Vista<select id="diagView"><option value="app">Eventos de app</option><option value="messages">Mensajes backend</option><option value="errors">Errores backend</option><option value="all">Todo</option></select></label><button id="diagApply" style="width:auto">Filtrar</button></div><div class="card"><b>Backend base:</b><div class="diag-url">${diagEsc(data.base_url||'')}</div></div><div id="diagRows"></div></div>`;
+   $('content').innerHTML=`<div id="adminDiagnosticsRoot"><div class="section-title"><div><h2>🧪 Diagnóstico integral</h2><div class="muted">Solo administrador · seguimiento App Android ↔ Backend ↔ WhatsApp · horas mostradas en la zona local de este dispositivo</div></div><button id="diagRefresh" style="width:auto">Actualizar</button></div><div class="diag-admin-grid"><div class="card"><div class="diag-count">${app.length}</div><div class="diag-label">Eventos de la app</div></div><div class="card"><div class="diag-count">${failures}</div><div class="diag-label">Errores / fallos</div></div><div class="card"><div class="diag-count">${discarded}</div><div class="diag-label">Descartados</div></div><div class="card"><div class="diag-count">${http500}</div><div class="diag-label">HTTP 500</div></div></div><div class="diag-filter"><label>Buscar<input id="diagSearch" placeholder="texto, teléfono, URL, error..."></label><label>Vista<select id="diagView"><option value="app">Eventos de app</option><option value="messages">Mensajes backend</option><option value="errors">Errores backend</option><option value="all">Todo</option></select></label><button id="diagApply" style="width:auto">Filtrar</button></div><div class="card"><b>Backend base:</b><div class="diag-url">${diagEsc(data.base_url||'')}</div></div><div id="diagRows"></div></div>`;
    const render=()=>{const q=String($('diagSearch')?.value||'').toLowerCase(),view=$('diagView')?.value||'app';let html='';const match=x=>!q||diagJson(x).toLowerCase().includes(q);if(view==='app'||view==='all')html+=app.filter(match).map(diagAppRow).join('');if(view==='messages'||view==='all')html+=msgs.filter(match).map(diagMessageRow).join('');if(view==='errors'||view==='all')html+=errors.filter(match).map(diagErrorRow).join('');$('diagRows').innerHTML=html||'<div class="card muted">No hay registros para este filtro.</div>'};
    $('diagRefresh').onclick=adminDiagnostics;$('diagApply').onclick=render;$('diagSearch').onkeydown=e=>{if(e.key==='Enter')render()};$('diagView').onchange=render;render();
  }catch(x){err(x.message)}

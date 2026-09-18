@@ -597,6 +597,22 @@ def _handle_evidence_action_reply(
     add = _command_matches(answer, cfg.get('submenu_add_commands', ''))
     replace = _command_matches(answer, cfg.get('submenu_change_commands', ''))
 
+    matched_rule = 'submenu_add' if add else ('submenu_change' if replace else 'no_match')
+    _trace_flow(
+        db,
+        operator=operator,
+        conversation=conversation,
+        ticket=ticket,
+        data=data,
+        stage='rule_evaluated',
+        node='evidencia_agregar_cambiar',
+        rule=matched_rule,
+        action=(cfg.get('submenu_add_action') if add else cfg.get('submenu_change_action') if replace else 'repeat_prompt'),
+        next_node=(cfg.get('submenu_add_next') if add else cfg.get('submenu_change_next') if replace else 'evidencia_agregar_cambiar'),
+        result='matched' if (add or replace) else 'no_match',
+        extra={'image_mode': cfg.get('mode_key')},
+    )
+
     if not add and not replace:
         response = cfg.get('submenu_text') or IMAGE_EVIDENCE_ACTION_TEXT
         outbound = _reply(
@@ -666,6 +682,51 @@ def _handle_evidence_action_reply(
     }
 
 
+def _trace_flow(
+    db: Session,
+    *,
+    operator: User,
+    conversation: Conversation | None,
+    ticket: SupportTicket | None,
+    data: local_bridge.LocalInbound,
+    stage: str,
+    node: str = '',
+    rule: str = '',
+    action: str = '',
+    next_node: str = '',
+    result: str = 'ok',
+    blocked_at: str = '',
+    extra: dict | None = None,
+) -> None:
+    details = {
+        'stage': stage,
+        'text_received': str(data.text or '')[:1000],
+        'conversation_id': conversation.id if conversation else None,
+        'ticket_id': ticket.id if ticket else None,
+        'state_before': conversation.state if conversation else None,
+        'node': node,
+        'rule': rule,
+        'action': action,
+        'next_node': next_node,
+        'result': result,
+        'blocked_at': blocked_at,
+        'package_name': data.package_name,
+        'device_id': data.device_id,
+        'notification_key': data.notification_key,
+        'post_time': data.post_time,
+        'can_reply': bool(data.can_reply),
+    }
+    if extra:
+        details.update(extra)
+    db.add(AuditLog(
+        username=operator.username,
+        action='flow_route_trace',
+        entity='conversation',
+        entity_id=str(conversation.id) if conversation else None,
+        details=details,
+    ))
+
+
 def _handle_confirmation_reply(
     db: Session,
     *,
@@ -680,6 +741,22 @@ def _handle_confirmation_reply(
     text = _normalized(data.text)
     yes = _command_matches(text, cfg.get('confirm_yes_commands', ''))
     no = _command_matches(text, cfg.get('confirm_no_commands', ''))
+
+    matched_rule = 'confirm_yes' if yes else ('confirm_no' if no else 'no_match')
+    _trace_flow(
+        db,
+        operator=operator,
+        conversation=conversation,
+        ticket=ticket,
+        data=data,
+        stage='rule_evaluated',
+        node='confirmar_imagen',
+        rule=matched_rule,
+        action=(cfg.get('confirm_yes_action') if yes else cfg.get('confirm_no_action') if no else 'repeat_prompt'),
+        next_node=(cfg.get('confirm_yes_next') if yes else cfg.get('confirm_no_next') if no else 'confirmar_imagen'),
+        result='matched' if (yes or no) else 'no_match',
+        extra={'image_mode': cfg.get('mode_key')},
+    )
 
     if not yes and not no:
         response = cfg.get('confirm_text') or IMAGE_CONFIRM_TEXT
@@ -806,6 +883,10 @@ def _record_image_flow_error(
             entity_id=str(conversation.id) if conversation else None,
             details={
                 'stage': stage,
+                'blocked_at': stage,
+                'state_before': conversation.state if conversation else None,
+                'node': conversation.state if conversation else None,
+                'route_status': 'blocked',
                 'error_type': type(exc).__name__,
                 'error': str(exc)[:3000],
                 'traceback': traceback.format_exc()[-12000:],
@@ -893,6 +974,25 @@ def image_evidence_inbound(
     db: Session = Depends(get_db),
 ):
     local_user_id, conversation, company, store, ticket = _active_context(db, data)
+
+    if conversation:
+        _trace_flow(
+            db,
+            operator=operator,
+            conversation=conversation,
+            ticket=ticket,
+            data=data,
+            stage='inbound_received',
+            node=conversation.state or '',
+            action='resolve_route',
+            next_node=conversation.state or '',
+            result='received',
+            extra={
+                'company_id': company.id if company else None,
+                'store_id': store.id if store else None,
+                'is_image': _is_image(data),
+            },
+        )
 
     if conversation and company and store and conversation.status not in {'help_pending', 'human_active'}:
         # Menu text is authoritative BEFORE media detection. WhatsApp can retain
@@ -1001,7 +1101,21 @@ def image_evidence_inbound(
             if duplicate:
                 db.rollback()
                 return {'status': 'duplicate', 'conversation_id': conversation.id, 'should_reply': False, 'ticket_id': ticket.id if ticket else None}
+            previous_state = conversation.state
             conversation.state = IMAGE_CONFIRM_STATE
+            _trace_flow(
+                db,
+                operator=operator,
+                conversation=conversation,
+                ticket=ticket,
+                data=data,
+                stage='route_selected',
+                node=previous_state or 'image_received',
+                rule='image_detected',
+                action='save_image_and_confirm',
+                next_node='confirmar_imagen',
+                result='ok',
+            )
             cfg = _image_runtime_config(db, company, ticket)
             confirm_text = cfg.get('confirm_text') or IMAGE_CONFIRM_TEXT
             outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=confirm_text)
@@ -1044,4 +1158,19 @@ def image_evidence_inbound(
                 'chatbot_paused': False,
             }
 
+    if conversation:
+        _trace_flow(
+            db,
+            operator=operator,
+            conversation=conversation,
+            ticket=ticket,
+            data=data,
+            stage='route_selected',
+            node=conversation.state or '',
+            rule='no_image_route_match',
+            action='delegate_global_tree',
+            next_node='global_entry_sequence',
+            result='delegated',
+        )
+        db.commit()
     return global_entry_sequence_patch.global_entry_sequence_inbound(data=data, operator=operator, db=db)

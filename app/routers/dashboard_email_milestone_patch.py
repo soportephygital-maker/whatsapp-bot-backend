@@ -121,6 +121,10 @@ def admin_diagnostics(
         AuditLog.action.like('%error%')
     ).order_by(AuditLog.id.desc()).limit(min(limit, 300)).all()
 
+    route_rows = db.query(AuditLog).filter(
+        AuditLog.action == 'flow_route_trace'
+    ).order_by(AuditLog.id.desc()).limit(min(limit, 700)).all()
+
     diagnostics = []
     for row in diag_rows:
         details = dict(row.details or {})
@@ -163,11 +167,20 @@ def admin_diagnostics(
         'details': row.details or {},
     } for row in error_rows]
 
+    routes = [{
+        'id': row.id,
+        'created_at': _utc_iso(row.created_at),
+        'username': row.username,
+        'conversation_id': row.entity_id,
+        **(dict(row.details or {}) if isinstance(row.details, dict) else {}),
+    } for row in route_rows]
+
     return {
         'base_url': DIAGNOSTICS_BASE_URL,
         'diagnostics': diagnostics,
         'messages': message_rows,
         'errors': errors,
+        'routes': routes,
     }
 
 
@@ -245,16 +258,21 @@ function diagMessageRow(r){
 function diagErrorRow(r){
  return `<div class="diag-event error"><div class="diag-head"><span class="diag-stage">BACKEND ERROR · ${diagEsc(r.action||'error')}</span><span class="muted">${diagEsc(diagLocalTime(r.created_at))}</span></div><div>${diagEsc(r.entity||'')} #${diagEsc(r.entity_id||'')}</div><pre class="diag-raw">${diagEsc(diagJson(r.details))}</pre></div>`;
 }
+function diagRouteRow(r){
+  const blocked=(r.result==='blocked'||r.route_status==='blocked'||r.blocked_at);
+  const cls=blocked?'error':'ok';
+  return `<div class="diag-event ${cls}"><div class="diag-head"><span class="diag-stage">RUTA · ${diagEsc(r.stage||'evento')}</span><span class="muted">${diagEsc(diagLocalTime(r.created_at))}</span></div><div><b>Recibió:</b> ${diagEsc(r.text_received||'-')}</div><div><b>Estado:</b> ${diagEsc(r.state_before||'-')} → <b>Nodo:</b> ${diagEsc(r.node||'-')}</div><div><b>Regla:</b> ${diagEsc(r.rule||'-')}</div><div><b>Acción:</b> ${diagEsc(r.action||'-')}</div><div><b>Siguiente nodo:</b> ${diagEsc(r.next_node||'-')}</div><div><b>Resultado:</b> ${diagEsc(r.result||'-')}${r.blocked_at?' · <b>Bloqueado en:</b> '+diagEsc(r.blocked_at):''}</div><div class="muted">Conversación #${diagEsc(r.conversation_id||'-')} · Ticket #${diagEsc(r.ticket_id||'-')} · App ${diagEsc(r.package_name||'-')}</div><details><summary>Ruta completa / datos</summary><pre class="diag-raw">${diagEsc(diagJson(r))}</pre></details></div>`;
+}
 async function adminDiagnostics(){
  if(!diagnosticsIsAdmin())return err('Solo el administrador puede abrir el diagnóstico integral.');
  try{
    const data=await api('/api/admin/diagnostics?limit=500');
-   const app=data.diagnostics||[],msgs=data.messages||[],errors=data.errors||[];
+   const app=data.diagnostics||[],msgs=data.messages||[],errors=data.errors||[],routes=data.routes||[];
    const failures=app.filter(x=>/ERROR|FAILED/i.test(x.stage||'')).length;
    const discarded=app.filter(x=>/DISCARDED/i.test(x.stage||'')).length;
    const http500=app.filter(x=>/HTTP 500/i.test(x.detail||'')).length;
-   $('content').innerHTML=`<div id="adminDiagnosticsRoot"><div class="section-title"><div><h2>🧪 Diagnóstico integral</h2><div class="muted">Solo administrador · seguimiento App Android ↔ Backend ↔ WhatsApp · horas mostradas en la zona local de este dispositivo</div></div><button id="diagRefresh" style="width:auto">Actualizar</button></div><div class="diag-admin-grid"><div class="card"><div class="diag-count">${app.length}</div><div class="diag-label">Eventos de la app</div></div><div class="card"><div class="diag-count">${failures}</div><div class="diag-label">Errores / fallos</div></div><div class="card"><div class="diag-count">${discarded}</div><div class="diag-label">Descartados</div></div><div class="card"><div class="diag-count">${http500}</div><div class="diag-label">HTTP 500</div></div></div><div class="diag-filter"><label>Buscar<input id="diagSearch" placeholder="texto, teléfono, URL, error..."></label><label>Vista<select id="diagView"><option value="app">Eventos de app</option><option value="messages">Mensajes backend</option><option value="errors">Errores backend</option><option value="all">Todo</option></select></label><button id="diagApply" style="width:auto">Filtrar</button></div><div class="card"><b>Backend base:</b><div class="diag-url">${diagEsc(data.base_url||'')}</div></div><div id="diagRows"></div></div>`;
-   const render=()=>{const q=String($('diagSearch')?.value||'').toLowerCase(),view=$('diagView')?.value||'app';let html='';const match=x=>!q||diagJson(x).toLowerCase().includes(q);if(view==='app'||view==='all')html+=app.filter(match).map(diagAppRow).join('');if(view==='messages'||view==='all')html+=msgs.filter(match).map(diagMessageRow).join('');if(view==='errors'||view==='all')html+=errors.filter(match).map(diagErrorRow).join('');$('diagRows').innerHTML=html||'<div class="card muted">No hay registros para este filtro.</div>'};
+   $('content').innerHTML=`<div id="adminDiagnosticsRoot"><div class="section-title"><div><h2>🧪 Diagnóstico integral</h2><div class="muted">Solo administrador · seguimiento App Android ↔ Backend ↔ WhatsApp · horas mostradas en la zona local de este dispositivo</div></div><button id="diagRefresh" style="width:auto">Actualizar</button></div><div class="diag-admin-grid"><div class="card"><div class="diag-count">${app.length}</div><div class="diag-label">Eventos de la app</div></div><div class="card"><div class="diag-count">${failures}</div><div class="diag-label">Errores / fallos</div></div><div class="card"><div class="diag-count">${discarded}</div><div class="diag-label">Descartados</div></div><div class="card"><div class="diag-count">${http500}</div><div class="diag-label">HTTP 500</div></div></div><div class="diag-filter"><label>Buscar<input id="diagSearch" placeholder="texto, teléfono, URL, error..."></label><label>Vista<select id="diagView"><option value="app">Eventos de app</option><option value="messages">Mensajes backend</option><option value="routes">Ruta de decisiones</option><option value="errors">Errores backend</option><option value="all">Todo</option></select></label><button id="diagApply" style="width:auto">Filtrar</button></div><div class="card"><b>Backend base:</b><div class="diag-url">${diagEsc(data.base_url||'')}</div></div><div id="diagRows"></div></div>`;
+   const render=()=>{const q=String($('diagSearch')?.value||'').toLowerCase(),view=$('diagView')?.value||'app';let html='';const match=x=>!q||diagJson(x).toLowerCase().includes(q);if(view==='app'||view==='all')html+=app.filter(match).map(diagAppRow).join('');if(view==='messages'||view==='all')html+=msgs.filter(match).map(diagMessageRow).join('');if(view==='routes'||view==='all')html+=routes.filter(match).map(diagRouteRow).join('');if(view==='errors'||view==='all')html+=errors.filter(match).map(diagErrorRow).join('');$('diagRows').innerHTML=html||'<div class="card muted">No hay registros para este filtro.</div>'};
    $('diagRefresh').onclick=adminDiagnostics;$('diagApply').onclick=render;$('diagSearch').onkeydown=e=>{if(e.key==='Enter')render()};$('diagView').onchange=render;render();
  }catch(x){err(x.message)}
 }

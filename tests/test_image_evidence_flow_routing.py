@@ -90,3 +90,12 @@ def test_image_flow_has_runtime_error_capture_and_option2_recovery():
     assert '_record_image_flow_error' in source
     assert '_fallback_confirmation_no' in source
     assert 'confirm_image_choice' in source
+
+
+def test_image_flow_route_trace_is_present():
+    import inspect
+    source = inspect.getsource(image_evidence_patch._trace_flow)
+    assert "flow_route_trace" in source
+    endpoint = inspect.getsource(image_evidence_patch.image_evidence_inbound)
+    assert "inbound_received" in endpoint
+    assert "route_selected" in endpoint

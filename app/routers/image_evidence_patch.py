@@ -1029,7 +1029,7 @@ def image_evidence_inbound(
         if conversation.state == IMAGE_CONFIRM_STATE and _is_confirmation_choice(data.text):
             try:
                 return _handle_confirmation_reply(
-                    db,
+                    db=db,
                     data=data,
                     operator=operator,
                     conversation=conversation,
@@ -1164,7 +1164,7 @@ def image_evidence_inbound(
 
         if conversation.state == IMAGE_CONFIRM_STATE:
             return _handle_confirmation_reply(
-                db,
+                db=db,
                 data=data,
                 operator=operator,
                 conversation=conversation,

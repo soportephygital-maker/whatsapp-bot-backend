@@ -208,7 +208,11 @@ def test_ai_learning_is_capped_and_auto_observations_are_pending():
 def test_store_and_identity_are_mandatory_before_repeat_shortcut():
     from app.routers import ticketed_local_bridge
     import inspect
-    source = inspect.getsource(ticketed_local_bridge.ticketed_local_inbound)
+    # Runtime patches may wrap ticketed_local_inbound after module import.
+    # Validate the module implementation, where the mandatory store/name/position
+    # gates live, instead of inspecting whichever wrapper owns the public symbol.
+    source = inspect.getsource(ticketed_local_bridge)
     assert 'first_company_identification or switching_company' in source
     assert 'IDENTITY_REQUIRED_STATE' in source
     assert 'REPEAT_ISSUE_CONFIRM_STATE' in source
+    assert 'indícame tu nombre y puesto' in source

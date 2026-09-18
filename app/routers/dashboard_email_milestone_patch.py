@@ -243,7 +243,10 @@ async function adminDiagnostics(){
  }catch(x){err(x.message)}
 }
 document.addEventListener('DOMContentLoaded',()=>{const b=$('navDiagnostics');if(!b)return;b.classList.toggle('h',!diagnosticsIsAdmin());b.onclick=adminDiagnostics});
-setInterval(()=>{if(document.getElementById('adminDiagnosticsRoot')&&diagnosticsIsAdmin())adminDiagnostics()},10000);
+// The diagnostics screen is manual-refresh only. Automatic full rendering every
+// 10 seconds reset filters, collapsed details and scroll position while the admin
+// was investigating an error.
+window.__phygitalDiagnosticsAutoRefreshDisabled=true;
 '''
     marker='\n})();'
     if marker in js:

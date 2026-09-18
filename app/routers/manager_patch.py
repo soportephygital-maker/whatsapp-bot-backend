@@ -78,7 +78,19 @@ users=async function(){LIVE_VIEW='users';LIVE_CHAT_ID=null;return _users()};
 function liveEditorBusy(){const a=document.activeElement;if(!a)return false;return ['INPUT','TEXTAREA','SELECT'].includes(a.tagName)||a.isContentEditable}
 async function liveStats(){try{const s=await api('/api/stats');if($('stats'))$('stats').innerHTML=Object.entries(s).map(([k,v])=>`<div class="card"><b style="font-size:24px">${esc(v)}</b><div>${esc(k)}</div></div>`).join('')}catch(_){}}
 async function liveChat(){if(!LIVE_CHAT_ID||!$('chatBox'))return;try{const box=$('chatBox'),nearBottom=(box.scrollHeight-box.scrollTop-box.clientHeight)<80;const msgs=await api('/api/conversaciones/'+LIVE_CHAT_ID+'/mensajes');const html=msgs.map(m=>`<div class="bubble ${m.direction==='inbound'?'in':'out'}"><b>${m.direction==='inbound'?'Cliente':esc(m.sender||'Bot')}</b><div>${esc(m.body)}</div><div class="muted">${esc(m.created_at)}</div>${m.direction==='outbound'&&m.delivery?.delivery_status?`<div class="delivery-state">${m.delivery.delivery_status==='requested'?'Pendiente de envío por teléfono':(m.delivery.delivery_status==='sent'?'Enviado por teléfono':(m.delivery.delivery_status==='failed'?'Error de envío':'Estado: '+esc(m.delivery.delivery_status)))}</div>`:''}</div>`).join('')||'<div class="muted">Sin mensajes.</div>';if(box.innerHTML!==html){box.innerHTML=html;if(nearBottom)box.scrollTop=box.scrollHeight}}catch(_){}}
-async function liveRefresh(){if(LIVE_REFRESH_BUSY||!localStorage.getItem(TK)||$('app')?.classList.contains('h'))return;LIVE_REFRESH_BUSY=true;try{await liveStats();if(LIVE_VIEW==='chat'){await liveChat();return}if(liveEditorBusy())return;const y=window.scrollY;if(LIVE_VIEW==='help')await _help();else if(LIVE_VIEW==='conv')await _conv();else if(LIVE_VIEW==='contacts')await _contacts();else if(LIVE_VIEW==='companies')await _companies();else if(LIVE_VIEW==='users')await _users();else if(LIVE_VIEW==='activity')await activity($('activityUser')?.value||'');window.scrollTo(0,y)}catch(_){}finally{LIVE_REFRESH_BUSY=false}}
+async function liveRefresh(){
+  if(LIVE_REFRESH_BUSY||!localStorage.getItem(TK)||$('app')?.classList.contains('h'))return;
+  LIVE_REFRESH_BUSY=true;
+  try{
+    // Never rebuild the active dashboard screen automatically. Re-rendering
+    // help/companies/users/activity every few seconds was ejecting the user from
+    // editors, changing scroll position and making navigation look like a page refresh.
+    // Keep only non-destructive counters and the currently open chat live.
+    await liveStats();
+    if(LIVE_VIEW==='chat')await liveChat();
+  }catch(_){}
+  finally{LIVE_REFRESH_BUSY=false}
+}
 setInterval(liveRefresh,8000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)liveRefresh()});
 '''

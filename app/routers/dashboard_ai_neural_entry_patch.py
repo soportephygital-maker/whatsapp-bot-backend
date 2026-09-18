@@ -50,7 +50,20 @@ if(typeof reportsView==='function'){const f=reportsView;reportsView=async functi
 if(typeof users==='function'){const f=users;users=async function(...args){rememberDashboardView('users');const r=await f(...args);setTimeout(decorateDashboardView,0);return r}}
 if(typeof activity==='function'){const f=activity;activity=async function(...args){rememberDashboardView('activity');const r=await f(...args);setTimeout(decorateDashboardView,0);return r}}
 const _entryRenderAi=renderSuperAdminAiNeural;renderSuperAdminAiNeural=async function(...args){if(typeof LIVE_VIEW!=='undefined')LIVE_VIEW='ai';if(typeof LIVE_CHAT_ID!=='undefined')LIVE_CHAT_ID=null;rememberDashboardView('ai');const out=await _entryRenderAi(...args);try{const s=await api('/api/admin-ai/status');const badge=document.querySelector('.ai-ai-badge');if(badge){const labels={openai:'OpenAI',ollama:'Modelo local',retrieval:'Memoria local'};badge.textContent=`● ${labels[s.provider]||s.provider||'IA local'} · ${s.model||'sin modelo'}`}}catch(_){}return out};
-const _entryLiveRefresh=typeof liveRefresh==='function'?liveRefresh:null;if(_entryLiveRefresh){liveRefresh=async function(){if(typeof LIVE_VIEW!=='undefined'&&LIVE_VIEW==='ai'){if(LIVE_REFRESH_BUSY||!localStorage.getItem(TK)||$('app')?.classList.contains('h'))return;LIVE_REFRESH_BUSY=true;try{if(typeof liveStats==='function')await liveStats();forceAdminAiEntry()}catch(_){}finally{LIVE_REFRESH_BUSY=false}return}const out=await _entryLiveRefresh();try{const s=await api('/api/stats');const stats=$('stats');if(stats)stats.innerHTML=renderDashStats(s);decorateDashboardView()}catch(_){}return out}};
+const _entryLiveRefresh=typeof liveRefresh==='function'?liveRefresh:null;if(_entryLiveRefresh){liveRefresh=async function(){
+    // Background refresh must be visually invisible. Never rebuild/decorate the
+    // current content panel from a timer; that was ejecting users from whichever
+    // dashboard screen/editor they were using.
+    if(typeof LIVE_REFRESH_BUSY!=='undefined'&&LIVE_REFRESH_BUSY)return;
+    if(!localStorage.getItem(TK)||$('app')?.classList.contains('h'))return;
+    if(typeof LIVE_REFRESH_BUSY!=='undefined')LIVE_REFRESH_BUSY=true;
+    try{
+        if(typeof liveStats==='function')await liveStats();
+        if(typeof LIVE_VIEW!=='undefined'&&LIVE_VIEW==='chat'&&typeof liveChat==='function')await liveChat();
+        if(typeof LIVE_VIEW!=='undefined'&&LIVE_VIEW==='ai')forceAdminAiEntry();
+    }catch(_){}
+    finally{if(typeof LIVE_REFRESH_BUSY!=='undefined')LIVE_REFRESH_BUSY=false}
+}};
 let _aiEntryAttempts=0;const _aiEntryTimer=setInterval(()=>{forceAdminAiEntry();_aiEntryAttempts+=1;if(document.getElementById('navAINeural')||_aiEntryAttempts>20)clearInterval(_aiEntryTimer)},250);document.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{forceAdminAiEntry();decorateDashboardView()},50));
 '''
     marker='\n})();'

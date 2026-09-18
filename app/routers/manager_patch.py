@@ -76,7 +76,7 @@ contacts=async function(){LIVE_VIEW='contacts';LIVE_CHAT_ID=null;return _contact
 companies=async function(){LIVE_VIEW='companies';LIVE_CHAT_ID=null;return _companies()};
 users=async function(){LIVE_VIEW='users';LIVE_CHAT_ID=null;return _users()};
 function liveEditorBusy(){const a=document.activeElement;if(!a)return false;return ['INPUT','TEXTAREA','SELECT'].includes(a.tagName)||a.isContentEditable}
-async function liveStats(){try{const s=await api('/api/stats');if($('stats'))$('stats').innerHTML=Object.entries(s).map(([k,v])=>`<div class="card"><b style="font-size:24px">${esc(v)}</b><div>${esc(k)}</div></div>`).join('')}catch(_){}}
+async function liveStats(){try{const s=await api('/api/stats');const stats=$('stats');if(!stats)return;const html=Object.entries(s).map(([k,v])=>`<div class="card"><b style="font-size:24px">${esc(v)}</b><div>${esc(k)}</div></div>`).join('');if(stats.innerHTML!==html)stats.innerHTML=html}catch(_){}}
 async function liveChat(){if(!LIVE_CHAT_ID||!$('chatBox'))return;try{const box=$('chatBox'),nearBottom=(box.scrollHeight-box.scrollTop-box.clientHeight)<80;const msgs=await api('/api/conversaciones/'+LIVE_CHAT_ID+'/mensajes');const html=msgs.map(m=>`<div class="bubble ${m.direction==='inbound'?'in':'out'}"><b>${m.direction==='inbound'?'Cliente':esc(m.sender||'Bot')}</b><div>${esc(m.body)}</div><div class="muted">${esc(m.created_at)}</div>${m.direction==='outbound'&&m.delivery?.delivery_status?`<div class="delivery-state">${m.delivery.delivery_status==='requested'?'Pendiente de envío por teléfono':(m.delivery.delivery_status==='sent'?'Enviado por teléfono':(m.delivery.delivery_status==='failed'?'Error de envío':'Estado: '+esc(m.delivery.delivery_status)))}</div>`:''}</div>`).join('')||'<div class="muted">Sin mensajes.</div>';if(box.innerHTML!==html){box.innerHTML=html;if(nearBottom)box.scrollTop=box.scrollHeight}}catch(_){}}
 async function liveRefresh(){
   if(LIVE_REFRESH_BUSY||!localStorage.getItem(TK)||$('app')?.classList.contains('h'))return;
@@ -93,6 +93,7 @@ async function liveRefresh(){
 }
 setInterval(liveRefresh,8000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)liveRefresh()});
+window.__phygitalGhostRefreshOnly=true;
 '''
     js = js.replace("document.addEventListener('DOMContentLoaded'", settings_code + "\ndocument.addEventListener('DOMContentLoaded'")
     return js

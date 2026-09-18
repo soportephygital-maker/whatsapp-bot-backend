@@ -308,8 +308,25 @@ def close_ticket(db: Session, *, conversation: Conversation, username: str, resu
     ticket.closed_by = username
     ticket.close_result = result
     db.add(AuditLog(username=username, action='ticket_closed', entity='support_ticket', entity_id=str(ticket.id), details={'result': result}))
+
+    # Closing the ticket is the primary operation. Dashboard notifications are
+    # secondary and must never abort the WhatsApp request. Previously an error in
+    # notify_ticket() propagated as HTTP 500, which rolled the transaction back
+    # and left the ticket visually ABIERTO even though option 1 was correct.
     if company:
-        notify_ticket(db, ticket, company, store, conversation, 'closed')
+        try:
+            notify_ticket(db, ticket, company, store, conversation, 'closed')
+        except Exception as exc:
+            db.add(AuditLog(
+                username=username,
+                action='ticket_close_notification_error',
+                entity='support_ticket',
+                entity_id=str(ticket.id),
+                details={
+                    'error': str(exc)[:1000],
+                    'non_blocking': True,
+                },
+            ))
     return ticket
 
 

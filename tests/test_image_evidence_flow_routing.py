@@ -57,3 +57,12 @@ def test_ticket_mode_detection_for_image_flow():
         subject = 'Incidencia preciador'
         description = 'Etiqueta sin precio'
     assert image_evidence_patch._image_mode_from_ticket(Ticket()) == 'preciadores'
+
+
+def test_ticket_close_path_uses_nonblocking_side_effect_policy():
+    import inspect
+    from app.services import ticketing
+    source = inspect.getsource(ticketing.close_ticket)
+    assert 'ticket_close_notification_error' in source
+    assert 'notify_ticket' in source
+    assert 'except Exception as exc' in source

@@ -648,35 +648,48 @@ def ticketed_local_inbound(
         current_store = None
 
     first_company_identification = previous_company is None and bool(explicit_routing.get('matched'))
-    needs_store = switching_company or first_company_identification or pre_state == 'identificar_tienda' or conversation.state == 'identificar_tienda'
+    needs_store_context = switching_company or first_company_identification or pre_state == 'identificar_tienda' or conversation.state == 'identificar_tienda'
 
-    if needs_store:
-        # Company recognition never skips the explicit store question. Even when
-        # Android has only one store selected, the user must identify/confirm it.
-        if first_company_identification or switching_company:
-            selected_store = None
+    if needs_store_context:
+        # Once the company is identified, do not stop the user with a separate
+        # store-selection step. Reuse the store detected in the message/device
+        # context; if there is only one enabled store, bind it automatically.
+        support_stores = _selected_company_stores(effective_data, company.id, db)
+        selected_store = (
+            selected_store
+            or current_store
+            or _selected_context_store(effective_data, db, company.id)
+            or (support_stores[0] if support_stores else None)
+            or db.query(Store).filter(Store.company_id == company.id).order_by(Store.id.asc()).first()
+        )
         if selected_store is None:
+            # Extremely defensive fallback: company exists but has no usable
+            # store record. Keep the conversation alive and ask for name/position
+            # instead of trapping it in identificar_tienda.
             conversation.company_id = company.id
             channel.company_id = company.id
-            channel.store_id = None
-            conversation.state = 'identificar_tienda'
-            prompt = _store_prompt(effective_data, company, db)
-            support_stores = _selected_company_stores(effective_data, company.id, db)
+            conversation.state = IDENTITY_REQUIRED_STATE
+            root_message = (
+                f'✅ Ya identifiqué {company.name}.\n\n'
+                '👤 Indícame tu nombre y puesto.\n'
+                'Ejemplo: Juan Pérez - Gerente.'
+            )
+            fallback_store = db.query(Store).filter(Store.company_id == company.id).order_by(Store.id.asc()).first()
             _set_reply(
                 db,
                 result,
-                prompt,
+                root_message,
                 effective_data,
                 conversation=conversation,
                 company=company,
-                store=support_stores[0] if support_stores else None,
+                store=fallback_store,
             )
             result.update({
-                'action': 'company_store_required',
+                'action': 'company_identity_required',
                 'company_key': company.company_key,
                 'company_name': company.name,
                 'company_identified': True,
-                'store_name': None,
+                'store_name': fallback_store.name if fallback_store else None,
                 'ticket_id': None,
                 'ticket_code': None,
             })
@@ -688,8 +701,8 @@ def ticketed_local_inbound(
         conversation.company_id = company.id
         conversation.state = IDENTITY_REQUIRED_STATE
         root_message = (
-            f'✅ Tienda identificada: {selected_store.name}.\n\n'
-            '👤 Antes de continuar, indícame tu nombre y puesto.\n'
+            f'✅ Ya identifiqué {company.name}.\n\n'
+            '👤 Indícame tu nombre y puesto.\n'
             'Ejemplo: Juan Pérez - Gerente.'
         )
         _set_reply(

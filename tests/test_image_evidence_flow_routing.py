@@ -205,14 +205,21 @@ def test_ai_learning_is_capped_and_auto_observations_are_pending():
     assert '_prune_learning_points' in source
 
 
-def test_store_and_identity_are_mandatory_before_repeat_shortcut():
+def test_company_detection_goes_directly_to_identity_and_repeat_shortcut_stays_after_identity():
     from app.routers import ticketed_local_bridge
     import inspect
-    # Runtime patches may wrap ticketed_local_inbound after module import.
-    # Validate the module implementation, where the mandatory store/name/position
-    # gates live, instead of inspecting whichever wrapper owns the public symbol.
     source = inspect.getsource(ticketed_local_bridge)
-    assert 'first_company_identification or switching_company' in source
+    assert 'needs_store_context' in source
+    assert 'company_identity_required' in source
     assert 'IDENTITY_REQUIRED_STATE' in source
     assert 'REPEAT_ISSUE_CONFIRM_STATE' in source
-    assert 'indícame tu nombre y puesto' in source
+    assert 'Indícame tu nombre y puesto' in source
+    assert "action': 'company_store_required'" not in source
+
+
+def test_report_confirmation_sends_review_email_with_case_pdfs():
+    import inspect
+    source = inspect.getsource(image_evidence_patch._handle_report_review_reply)
+    assert 'send_case_event_email' in source
+    assert "event='ticket_opened'" in source
+    assert 'image_review_email_sent' in source

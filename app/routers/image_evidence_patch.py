@@ -10,6 +10,7 @@ from ..auth import require_operator
 from ..database import get_db
 from ..models import AuditLog, CaseAttachment, Company, Contact, Conversation, ConversationChannel, GlobalSetting, Message, Store, SupportTicket, User
 from ..services import ai_learning, ticketing
+from ..services.case_event_notifications import send_case_event_email
 from ..services.ticketing import add_ticket_followup, ticket_code
 from . import global_entry_sequence_patch, local_bridge, ticketed_local_bridge
 
@@ -1195,6 +1196,28 @@ def _handle_report_review_reply(
         )
         outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
         if ticket:
+            try:
+                with db.begin_nested():
+                    # This is the milestone the user considers "send to review".
+                    # The email service generates the chat/resumen PDFs and embeds
+                    # the stored ticket photos inside them.
+                    sent = send_case_event_email(db, ticket=ticket, event='ticket_opened')
+                    db.add(AuditLog(
+                        username=operator.username,
+                        action='image_review_email_sent' if sent else 'image_review_email_not_sent',
+                        entity='support_ticket',
+                        entity_id=str(ticket.id),
+                        details={'event': 'ticket_opened', 'trigger': 'report_review_confirmed'},
+                    ))
+                    db.flush()
+            except Exception as exc:
+                db.add(AuditLog(
+                    username=operator.username,
+                    action='image_review_email_error',
+                    entity='support_ticket',
+                    entity_id=str(ticket.id),
+                    details={'error_type': type(exc).__name__, 'error': str(exc)[:1000]},
+                ))
             try:
                 with db.begin_nested():
                     ai_learning.learn_from_conversation(db, ticket)

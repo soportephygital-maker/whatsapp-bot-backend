@@ -3,8 +3,9 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_operator
 from ..database import get_db
-from ..models import AuditLog, CaseAttachment, Company, Conversation, ConversationChannel, Message, Store, SupportTicket, User
-from ..services.ticketing import add_ticket_followup, close_ticket, ticket_code
+from ..models import AuditLog, CaseAttachment, Company, Conversation, ConversationChannel, GlobalSetting, Message, Store, SupportTicket, User
+from ..services import ticketing
+from ..services.ticketing import add_ticket_followup, ticket_code
 from . import global_entry_sequence_patch, local_bridge, ticketed_local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-image-evidence'])
@@ -45,6 +46,63 @@ IMAGE_MORE_PROBLEM_TEXT = (
     '1️⃣ Sí, reportar otro problema\n'
     '2️⃣ No, enviar este ticket a validación'
 )
+
+_IMAGE_RUNTIME_DEFAULT = {
+    'confirm_text': IMAGE_CONFIRM_TEXT,
+    'confirm_yes_commands': '1, sí, si, correcta, es correcta, listo, siguiente',
+    'confirm_yes_response': 'Se cerrará el ticket con esta evidencia.',
+    'confirm_yes_action': 'cerrar_ticket_validacion',
+    'confirm_no_commands': '2, no, otra, agregar, cambiar',
+    'confirm_no_response': '📷 ¿Desea agregar o cambiar la foto?\n1️⃣ Agregar\n2️⃣ Cambiar',
+    'confirm_no_action': 'accion_normal',
+    'submenu_text': '📷 ¿Desea agregar o cambiar la foto?\n1️⃣ Agregar\n2️⃣ Cambiar',
+    'submenu_add_commands': '1, agregar, agregar otra, otra evidencia',
+    'submenu_add_response': IMAGE_ANOTHER_TEXT,
+    'submenu_add_action': 'esperar_imagen',
+    'submenu_change_commands': '2, cambiar, reemplazar, remplazar',
+    'submenu_change_response': IMAGE_REPLACE_TEXT,
+    'submenu_change_action': 'reemplazar_evidencia',
+}
+
+
+def _command_values(value: str) -> set[str]:
+    return {
+        _normalized(part)
+        for part in str(value or '').replace(';', ',').split(',')
+        if _normalized(part)
+    }
+
+
+def _command_matches(text: str, configured: str) -> bool:
+    normalized = _normalized(text)
+    return normalized in _command_values(configured)
+
+
+def _image_mode_from_ticket(ticket: SupportTicket | None) -> str:
+    text = _normalized(f'{ticket.subject if ticket else ""} {ticket.description if ticket else ""}')
+    if any(k in text for k in ('aimms', 'pda')):
+        return 'aimms_pda'
+    if any(k in text for k in ('gateway', 'gatway')):
+        return 'gateway_accesorios'
+    if 'accesor' in text:
+        return 'accesorios'
+    if any(k in text for k in ('preciador', 'precio', 'etiqueta electronica', 'esl')):
+        return 'preciadores'
+    return 'preciadores'
+
+
+def _image_runtime_config(db: Session, company: Company, ticket: SupportTicket | None) -> dict:
+    mode_key = _image_mode_from_ticket(ticket)
+    row = db.get(GlobalSetting, f'image_reception_flow:{company.id}')
+    value = row.value if row and isinstance(row.value, dict) else {}
+    modes = value.get('modes') if isinstance(value.get('modes'), dict) else {}
+    configured = modes.get(mode_key) if isinstance(modes.get(mode_key), dict) else {}
+    result = dict(_IMAGE_RUNTIME_DEFAULT)
+    for key, val in configured.items():
+        if isinstance(val, str) and val.strip():
+            result[key] = val.strip()
+    result['mode_key'] = mode_key
+    return result
 
 
 def _normalized(value: str) -> str:
@@ -240,7 +298,7 @@ def _close_for_validation(
 ) -> SupportTicket | None:
     if not ticket:
         return None
-    closed = close_ticket(
+    closed = ticketing.close_ticket(
         db,
         conversation=conversation,
         username=operator.username,
@@ -528,50 +586,46 @@ def _handle_evidence_action_reply(
     store: Store,
     ticket: SupportTicket | None,
 ):
+    cfg = _image_runtime_config(db, company, ticket)
     answer = _normalized(data.text)
-    add = answer in {
-        '1', 'agregar', 'agrega', 'agregar otra', 'agregar evidencia',
-        'agregar otra evidencia', 'otra', 'otra foto', 'otra evidencia',
-        'conservar', 'conservar esta', 'conservar foto', 'mas evidencia',
-    }
-    replace = answer in {
-        '2', 'reemplazar', 'reemplaza', 'reemplazar foto', 'reemplazar evidencia',
-        'remplazar', 'remplaza', 'remplazar foto', 'remplazar evidencia',
-        'cambiar', 'cambiar foto', 'cambiar evidencia', 'sustituir', 'sustituir foto',
-    }
+    add = _command_matches(answer, cfg.get('submenu_add_commands', ''))
+    replace = _command_matches(answer, cfg.get('submenu_change_commands', ''))
 
     if not add and not replace:
+        response = cfg.get('submenu_text') or IMAGE_EVIDENCE_ACTION_TEXT
         outbound = _reply(
             db,
             conversation=conversation,
             company=company,
             store=store,
             data=data,
-            text=IMAGE_EVIDENCE_ACTION_TEXT,
+            text=response,
         )
         db.commit()
         return {
             'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
             'company_name': company.name, 'store_name': store.name,
             'action': 'image_evidence_action_repeat',
-            'reply_text': IMAGE_EVIDENCE_ACTION_TEXT if data.can_reply else '',
+            'reply_text': response if data.can_reply else '',
             'should_reply': bool(data.can_reply), 'outbound_message_id': outbound.id,
             'ticket_id': ticket.id if ticket else None, 'chatbot_paused': False,
+            'image_mode': cfg.get('mode_key'),
         }
 
     _save_inbound_text(db, data=data, conversation=conversation, marker='image_evidence_action_answer')
 
     removed = 0
     if replace:
-        removed = _remove_latest_image_evidence(
-            db,
-            conversation=conversation,
-            ticket=ticket,
-        )
-        response = IMAGE_REPLACE_TEXT
+        if cfg.get('submenu_change_action') in {'reemplazar_evidencia', 'reemplazar_y_esperar_imagen'}:
+            removed = _remove_latest_image_evidence(
+                db,
+                conversation=conversation,
+                ticket=ticket,
+            )
+        response = cfg.get('submenu_change_response') or IMAGE_REPLACE_TEXT
         action = 'image_evidence_replace_requested'
     else:
-        response = IMAGE_ANOTHER_TEXT
+        response = cfg.get('submenu_add_response') or IMAGE_ANOTHER_TEXT
         action = 'image_evidence_add_requested'
 
     conversation.status = 'open'
@@ -593,6 +647,7 @@ def _handle_evidence_action_reply(
             'ticket_id': ticket.id if ticket else None,
             'answer': answer,
             'removed_attachments': removed,
+            'image_mode': cfg.get('mode_key'),
         },
     ))
     db.commit()
@@ -601,7 +656,7 @@ def _handle_evidence_action_reply(
         'company_name': company.name, 'store_name': store.name, 'action': action,
         'reply_text': response if data.can_reply else '', 'should_reply': bool(data.can_reply),
         'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
-        'chatbot_paused': False, 'removed_attachments': removed,
+        'chatbot_paused': False, 'removed_attachments': removed, 'image_mode': cfg.get('mode_key'),
     }
 
 
@@ -615,50 +670,67 @@ def _handle_confirmation_reply(
     store: Store,
     ticket: SupportTicket | None,
 ):
+    cfg = _image_runtime_config(db, company, ticket)
     text = _normalized(data.text)
-    yes = text in {
-        '1', 'si', 'correcta', 'correcto', 'esta bien', 'es correcta', 'esa es', 'esa esta bien',
-        'esta foto es la correcta', 'si esta foto es la correcta',
-        'cerrar', 'cerrar ticket', 'finalizar', 'terminar', 'listo', 'fin', 'salir',
-    }
-    no = text in {
-        '2', 'no', 'otra', 'otra foto', 'otra evidencia', 'enviar otra', 'quiero otra',
-        'deseo enviar otra', 'agregar', 'reemplazar', 'remplazar', 'cambiar foto',
-    }
+    yes = _command_matches(text, cfg.get('confirm_yes_commands', ''))
+    no = _command_matches(text, cfg.get('confirm_no_commands', ''))
+
     if not yes and not no:
-        outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=IMAGE_CONFIRM_TEXT)
+        response = cfg.get('confirm_text') or IMAGE_CONFIRM_TEXT
+        outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
         db.commit()
         return {
             'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
             'company_name': company.name, 'store_name': store.name, 'action': 'image_confirmation_repeat',
-            'reply_text': IMAGE_CONFIRM_TEXT if data.can_reply else '', 'should_reply': bool(data.can_reply),
+            'reply_text': response if data.can_reply else '', 'should_reply': bool(data.can_reply),
             'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
-            'chatbot_paused': False,
+            'chatbot_paused': False, 'image_mode': cfg.get('mode_key'),
         }
 
     _save_inbound_text(db, data=data, conversation=conversation, marker='image_confirmation_answer')
-
     context = _latest_image_context(db, conversation.id)
+
     if no:
         conversation.status = 'open'
         conversation.state = IMAGE_EVIDENCE_ACTION_STATE
-        response = IMAGE_EVIDENCE_ACTION_TEXT
-        action = 'image_choose_add_or_replace'
+        response = cfg.get('confirm_no_response') or cfg.get('submenu_text') or IMAGE_EVIDENCE_ACTION_TEXT
         outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
         db.add(AuditLog(
             username=operator.username,
-            action=action,
+            action='image_choose_add_or_replace',
             entity='conversation',
             entity_id=str(conversation.id),
-            details={'ticket_id': ticket.id if ticket else None, 'return_state': context.get('return_state')},
+            details={
+                'ticket_id': ticket.id if ticket else None,
+                'return_state': context.get('return_state'),
+                'image_mode': cfg.get('mode_key'),
+            },
         ))
         db.commit()
         return {
             'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
-            'company_name': company.name, 'store_name': store.name, 'action': action,
+            'company_name': company.name, 'store_name': store.name,
+            'action': 'image_choose_add_or_replace',
             'reply_text': response if data.can_reply else '', 'should_reply': bool(data.can_reply),
             'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
-            'chatbot_paused': False,
+            'chatbot_paused': False, 'image_mode': cfg.get('mode_key'),
+        }
+
+    # The configured action is authoritative. If the administrator changes this
+    # option away from close_ticket_validacion, do not close the case.
+    yes_action = cfg.get('confirm_yes_action') or 'cerrar_ticket_validacion'
+    if yes_action != 'cerrar_ticket_validacion':
+        conversation.status = 'open'
+        response = cfg.get('confirm_yes_response') or 'Continuemos.'
+        outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=response)
+        db.commit()
+        return {
+            'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
+            'company_name': company.name, 'store_name': store.name,
+            'action': yes_action, 'reply_text': response if data.can_reply else '',
+            'should_reply': bool(data.can_reply), 'outbound_message_id': outbound.id,
+            'ticket_id': ticket.id if ticket else None, 'chatbot_paused': False,
+            'image_mode': cfg.get('mode_key'),
         }
 
     closed = _close_for_validation(
@@ -670,7 +742,11 @@ def _handle_confirmation_reply(
     )
     conversation.status = 'closed'
     conversation.state = 'closed_previous_ticket'
-    response = _validation_closed_text(closed or ticket, company, store)
+    configured_response = str(cfg.get('confirm_yes_response') or '').strip()
+    response = configured_response or _validation_closed_text(closed or ticket, company, store)
+    # Always append the validation state so the user receives the real result.
+    if 'pendiente de validación' not in _normalized(response):
+        response = response.rstrip() + '\n\n' + _validation_closed_text(closed or ticket, company, store)
     outbound = _reply(
         db,
         conversation=conversation,
@@ -688,6 +764,7 @@ def _handle_confirmation_reply(
             'ticket_id': ticket.id if ticket else None,
             'return_state': context.get('return_state'),
             'answer': text,
+            'image_mode': cfg.get('mode_key'),
         },
     ))
     db.commit()
@@ -698,8 +775,9 @@ def _handle_confirmation_reply(
         'reply_text': response if data.can_reply else '', 'should_reply': bool(data.can_reply),
         'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
         'chatbot_paused': False, 'pending_validation': True,
-        'reply_queued_for_retry': not bool(data.can_reply),
+        'reply_queued_for_retry': not bool(data.can_reply), 'image_mode': cfg.get('mode_key'),
     }
+
 
 @router.post('/inbound')
 def image_evidence_inbound(
@@ -794,7 +872,9 @@ def image_evidence_inbound(
                 db.rollback()
                 return {'status': 'duplicate', 'conversation_id': conversation.id, 'should_reply': False, 'ticket_id': ticket.id if ticket else None}
             conversation.state = IMAGE_CONFIRM_STATE
-            outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=IMAGE_CONFIRM_TEXT)
+            cfg = _image_runtime_config(db, company, ticket)
+            confirm_text = cfg.get('confirm_text') or IMAGE_CONFIRM_TEXT
+            outbound = _reply(db, conversation=conversation, company=company, store=store, data=data, text=confirm_text)
             db.add(AuditLog(
                 username=operator.username,
                 action='image_evidence_received',
@@ -806,7 +886,7 @@ def image_evidence_inbound(
             return {
                 'status': 'ok', 'conversation_id': conversation.id, 'company_key': company.company_key,
                 'company_name': company.name, 'store_name': store.name, 'action': 'image_confirmation',
-                'reply_text': IMAGE_CONFIRM_TEXT if data.can_reply else '', 'should_reply': bool(data.can_reply),
+                'reply_text': confirm_text if data.can_reply else '', 'should_reply': bool(data.can_reply),
                 'outbound_message_id': outbound.id, 'ticket_id': ticket.id if ticket else None,
                 'chatbot_paused': False,
             }

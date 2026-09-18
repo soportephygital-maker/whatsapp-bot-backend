@@ -44,3 +44,16 @@ def test_natural_add_change_choices_override_stale_media_metadata():
     assert image_evidence_patch._is_evidence_action_choice('Agregar') is True
     assert image_evidence_patch._is_evidence_action_choice('Cambiar') is True
     assert image_evidence_patch._is_evidence_action_choice('Reemplazar foto') is True
+
+
+def test_configured_image_commands_are_exact_and_editable():
+    assert image_evidence_patch._command_matches('1', '1, sí, correcta')
+    assert image_evidence_patch._command_matches('Agregar', '1, agregar, otra evidencia')
+    assert not image_evidence_patch._command_matches('cambiar', '1, agregar')
+
+
+def test_ticket_mode_detection_for_image_flow():
+    class Ticket:
+        subject = 'Incidencia preciador'
+        description = 'Etiqueta sin precio'
+    assert image_evidence_patch._image_mode_from_ticket(Ticket()) == 'preciadores'

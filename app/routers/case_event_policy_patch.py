@@ -164,6 +164,14 @@ ticketing.close_ticket = _policy_close_ticket
 # These modules imported close_ticket directly, so update their bound references too.
 ticketed_local_bridge.close_ticket = _policy_close_ticket
 ticketed_case_close.close_ticket = _policy_close_ticket
+
+# image_evidence_patch imports the ticketing module dynamically, but keep this
+# compatibility hook for older workers during rolling deploys.
+try:
+    from . import image_evidence_patch
+    image_evidence_patch.ticketing.close_ticket = _policy_close_ticket
+except Exception:
+    pass
 # Global entry calls this module function dynamically, so approved AI learning can
 # answer only when the normal tree has no match and human support is not active.
 ticketed_local_bridge.ticketed_local_inbound = _ai_guided_ticketed_inbound

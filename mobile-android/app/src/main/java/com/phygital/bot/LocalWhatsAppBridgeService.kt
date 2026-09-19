@@ -1,0 +1,690 @@
+package com.phygital.bot
+
+import android.Manifest
+import android.app.Notification
+import android.app.RemoteInput
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.ContactsContract
+import android.provider.Settings
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.net.URLEncoder
+import java.security.MessageDigest
+import java.text.Normalizer
+import java.util.concurrent.ConcurrentHashMap
+
+class LocalWhatsAppBridgeService : NotificationListenerService() {
+    private val allowedPackages = setOf("com.whatsapp", "com.whatsapp.w4b")
+    private val sessionPrefsName = "phygital_session"
+    private val bridgePrefsName = "phygital_local_bridge"
+    private val loopGuardPrefsName = "phygital_loop_guard"
+    private val bounceWindowMs = 45_000L
+    private val duplicateWindowMs = 12_000L
+    private val maxReplyHistory = 8
+    private val maxMediaBytes = 15 * 1024 * 1024
+    private val pendingMediaPerConversation = 6
+    @Volatile private var manualPollRunning = false
+
+    private data class MediaCandidate(
+        val bytes: ByteArray,
+        val filename: String,
+        val contentType: String,
+        val source: String,
+    )
+
+    private val pendingMedia = ConcurrentHashMap<String, MutableList<MediaCandidate>>()
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        BridgeDiagnostics.record(this, "LISTENER_CONNECTED", "NotificationListener conectado")
+        startManualReplyPolling()
+    }
+
+    override fun onListenerDisconnected() {
+        BridgeDiagnostics.record(this, "LISTENER_DISCONNECTED", "NotificationListener desconectado")
+        manualPollRunning = false
+        try { requestRebind(android.content.ComponentName(this, LocalWhatsAppBridgeService::class.java)) } catch (_: Exception) {}
+        super.onListenerDisconnected()
+    }
+
+    override fun onDestroy() {
+        manualPollRunning = false
+        pendingMedia.clear()
+        super.onDestroy()
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        startManualReplyPolling()
+        if (!allowedPackages.contains(sbn.packageName)) return
+        BridgeDiagnostics.record(this, "NOTIFICATION_DETECTED", packageName = sbn.packageName)
+
+        val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        val selectedPackage = prefs.getString("selected_whatsapp_package", "com.whatsapp.w4b")
+            ?: "com.whatsapp.w4b"
+        if (sbn.packageName != selectedPackage) {
+            BridgeDiagnostics.record(
+                this,
+                "DISCARDED",
+                "Aplicación no seleccionada. Activa=" + if (selectedPackage == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp",
+                sbn.packageName,
+            )
+            return
+        }
+
+        BridgeDiagnostics.record(
+            this,
+            "PACKAGE_ACCEPTED",
+            "Aplicación seleccionada aceptada por el puente",
+            sbn.packageName,
+        )
+
+        val selectedStoreIds = prefs.getStringSet("selected_store_ids", emptySet())
+            ?.mapNotNull { it.toIntOrNull() }
+            ?.distinct()
+            ?: emptyList()
+        if (selectedStoreIds.isEmpty()) {
+            BridgeDiagnostics.record(this, "DISCARDED", "No hay tienda seleccionada", sbn.packageName)
+            return
+        }
+
+        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null)
+        if (token.isNullOrBlank()) {
+            BridgeDiagnostics.record(this, "DISCARDED", "No hay sesión/token móvil", sbn.packageName)
+            return
+        }
+
+        val notification = sbn.notification ?: run {
+            BridgeDiagnostics.record(this, "DISCARDED", "Notificación vacía", sbn.packageName)
+            return
+        }
+        if ((notification.flags and Notification.FLAG_GROUP_SUMMARY) != 0) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Resumen de grupo de Android", sbn.packageName)
+            return
+        }
+
+        val extras = notification.extras
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        val senderKey = extras.getString(Notification.EXTRA_CONVERSATION_TITLE)
+            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
+            ?: title
+
+        // WhatsApp keeps previous image messages in notification history. Only the
+        // latest current message may classify this notification as an image.
+        val rawText = extractText(notification).trim()
+        val directMedia = extractCurrentMediaCandidate(notification, sbn.postTime, rawText)
+        val imageHint = directMedia != null || looksLikeImageText(rawText)
+        val text = when {
+            imageHint -> "[Imagen recibida]"
+            rawText.isNotBlank() -> rawText
+            else -> {
+                BridgeDiagnostics.record(this, "DISCARDED", "Notificación sin texto ni imagen", sbn.packageName, title)
+                return
+            }
+        }
+
+        BridgeDiagnostics.record(
+            this,
+            "MESSAGE_PARSED",
+            "Notificación leída; media_actual=${directMedia != null}; raw=${rawText.take(120)}",
+            sbn.packageName,
+            title,
+            text,
+        )
+
+        if (looksLikeGroup(notification, title)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Detectada como grupo", sbn.packageName, title, text)
+            return
+        }
+
+        // Classify menu/confirmation replies BEFORE the self-authored filter.
+        // WhatsApp can keep the notification title as "Tú" after RemoteInput even
+        // when the newest message belongs to the customer. Numeric choices must
+        // never disappear because of that stale title.
+        val normalizedInbound = normalizeName(text)
+        val criticalShortReply = normalizedInbound in setOf(
+            "1", "2", "si", "no", "listo", "finalizar", "terminar", "cerrar",
+            "fin", "salir", "correcta", "correcto", "es correcta", "es correcto",
+            "esta correcta", "esta correcto", "esa es", "es esa", "otra", "otra foto",
+            "otra evidencia", "agregar", "agregar otra", "agregar evidencia",
+            "agregar otra evidencia", "cambiar", "cambiar foto", "cambiar evidencia",
+            "reemplazar", "reemplazar foto", "reemplazar evidencia",
+            "remplazar", "remplazar foto", "remplazar evidencia"
+        )
+        if (!criticalShortReply && isSelfAuthoredNotification(notification, title, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Mensaje propio confirmado por historial", sbn.packageName, title, text)
+            return
+        }
+        if (criticalShortReply && normalizeName(title) in setOf("tu", "you", "me", "yo")) {
+            BridgeDiagnostics.record(
+                this,
+                "STALE_SELF_TITLE_BYPASSED",
+                "Título propio obsoleto ignorado para respuesta de menú",
+                sbn.packageName,
+                title,
+                text,
+            )
+        }
+        if (!criticalShortReply && isRemoteInputHistoryBounce(notification, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Rebote de RemoteInput", sbn.packageName, title, text)
+            return
+        }
+        if (!criticalShortReply && isRecentBotReply(sbn.packageName, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Coincide con respuesta reciente del bot", sbn.packageName, title, text)
+            return
+        }
+        if (!criticalShortReply && isBounceDuplicate(sbn.packageName, sbn.key, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Notificación duplicada/rebote", sbn.packageName, title, text)
+            return
+        }
+        // No descartamos contactos guardados. Un contacto guardado también puede iniciar soporte.
+        if (!criticalShortReply && isRapidDuplicate(sbn.packageName, title, text)) {
+            BridgeDiagnostics.record(this, "DISCARDED", "Duplicado rápido", sbn.packageName, title, text)
+            return
+        }
+        if (criticalShortReply) {
+            BridgeDiagnostics.record(
+                this,
+                "SHORT_REPLY_ACCEPTED",
+                "Respuesta corta prioritaria aceptada",
+                sbn.packageName,
+                title,
+                text,
+            )
+        }
+
+        val replyAction = findReplyAction(notification)
+        BridgeDiagnostics.record(this, "READY_TO_POST", "Listo para enviar al backend", sbn.packageName, title, text, replyAction != null)
+        val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: "android-device"
+        val mediaQueueKey = mediaQueueKey(sbn.packageName, senderKey.ifBlank { title })
+
+        Thread {
+            withWakeLock("inbound", 60_000L) {
+                var outboundMessageId = 0
+                var media = directMedia
+                try {
+                    if (media == null && imageHint) {
+                        media = mediaStoreFallback(sbn.postTime)
+                    }
+                    val storesJson = JSONArray()
+                    selectedStoreIds.forEach { storesJson.put(it) }
+                    val metadata = JSONObject()
+                        .put("category", notification.category ?: "")
+                        .put("saved_contact", isSavedContact(title))
+                        .put("contacts_permission", checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
+                        .put("bounce_filter", "v8-stale-self-title-safe")
+                        .put("media_capture", when {
+                            media != null -> "available"
+                            imageHint -> "detected"
+                            else -> "none"
+                        })
+                        .put("media_source", media?.source ?: if (imageHint) "notification_image_hint" else "")
+                        .put("media_content_type", media?.contentType ?: if (imageHint) "image/*" else "")
+                        .put("media_bytes", media?.bytes?.size ?: 0)
+                        .put("image_permission", hasImageReadPermission())
+                        .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp")
+                    val payload = JSONObject()
+                        .put("package_name", sbn.packageName)
+                        .put("device_id", deviceId)
+                        .put("notification_key", sbn.key)
+                        .put("post_time", sbn.postTime)
+                        .put("sender", if (title.isBlank()) "Contacto" else title)
+                        .put("sender_key", senderKey)
+                        .put("text", text)
+                        .put("selected_store_ids", storesJson)
+                        .put("is_group", false)
+                        .put("can_reply", replyAction != null)
+                        .put("metadata", metadata)
+
+                    BridgeDiagnostics.record(this, "POST_SENDING", "Enviando /api/local-bridge/inbound", sbn.packageName, title, text, replyAction != null)
+                    val response = JSONObject(request("POST", "/api/local-bridge/inbound", payload.toString(), token))
+                    val shouldReply = response.optBoolean("should_reply", false)
+                    val replyText = response.optString("reply_text", "")
+                    val ticketId = response.optInt("ticket_id", 0)
+                    outboundMessageId = response.optInt("outbound_message_id", 0)
+                    BridgeDiagnostics.record(
+                        this,
+                        "BACKEND_RESPONSE",
+                        "should_reply=$shouldReply, ticket_id=$ticketId, outbound_message_id=$outboundMessageId",
+                        sbn.packageName,
+                        title,
+                        text,
+                        replyAction != null,
+                    )
+
+                    if (ticketId > 0) flushPendingMedia(token, ticketId, mediaQueueKey)
+                    if (media != null) {
+                        if (ticketId > 0) {
+                            if (!tryUploadMedia(token, ticketId, media!!)) queuePendingMedia(mediaQueueKey, media!!)
+                        } else {
+                            queuePendingMedia(mediaQueueKey, media!!)
+                        }
+                    }
+
+                    if (shouldReply && replyText.isNotBlank() && replyAction != null && outboundMessageId > 0) {
+                        rememberBotReply(sbn.packageName, replyText)
+                        val sent = sendInlineReply(replyAction, replyText)
+                        if (!sent) clearRememberedBotReply(sbn.packageName, replyText)
+                        reportDelivery(token, outboundMessageId, sent, sbn.key, if (sent) null else "Android no pudo ejecutar RemoteInput")
+                        BridgeDiagnostics.record(
+                            this,
+                            if (sent) "REMOTE_INPUT_SENT" else "REMOTE_INPUT_FAILED",
+                            if (sent) "Respuesta enviada a WhatsApp" else "Android no pudo ejecutar RemoteInput",
+                            sbn.packageName,
+                            title,
+                            replyText,
+                            replyAction != null,
+                        )
+                    } else if (shouldReply && replyText.isNotBlank() && replyAction == null) {
+                        BridgeDiagnostics.record(this, "REMOTE_INPUT_FAILED", "La notificación no contiene acción Responder", sbn.packageName, title, replyText, false)
+                    }
+                } catch (e: Exception) {
+                    BridgeDiagnostics.record(this, "ERROR", e.message ?: "Error local sin detalle", sbn.packageName, title, text, replyAction != null)
+                    if (media != null) queuePendingMedia(mediaQueueKey, media!!)
+                    if (outboundMessageId > 0) {
+                        try { reportDelivery(token, outboundMessageId, false, sbn.key, e.message ?: "Error local") } catch (_: Exception) {}
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun looksLikeImageText(rawText: String): Boolean {
+        val text = normalizeName(rawText)
+        if (text in setOf(
+                "foto", "photo", "imagen", "image",
+                "foto recibida", "photo received", "imagen recibida", "image received",
+                "envio una foto", "envio una imagen", "sent a photo", "sent an image"
+            )) return true
+        return (
+            text.startsWith("foto ") || text.startsWith("photo ") ||
+            text.startsWith("imagen ") || text.startsWith("image ") ||
+            text.contains("envio una foto") || text.contains("envio una imagen") ||
+            text.contains("sent a photo") || text.contains("sent an image")
+        )
+    }
+
+    private fun hasImageReadPermission(): Boolean =
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
+        } else {
+            checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        }
+
+    private fun mediaStoreFallback(postTime: Long): MediaCandidate? {
+        val captured = WhatsAppMediaStoreFallback.captureRecentIncomingImage(this, postTime) ?: return null
+        return MediaCandidate(captured.bytes, captured.filename, captured.contentType, captured.source)
+    }
+
+    private fun mediaQueueKey(packageName: String, senderKey: String): String =
+        "$packageName|${normalizeConversationLabel(senderKey)}"
+
+    private fun queuePendingMedia(key: String, media: MediaCandidate) {
+        if (key.isBlank() || media.bytes.isEmpty()) return
+        val digest = mediaDigest(media.bytes)
+        val list = pendingMedia.getOrPut(key) { mutableListOf() }
+        synchronized(list) {
+            if (list.any { mediaDigest(it.bytes) == digest }) return
+            list.add(media)
+            while (list.size > pendingMediaPerConversation) list.removeAt(0)
+        }
+    }
+
+    private fun flushPendingMedia(token: String, ticketId: Int, key: String) {
+        val list = pendingMedia[key] ?: return
+        val snapshot = synchronized(list) { list.toList() }
+        if (snapshot.isEmpty()) return
+        val uploaded = mutableListOf<String>()
+        snapshot.forEach { item -> if (tryUploadMedia(token, ticketId, item)) uploaded.add(mediaDigest(item.bytes)) }
+        if (uploaded.isNotEmpty()) {
+            synchronized(list) {
+                list.removeAll { mediaDigest(it.bytes) in uploaded }
+                if (list.isEmpty()) pendingMedia.remove(key)
+            }
+        }
+    }
+
+    private fun mediaDigest(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private fun tryUploadMedia(token: String, ticketId: Int, media: MediaCandidate): Boolean {
+        if (media.bytes.isEmpty() || media.bytes.size > maxMediaBytes) return false
+        val digest = mediaDigest(media.bytes)
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        val key = "media_uploaded_${ticketId}_$digest"
+        if (prefs.getBoolean(key, false)) return true
+        return try {
+            NetworkClient.uploadFile(
+                path = "/api/tickets/$ticketId/adjuntos",
+                bearer = token,
+                bytes = media.bytes,
+                filename = media.filename,
+                contentType = media.contentType,
+                fields = emptyMap(),
+            )
+            prefs.edit().putBoolean(key, true).apply()
+            true
+        } catch (_: Exception) { false }
+    }
+
+    private fun extractCurrentMediaCandidate(notification: Notification, postTime: Long, rawText: String): MediaCandidate? {
+        // A non-empty visible text that is not an image marker is authoritative.
+        // Do not reuse media left in WhatsApp's notification history from the
+        // previous message. This is what was swallowing menu replies after a photo.
+        if (rawText.isNotBlank() && !looksLikeImageText(rawText)) {
+            return null
+        }
+
+        extractLatestMessagingStyleMedia(notification, postTime, "messaging_style_uri")?.let { return it }
+        extractPictureExtra(notification, postTime)?.let { return it }
+        return null
+    }
+
+    private fun extractLatestMessagingStyleMedia(notification: Notification, postTime: Long, source: String): MediaCandidate? {
+        val bundles = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES) ?: return null
+        if (bundles.isEmpty()) return null
+
+        val official = runCatching { Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundles) }.getOrNull().orEmpty()
+        val latestOfficial = official.lastOrNull()
+        if (latestOfficial != null) {
+            val mime = latestOfficial.dataMimeType?.trim().orEmpty()
+            val uri = latestOfficial.dataUri
+            if (mime.startsWith("image/") && uri != null) {
+                readUriBytes(uri)?.let { bytes ->
+                    return MediaCandidate(bytes, "whatsapp-${postTime}.${extensionForMime(mime)}", mime, source)
+                }
+            }
+        }
+
+        val latestRaw = bundles.lastOrNull() as? android.os.Bundle ?: return null
+        val mime = latestRaw.getString("type")?.trim().orEmpty()
+        val uri = when (val raw = latestRaw.get("uri")) {
+            is Uri -> raw
+            is String -> runCatching { Uri.parse(raw) }.getOrNull()
+            else -> null
+        }
+        if (!mime.startsWith("image/") || uri == null) return null
+        readUriBytes(uri)?.let { bytes ->
+            return MediaCandidate(bytes, "whatsapp-${postTime}.${extensionForMime(mime)}", mime, "${source}_raw")
+        }
+        return null
+    }
+
+    private fun extractPictureExtra(notification: Notification, postTime: Long): MediaCandidate? {
+        @Suppress("DEPRECATION")
+        val bitmap = notification.extras.getParcelable(Notification.EXTRA_PICTURE) as? Bitmap ?: return null
+        val bytes = bitmapToJpeg(bitmap) ?: return null
+        return MediaCandidate(bytes, "whatsapp-${postTime}.jpg", "image/jpeg", "notification_picture")
+    }
+
+    private fun readUriBytes(uri: Uri): ByteArray? {
+        return try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                val out = ByteArrayOutputStream()
+                val buffer = ByteArray(32 * 1024)
+                var total = 0
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    total += read
+                    if (total > maxMediaBytes) return null
+                    out.write(buffer, 0, read)
+                }
+                out.toByteArray().takeIf { it.isNotEmpty() }
+            }
+        } catch (_: Exception) { null }
+    }
+
+    private fun bitmapToJpeg(bitmap: Bitmap): ByteArray? = try {
+        val out = ByteArrayOutputStream()
+        if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)) null else out.toByteArray()
+    } catch (_: Exception) { null }
+
+    private fun extensionForMime(mime: String): String = when (mime.lowercase()) {
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        "image/gif" -> "gif"
+        "image/heic", "image/heif" -> "heic"
+        else -> "jpg"
+    }
+
+    private fun isSelfAuthoredNotification(notification: Notification, title: String, text: String): Boolean {
+        val selfLabels = setOf("tu", "you", "me", "yo")
+        val messages = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        val latest = messages?.lastOrNull() as? android.os.Bundle
+        val latestSender = normalizeName(latest?.getCharSequence("sender")?.toString().orEmpty())
+
+        // The latest MessagingStyle sender is stronger evidence than the
+        // notification title. A non-self sender means this is an inbound message,
+        // even if WhatsApp left the title as "Tú" after a RemoteInput reply.
+        if (latestSender.isNotBlank()) {
+            return latestSender in selfLabels
+        }
+
+        val normalizedTitle = normalizeName(title)
+        if (normalizedTitle !in selfLabels) return false
+
+        // With no sender metadata, only classify it as our own message when the
+        // visible text is actually present in RemoteInput history.
+        return isRemoteInputHistoryBounce(notification, text)
+    }
+
+    private fun isRemoteInputHistoryBounce(notification: Notification, text: String): Boolean {
+        val candidate = normalizedMessage(text)
+        val history = notification.extras.getCharSequenceArray(Notification.EXTRA_REMOTE_INPUT_HISTORY) ?: return false
+        return history.any { item ->
+            val sent = normalizedMessage(item?.toString().orEmpty())
+            sent.isNotBlank() && (candidate == sent || (sent.length >= 12 && candidate.contains(sent)) || (candidate.length >= 12 && sent.contains(candidate)))
+        }
+    }
+
+    private fun withWakeLock(tag: String, timeoutMs: Long, block: () -> Unit) {
+        val power = getSystemService(PowerManager::class.java)
+        val wakeLock = power?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhygitalBot:$tag")
+        try {
+            wakeLock?.setReferenceCounted(false)
+            wakeLock?.acquire(timeoutMs)
+            block()
+        } finally {
+            if (wakeLock?.isHeld == true) try { wakeLock.release() } catch (_: Exception) {}
+        }
+    }
+
+    private fun startManualReplyPolling() {
+        if (manualPollRunning) return
+        manualPollRunning = true
+        Thread {
+            while (manualPollRunning) {
+                try { withWakeLock("manual-poll", 30_000L) { pollManualReplies() } } catch (_: Exception) {}
+                try { Thread.sleep(2500) } catch (_: InterruptedException) {}
+            }
+        }.start()
+    }
+
+    private fun notificationTitle(sbn: StatusBarNotification): String =
+        sbn.notification?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+
+    private fun normalizeConversationLabel(value: String): String =
+        normalizeName(value).removePrefix("52 ").removePrefix("521 ").trim()
+
+    private fun findActiveConversationNotification(notificationKey: String, packageName: String, senderDisplay: String): StatusBarNotification? {
+        val active = try { activeNotifications?.toList().orEmpty() } catch (_: Exception) { emptyList() }
+        active.firstOrNull { it.key == notificationKey && it.packageName == packageName }?.let { return it }
+        val wantedLabel = normalizeConversationLabel(senderDisplay)
+        val wantedDigits = digits(senderDisplay)
+        return active.asSequence()
+            .filter { it.packageName == packageName }
+            .filter { findReplyAction(it.notification ?: return@filter false) != null }
+            .firstOrNull { candidate ->
+                val title = notificationTitle(candidate)
+                val titleLabel = normalizeConversationLabel(title)
+                val titleDigits = digits(title)
+                (wantedLabel.isNotBlank() && titleLabel == wantedLabel) ||
+                    (wantedDigits.length >= 7 && titleDigits.length >= 7 && (wantedDigits.endsWith(titleDigits.takeLast(10)) || titleDigits.endsWith(wantedDigits.takeLast(10))))
+            }
+    }
+
+    private fun pollManualReplies() {
+        val bridgePrefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        val selectedPackage = bridgePrefs.getString("selected_whatsapp_package", "com.whatsapp.w4b")
+            ?: "com.whatsapp.w4b"
+        if (!allowedPackages.contains(selectedPackage)) return
+        val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null) ?: return
+        val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return
+        val response = request("GET", "/api/local-bridge/manual-pending?device_id=${URLEncoder.encode(deviceId, "UTF-8")}", null, token)
+        val rows = JSONArray(response)
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            val messageId = row.optInt("message_id", 0)
+            val notificationKey = row.optString("notification_key", "")
+            val packageName = row.optString("package_name", "")
+            val senderDisplay = row.optString("sender_display", "")
+            val text = row.optString("text", "").trim()
+            if (messageId <= 0 || text.isBlank() || packageName != selectedPackage) continue
+            val active = findActiveConversationNotification(notificationKey, packageName, senderDisplay) ?: continue
+            val action = findReplyAction(active.notification ?: continue)
+            if (action == null) {
+                reportDelivery(token, messageId, false, active.key, "La notificación activa no permite respuesta remota")
+                continue
+            }
+            rememberBotReply(packageName, text)
+            val sent = sendInlineReply(action, text)
+            if (!sent) clearRememberedBotReply(packageName, text)
+            reportDelivery(token, messageId, sent, active.key, if (sent) null else "Android no pudo ejecutar RemoteInput manual")
+        }
+    }
+
+    private fun packageSuffix(packageName: String): String = packageName.replace('.', '_')
+    private fun guardKey(packageName: String, kind: String): String = "${kind}_${packageSuffix(packageName)}"
+    private fun normalizedMessage(value: String): String = value.trim().replace("\\s+".toRegex(), " ")
+
+    private fun rememberBotReply(packageName: String, text: String) {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE)
+        val now = System.currentTimeMillis(); val normalized = normalizedMessage(text); val historyKey = guardKey(packageName, "reply_history")
+        val history = try { JSONArray(prefs.getString(historyKey, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        val fresh = JSONArray(); fresh.put(JSONObject().put("text", normalized).put("time", now))
+        for (i in 0 until history.length()) {
+            if (fresh.length() >= maxReplyHistory) break
+            val row = history.optJSONObject(i) ?: continue
+            val rowText = row.optString("text", ""); val rowTime = row.optLong("time", 0L)
+            if (rowText.isBlank() || now - rowTime !in 0..bounceWindowMs || rowText == normalized) continue
+            fresh.put(JSONObject().put("text", rowText).put("time", rowTime))
+        }
+        prefs.edit().putString(guardKey(packageName, "reply_text"), normalized).putLong(guardKey(packageName, "reply_time"), now).putString(historyKey, fresh.toString()).apply()
+    }
+
+    private fun clearRememberedBotReply(packageName: String, text: String) {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE); val normalized = normalizedMessage(text)
+        if (prefs.getString(guardKey(packageName, "reply_text"), null) == normalized) prefs.edit().remove(guardKey(packageName, "reply_text")).remove(guardKey(packageName, "reply_time")).apply()
+    }
+
+    private fun isRecentBotReply(packageName: String, text: String): Boolean {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE); val candidate = normalizedMessage(text); val now = System.currentTimeMillis(); val historyKey = guardKey(packageName, "reply_history")
+        val history = try { JSONArray(prefs.getString(historyKey, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        for (i in 0 until history.length()) {
+            val row = history.optJSONObject(i) ?: continue; val sent = row.optString("text", ""); val sentAt = row.optLong("time", 0L)
+            if (sent.isBlank() || now - sentAt !in 0..bounceWindowMs) continue
+            if (candidate == sent || (sent.length >= 12 && candidate.contains(sent)) || (candidate.length >= 12 && sent.contains(candidate))) return true
+        }
+        val sentText = prefs.getString(guardKey(packageName, "reply_text"), null) ?: return false; val sentAt = prefs.getLong(guardKey(packageName, "reply_time"), 0L)
+        if (now - sentAt !in 0..bounceWindowMs) return false
+        return candidate == sentText || (sentText.length >= 12 && candidate.contains(sentText)) || (candidate.length >= 12 && sentText.contains(candidate))
+    }
+
+    private fun isBounceDuplicate(packageName: String, notificationKey: String, text: String): Boolean {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE); val now = System.currentTimeMillis(); val candidate = normalizedMessage(text)
+        val key = guardKey(packageName, "bounce_text"); val notificationKeyPref = guardKey(packageName, "bounce_notification_key"); val timeKey = guardKey(packageName, "bounce_time")
+        val previousText = prefs.getString(key, null); val previousNotificationKey = prefs.getString(notificationKeyPref, null); val previousAt = prefs.getLong(timeKey, 0L)
+        val recent = now - previousAt in 0..duplicateWindowMs; val sameText = previousText == candidate; val sameNotification = previousNotificationKey == notificationKey
+        if (recent && sameText && (sameNotification || previousNotificationKey != null)) return true
+        prefs.edit().putString(key, candidate).putString(notificationKeyPref, notificationKey).putLong(timeKey, now).apply(); return false
+    }
+
+    private fun isRapidDuplicate(packageName: String, sender: String, text: String): Boolean {
+        val prefs = getSharedPreferences(loopGuardPrefsName, MODE_PRIVATE); val fingerprint = "$packageName|${normalizedMessage(sender)}|${normalizedMessage(text)}"
+        val key = guardKey(packageName, "inbound_fingerprint"); val timeKey = guardKey(packageName, "inbound_time"); val previous = prefs.getString(key, null); val previousAt = prefs.getLong(timeKey, 0L); val now = System.currentTimeMillis()
+        if (previous == fingerprint && now - previousAt in 0..duplicateWindowMs) return true
+        prefs.edit().putString(key, fingerprint).putLong(timeKey, now).apply(); return false
+    }
+
+    private fun extractText(notification: Notification): String {
+        val extras = notification.extras
+
+        // EXTRA_TEXT is the visible/current WhatsApp message. After an inline
+        // RemoteInput reply, EXTRA_MESSAGES may still contain the previous photo
+        // as its last media entry. Reading the history first caused replies such
+        // as 1 or 2 to be interpreted again as "[Imagen recibida]".
+        extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.let {
+            if (it.isNotBlank()) return it
+        }
+        extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.let {
+            if (it.isNotBlank()) return it
+        }
+
+        val messaging = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        if (!messaging.isNullOrEmpty()) {
+            val latest = messaging.lastOrNull()
+            if (latest is android.os.Bundle) {
+                latest.getCharSequence("text")?.toString()?.let {
+                    if (it.isNotBlank()) return it
+                }
+            }
+        }
+        return ""
+    }
+
+    private fun looksLikeGroup(notification: Notification, title: String): Boolean {
+        val extras = notification.extras
+        if (extras.getBoolean("android.isGroupConversation", false)) return true
+        val conversationTitle = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty()
+        if (conversationTitle.isNotBlank() && conversationTitle != title) return true
+        val info = extras.getCharSequence(Notification.EXTRA_INFO_TEXT)?.toString().orEmpty()
+        return info.contains("messages from", ignoreCase = true) || info.contains("mensajes de", ignoreCase = true)
+    }
+
+    private fun normalizeName(value: String): String {
+        val noAccents = Normalizer.normalize(value.lowercase().trim(), Normalizer.Form.NFD).replace("\\p{M}+".toRegex(), "")
+        return noAccents.replace("[^a-z0-9+]".toRegex(), " ").replace("\\s+".toRegex(), " ").trim()
+    }
+
+    private fun digits(value: String): String = value.filter { it.isDigit() }
+
+    private fun isSavedContact(sender: String): Boolean {
+        if (sender.isBlank()) return false
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return false
+        val senderName = normalizeName(sender); val senderDigits = digits(sender)
+        val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)
+        contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, projection, null, null, null)?.use { cursor ->
+            val nameIx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME); val numberIx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            while (cursor.moveToNext()) {
+                val name = if (nameIx >= 0) cursor.getString(nameIx).orEmpty() else ""; val number = if (numberIx >= 0) cursor.getString(numberIx).orEmpty() else ""
+                if (name.isNotBlank() && normalizeName(name) == senderName) return true
+                val contactDigits = digits(number)
+                if (senderDigits.length >= 7 && contactDigits.length >= 7 && (senderDigits.endsWith(contactDigits.takeLast(10)) || contactDigits.endsWith(senderDigits.takeLast(10)))) return true
+            }
+        }
+        return false
+    }
+
+    private fun findReplyAction(notification: Notification): Notification.Action? = notification.actions?.firstOrNull { !it.remoteInputs.isNullOrEmpty() }
+
+    private fun sendInlineReply(action: Notification.Action, replyText: String): Boolean {
+        val remoteInputs = action.remoteInputs ?: return false
+        if (remoteInputs.isEmpty()) return false
+        val intent = Intent(); val results = android.os.Bundle(); remoteInputs.forEach { input -> results.putCharSequence(input.resultKey, replyText) }; RemoteInput.addResultsToIntent(remoteInputs, intent, results)
+        return try { action.actionIntent.send(this, 0, intent); true } catch (_: Exception) { false }
+    }
+
+    private fun reportDelivery(token: String, messageId: Int, sent: Boolean, key: String, error: String?) {
+        val body = JSONObject().put("message_id", messageId).put("sent", sent).put("notification_key", key); if (error != null) body.put("error", error)
+        request("POST", "/api/local-bridge/delivery", body.toString(), token)
+    }
+
+    private fun request(method: String, path: String, body: String?, bearer: String): String = NetworkClient.request(method, path, body, bearer)
+}

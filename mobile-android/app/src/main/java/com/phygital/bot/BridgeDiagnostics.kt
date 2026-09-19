@@ -80,6 +80,7 @@ object BridgeDiagnostics {
             .put("request_url", requestUrl(stage, detail))
             .put("whatsapp_enabled", bridge.getBoolean("app_enabled_com_whatsapp", false))
             .put("whatsapp_business_enabled", bridge.getBoolean("app_enabled_com_whatsapp_w4b", false))
+            .put("selected_whatsapp_package", bridge.getString("selected_whatsapp_package", "com.whatsapp.w4b"))
             .put("selected_store_ids", JSONArray(stores))
         if (canReply == null) payload.put("can_reply", JSONObject.NULL) else payload.put("can_reply", canReply)
 
@@ -155,9 +156,12 @@ object BridgeDiagnostics {
             append("\nSesión/token: ").append(if (tokenPresent) "OK" else "FALTA")
             append("\nWhatsApp instalado: ").append(if (waInstalled) "Sí" else "No")
             append("\nWhatsApp Business instalado: ").append(if (wabInstalled) "Sí" else "No")
-            append("\nWhatsApp aceptado por el puente: Sí")
-            append("\nWhatsApp Business aceptado por el puente: Sí")
-            append("\nCompatibilidad flags WA/WAB: ").append(if (waEnabled && wabEnabled) "OK" else "MIGRANDO")
+            val selectedPackage = bridge.getString("selected_whatsapp_package", "com.whatsapp.w4b") ?: "com.whatsapp.w4b"
+            val selectedLabel = if (selectedPackage == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp"
+            append("\nAplicación seleccionada para responder: ").append(selectedLabel)
+            append("\nWhatsApp habilitado: ").append(if (waEnabled) "Sí" else "No")
+            append("\nWhatsApp Business habilitado: ").append(if (wabEnabled) "Sí" else "No")
+            append("\nModo de selección: UNA SOLA APP")
             append("\nTiendas seleccionadas: ").append(if (stores.isEmpty()) "NINGUNA" else stores.joinToString(","))
 
             append("\n\n=== ÚLTIMO EVENTO ===")
@@ -179,7 +183,7 @@ object BridgeDiagnostics {
                 !keepAliveActive || heartbeatAge !in 0..90 -> append("\n• El servicio de mantenimiento no está vivo. Usa 'Reiniciar escucha'.")
                 !tokenPresent -> append("\n• Falta sesión móvil válida.")
                 stores.isEmpty() -> append("\n• No hay tienda seleccionada.")
-                !waEnabled || !wabEnabled -> append("\n• La configuración antigua de apps está migrando; el puente actual acepta ambas aplicaciones.")
+                waEnabled == wabEnabled -> append("\n• Revisa la selección de aplicación: debe existir exactamente una app activa.")
                 time <= 0L -> append("\n• El acceso parece correcto, pero el listener no ha registrado eventos. Reinicia la escucha y manda un mensaje de prueba con WhatsApp cerrado o en segundo plano.")
                 else -> append("\n• Hay actividad del listener. Revisa el Estado y Detalle del último evento.")
             }

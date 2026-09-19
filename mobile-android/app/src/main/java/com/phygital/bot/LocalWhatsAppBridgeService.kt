@@ -66,15 +66,22 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         BridgeDiagnostics.record(this, "NOTIFICATION_DETECTED", packageName = sbn.packageName)
 
         val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        val selectedPackage = prefs.getString("selected_whatsapp_package", "com.whatsapp.w4b")
+            ?: "com.whatsapp.w4b"
+        if (sbn.packageName != selectedPackage) {
+            BridgeDiagnostics.record(
+                this,
+                "DISCARDED",
+                "Aplicación no seleccionada. Activa=" + if (selectedPackage == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp",
+                sbn.packageName,
+            )
+            return
+        }
 
-        // Rebuilt intake gate: any supported WhatsApp package is accepted.
-        // The old per-package switch could silently discard valid notifications
-        // (e.g. com.whatsapp=false while WhatsApp Business=true), which made the
-        // bot appear dead even though the listener was healthy.
         BridgeDiagnostics.record(
             this,
             "PACKAGE_ACCEPTED",
-            "Paquete WhatsApp soportado aceptado por el puente",
+            "Aplicación seleccionada aceptada por el puente",
             sbn.packageName,
         )
 
@@ -525,8 +532,9 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     private fun pollManualReplies() {
         val bridgePrefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
-        val anyEnabled = allowedPackages.any { bridgePrefs.getBoolean("app_enabled_${packageSuffix(it)}", false) }
-        if (!anyEnabled) return
+        val selectedPackage = bridgePrefs.getString("selected_whatsapp_package", "com.whatsapp.w4b")
+            ?: "com.whatsapp.w4b"
+        if (!allowedPackages.contains(selectedPackage)) return
         val token = getSharedPreferences(sessionPrefsName, MODE_PRIVATE).getString("token", null) ?: return
         val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) ?: return
         val response = request("GET", "/api/local-bridge/manual-pending?device_id=${URLEncoder.encode(deviceId, "UTF-8")}", null, token)
@@ -538,7 +546,7 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             val packageName = row.optString("package_name", "")
             val senderDisplay = row.optString("sender_display", "")
             val text = row.optString("text", "").trim()
-            if (messageId <= 0 || text.isBlank() || !allowedPackages.contains(packageName)) continue
+            if (messageId <= 0 || text.isBlank() || packageName != selectedPackage) continue
             val active = findActiveConversationNotification(notificationKey, packageName, senderDisplay) ?: continue
             val action = findReplyAction(active.notification ?: continue)
             if (action == null) {

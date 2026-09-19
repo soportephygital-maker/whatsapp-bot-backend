@@ -20,8 +20,9 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
 import androidx.core.content.FileProvider
 import org.json.JSONArray
@@ -112,16 +113,25 @@ class MainActivity : Activity() {
 
     private fun migrateBridgePackageSettings() {
         val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
-        if (!prefs.getBoolean("package_gate_v2_migrated", false)) {
+        val current = prefs.getString("selected_whatsapp_package", null)
+        if (current.isNullOrBlank()) {
+            val businessInstalled = runCatching {
+                @Suppress("DEPRECATION")
+                packageManager.getApplicationInfo("com.whatsapp.w4b", 0)
+                true
+            }.getOrDefault(false)
+            val selectedPackage = if (businessInstalled) "com.whatsapp.w4b" else "com.whatsapp"
             prefs.edit()
-                .putBoolean("app_enabled_com_whatsapp", true)
-                .putBoolean("app_enabled_com_whatsapp_w4b", true)
-                .putBoolean("package_gate_v2_migrated", true)
+                .putString("selected_whatsapp_package", selectedPackage)
+                .putBoolean("app_enabled_com_whatsapp", selectedPackage == "com.whatsapp")
+                .putBoolean("app_enabled_com_whatsapp_w4b", selectedPackage == "com.whatsapp.w4b")
+                .putBoolean("package_gate_v3_single_app", true)
                 .apply()
             BridgeDiagnostics.record(
                 this,
                 "CONFIG_MIGRATED",
-                "Se eliminó el bloqueo por app: WhatsApp y WhatsApp Business quedan habilitados para el puente",
+                "Selección única activada: " + if (selectedPackage == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp",
+                selectedPackage,
             )
         }
     }
@@ -335,12 +345,31 @@ class MainActivity : Activity() {
         }
 
         content.addView(TextView(this).apply {
-            text = "Aplicación a leer en este teléfono"
+            text = "Aplicación a responder en este teléfono"
             textSize = 17f
         })
         content.addView(TextView(this).apply {
-            text = "Phygital Bot atenderá automáticamente WhatsApp y WhatsApp Business instalados en este teléfono. Ya no existe un filtro separado que pueda bloquear una de las dos apps."
+            text = "Selecciona solo una. Phygital Bot ignorará por completo las notificaciones de la otra aplicación para evitar responder desde dos números."
         })
+
+        val selectedPackage = prefs.getString("selected_whatsapp_package", "com.whatsapp.w4b") ?: "com.whatsapp.w4b"
+        val appGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+        }
+        val waRadio = RadioButton(this).apply {
+            text = "WhatsApp"
+            id = View.generateViewId()
+            isChecked = selectedPackage == "com.whatsapp"
+        }
+        val businessRadio = RadioButton(this).apply {
+            text = "WhatsApp Business"
+            id = View.generateViewId()
+            isChecked = selectedPackage == "com.whatsapp.w4b"
+        }
+        appGroup.addView(waRadio)
+        appGroup.addView(businessRadio)
+        if (!waRadio.isChecked && !businessRadio.isChecked) businessRadio.isChecked = true
+        content.addView(appGroup)
 
         content.addView(TextView(this).apply {
             text = "\nTiendas que atenderá este teléfono"
@@ -396,13 +425,20 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancelar", null)
             .setPositiveButton("Guardar") { _, _ ->
                 val selectedIds = checks.filter { it.second.isChecked }.map { it.first.toString() }.toSet()
+                val selectedApp = if (waRadio.isChecked) "com.whatsapp" else "com.whatsapp.w4b"
                 val edit = prefs.edit()
-                    // Kept as true only for backward-compatible diagnostics.
-                    // Package selection is no longer a blocking gate.
-                    .putBoolean("app_enabled_com_whatsapp", true)
-                    .putBoolean("app_enabled_com_whatsapp_w4b", true)
+                    .putString("selected_whatsapp_package", selectedApp)
+                    .putBoolean("app_enabled_com_whatsapp", selectedApp == "com.whatsapp")
+                    .putBoolean("app_enabled_com_whatsapp_w4b", selectedApp == "com.whatsapp.w4b")
+                    .putBoolean("package_gate_v3_single_app", true)
                 if (checks.isNotEmpty()) edit.putStringSet("selected_store_ids", selectedIds)
                 edit.apply()
+                BridgeDiagnostics.record(
+                    this@MainActivity,
+                    "APP_SELECTION_CHANGED",
+                    "Aplicación activa: " + if (selectedApp == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp",
+                    selectedApp,
+                )
                 startBridgeKeepAlive()
                 if (notificationListenerAccessEnabled()) requestBridgeRebind()
             }

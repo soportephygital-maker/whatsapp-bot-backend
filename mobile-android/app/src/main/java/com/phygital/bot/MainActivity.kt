@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.view.View
@@ -108,6 +109,7 @@ class MainActivity : Activity() {
 
         restoreSavedSession()
         handleNotificationAction(intent)
+        requestBatteryOptimizationExemptionOnce()
         checkForUpdate(false)
     }
 
@@ -172,6 +174,27 @@ class MainActivity : Activity() {
                 sourceIntent.removeExtra("phygital_action")
                 showBridgeSettings()
             }
+        }
+    }
+
+    private fun requestBatteryOptimizationExemptionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        if (prefs.getBoolean("battery_exemption_prompted_v1", false)) return
+        val power = getSystemService(PowerManager::class.java) ?: return
+        if (power.isIgnoringBatteryOptimizations(packageName)) {
+            prefs.edit().putBoolean("battery_exemption_prompted_v1", true).apply()
+            return
+        }
+        prefs.edit().putBoolean("battery_exemption_prompted_v1", true).apply()
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName")
+                )
+            )
+        } catch (_: Exception) {
         }
     }
 
@@ -266,6 +289,27 @@ class MainActivity : Activity() {
         text = "Permisos / ajustes de la aplicación"
         setOnClickListener {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        }
+    }
+
+    private fun batteryOptimizationButton(): Button = Button(this).apply {
+        text = "Permitir funcionamiento con pantalla bloqueada"
+        setOnClickListener {
+            try {
+                val power = getSystemService(PowerManager::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && power != null && !power.isIgnoringBatteryOptimizations(packageName)) {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:$packageName")
+                        )
+                    )
+                } else {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            }
         }
     }
 
@@ -409,6 +453,7 @@ class MainActivity : Activity() {
             textSize = 16f
         })
         content.addView(notificationAccessButton())
+        content.addView(batteryOptimizationButton())
         content.addView(restartListenerButton())
         content.addView(appSettingsButton())
         content.addView(diagnosticsButton())

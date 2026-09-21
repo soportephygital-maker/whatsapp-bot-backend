@@ -43,11 +43,26 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        getSharedPreferences("phygital_bridge_runtime", MODE_PRIVATE).edit()
+            .putBoolean("listener_connected", true)
+            .putLong("listener_connected_at", System.currentTimeMillis())
+            .apply()
         BridgeDiagnostics.record(this, "LISTENER_CONNECTED", "NotificationListener conectado")
         startManualReplyPolling()
+        Thread {
+            try {
+                Thread.sleep(700L)
+                recoverRecentActiveNotifications("listener_connected")
+            } catch (_: Exception) {
+            }
+        }.start()
     }
 
     override fun onListenerDisconnected() {
+        getSharedPreferences("phygital_bridge_runtime", MODE_PRIVATE).edit()
+            .putBoolean("listener_connected", false)
+            .putLong("listener_disconnected_at", System.currentTimeMillis())
+            .apply()
         BridgeDiagnostics.record(this, "LISTENER_DISCONNECTED", "NotificationListener desconectado")
         manualPollRunning = false
         try { requestRebind(android.content.ComponentName(this, LocalWhatsAppBridgeService::class.java)) } catch (_: Exception) {}
@@ -501,10 +516,68 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
         manualPollRunning = true
         Thread {
             while (manualPollRunning) {
-                try { withWakeLock("manual-poll", 30_000L) { pollManualReplies() } } catch (_: Exception) {}
+                try {
+                    withWakeLock("manual-poll", 30_000L) {
+                        recoverRecentActiveNotifications("poll_fallback")
+                        pollManualReplies()
+                    }
+                } catch (_: Exception) {}
                 try { Thread.sleep(2500) } catch (_: InterruptedException) {}
             }
         }.start()
+    }
+
+    private fun recoverRecentActiveNotifications(source: String) {
+        val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+        val selectedPackage = prefs.getString("selected_whatsapp_package", "com.whatsapp.w4b")
+            ?: "com.whatsapp.w4b"
+        val now = System.currentTimeMillis()
+        val active = try { activeNotifications?.toList().orEmpty() } catch (_: Exception) { emptyList() }
+        val candidates = active.asSequence()
+            .filter { it.packageName == selectedPackage }
+            .filter { now - it.postTime in 0..120_000L }
+            .filter { it.notification != null }
+            .sortedBy { it.postTime }
+            .toList()
+
+        if (candidates.isEmpty()) {
+            if (source == "listener_connected") {
+                BridgeDiagnostics.record(
+                    this,
+                    "RECOVERY_SCAN_EMPTY",
+                    "Listener conectado; no hay notificaciones activas recientes de la app seleccionada",
+                    selectedPackage,
+                )
+            }
+            return
+        }
+
+        val runtime = getSharedPreferences("phygital_bridge_runtime", MODE_PRIVATE)
+        for (candidate in candidates) {
+            val raw = extractText(candidate.notification ?: continue).trim()
+            val fingerprint = candidate.key + "|" + candidate.postTime + "|" + raw.take(160)
+            val last = runtime.getString("last_recovery_fingerprint", null)
+            if (fingerprint == last) continue
+
+            runtime.edit()
+                .putString("last_recovery_fingerprint", fingerprint)
+                .putLong("last_recovery_scan_at", now)
+                .apply()
+
+            BridgeDiagnostics.record(
+                this,
+                "RECOVERY_NOTIFICATION_FOUND",
+                "Notificación activa recuperada por $source",
+                candidate.packageName,
+                notificationTitle(candidate),
+                raw,
+                findReplyAction(candidate.notification ?: continue) != null,
+            )
+            // Reuse the exact same validated inbound pipeline used by the normal
+            // NotificationListener callback. Existing bounce/duplicate guards
+            // prevent double processing if Android also delivered the callback.
+            onNotificationPosted(candidate)
+        }
     }
 
     private fun notificationTitle(sbn: StatusBarNotification): String =

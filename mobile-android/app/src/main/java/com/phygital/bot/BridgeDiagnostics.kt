@@ -28,7 +28,8 @@ object BridgeDiagnostics {
     ) {
         val now = System.currentTimeMillis()
         runCatching {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            prefs.edit()
                 .putLong("time", now)
                 .putString("stage", stage)
                 .putString("detail", detail.take(700))
@@ -39,6 +40,24 @@ object BridgeDiagnostics {
                     if (canReply == null) remove("can_reply") else putBoolean("can_reply", canReply)
                 }
                 .apply()
+
+            val listenerStages = setOf(
+                "LISTENER_CONNECTED", "LISTENER_DISCONNECTED",
+                "NOTIFICATION_DETECTED", "PACKAGE_ACCEPTED", "MESSAGE_PARSED",
+                "SHORT_REPLY_ACCEPTED", "READY_TO_POST", "POST_SENDING",
+                "BACKEND_RESPONSE", "REMOTE_INPUT_SENT", "REMOTE_INPUT_FAILED",
+                "RECOVERY_NOTIFICATION_FOUND", "RECOVERY_SCAN_EMPTY", "DISCARDED", "ERROR"
+            )
+            if (stage.uppercase() in listenerStages) {
+                prefs.edit()
+                    .putLong("listener_time", now)
+                    .putString("listener_stage", stage)
+                    .putString("listener_detail", detail.take(700))
+                    .putString("listener_package", packageName)
+                    .putString("listener_title", title.take(180))
+                    .putString("listener_text", text.take(300))
+                    .apply()
+            }
         }
         uploadToAdminDashboard(context, now, stage, detail, packageName, title, text, canReply)
     }
@@ -149,6 +168,14 @@ object BridgeDiagnostics {
         val heartbeat = runtime.getLong(BridgeKeepAliveService.HEARTBEAT_KEY, 0L)
         val heartbeatAge = if (heartbeat > 0L) ((System.currentTimeMillis() - heartbeat).coerceAtLeast(0L) / 1000L) else -1L
         val lastScreenState = runtime.getString("last_screen_state", "SIN EVENTO").orEmpty()
+        val listenerConnected = runtime.getBoolean("listener_connected", false)
+        val listenerConnectedAt = runtime.getLong("listener_connected_at", 0L)
+        val listenerTime = diag.getLong("listener_time", 0L)
+        val listenerStage = diag.getString("listener_stage", "").orEmpty()
+        val listenerDetail = diag.getString("listener_detail", "").orEmpty()
+        val listenerPackage = diag.getString("listener_package", "").orEmpty()
+        val listenerTitle = diag.getString("listener_title", "").orEmpty()
+        val listenerText = diag.getString("listener_text", "").orEmpty()
         val power = context.getSystemService(PowerManager::class.java)
         val batteryExempt = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || power?.isIgnoringBatteryOptimizations(context.packageName) == true
         val waEnabled = bridge.getBoolean("app_enabled_com_whatsapp", false)
@@ -162,6 +189,8 @@ object BridgeDiagnostics {
             append("=== ESTADO DEL PUENTE ===")
             append("\nAcceso a notificaciones: ").append(if (access) "ACTIVO" else "NO ACTIVO")
             append("\nKeepAlive: ").append(if (keepAliveActive) "ACTIVO" else "INACTIVO")
+            append("\nListener realmente conectado: ").append(if (listenerConnected) "SÍ" else "NO")
+            if (listenerConnectedAt > 0L) append(" desde ").append(fmtTime(listenerConnectedAt))
             append("\nÚltimo heartbeat: ").append(fmtTime(heartbeat))
             if (heartbeatAge >= 0) append(" (").append(heartbeatAge).append(" s)")
             append("\nSesión/token: ").append(if (tokenPresent) "OK" else "FALTA")
@@ -190,10 +219,31 @@ object BridgeDiagnostics {
                 if (detail.isNotBlank()) append("\nDetalle: ").append(detail)
             }
 
+            append("\n\n=== ÚLTIMO EVENTO DEL LISTENER ===")
+            if (listenerTime <= 0L) {
+                append("\nNINGUNO. Android no ha entregado eventos al listener.")
+            } else {
+                append("\nHora: ").append(fmtTime(listenerTime))
+                append("\nEstado: ").append(listenerStage.ifBlank { "Sin estado" })
+                if (listenerPackage.isNotBlank()) {
+                    append("\nApp: ").append(
+                        when (listenerPackage) {
+                            "com.whatsapp.w4b" -> "WhatsApp Business"
+                            "com.whatsapp" -> "WhatsApp"
+                            else -> listenerPackage
+                        }
+                    )
+                }
+                if (listenerTitle.isNotBlank()) append("\nConversación: ").append(listenerTitle)
+                if (listenerText.isNotBlank()) append("\nTexto: ").append(listenerText)
+                if (listenerDetail.isNotBlank()) append("\nDetalle: ").append(listenerDetail)
+            }
+
             append("\n\nInterpretación rápida:")
             when {
                 !access -> append("\n• Android no está dando acceso al listener. Abre 'Acceso a notificaciones' y activa Phygital Bot.")
                 !keepAliveActive || heartbeatAge !in 0..90 -> append("\n• El servicio de mantenimiento no está vivo. Usa 'Reiniciar escucha'.")
+                !listenerConnected -> append("\n• El permiso existe, pero el NotificationListener NO está conectado realmente. Usa 'Reiniciar escucha'.")
                 !tokenPresent -> append("\n• Falta sesión móvil válida.")
                 !batteryExempt -> append("\n• Android puede suspender el puente al bloquear la pantalla. Usa 'Permitir funcionamiento con pantalla bloqueada'.")
                 stores.isEmpty() -> append("\n• No hay tienda seleccionada.")

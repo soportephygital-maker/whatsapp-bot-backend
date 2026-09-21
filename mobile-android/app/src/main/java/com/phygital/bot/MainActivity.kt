@@ -486,8 +486,14 @@ class MainActivity : Activity() {
                     "Aplicación activa: " + if (selectedApp == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp",
                     selectedApp,
                 )
+                getSharedPreferences("phygital_bridge_runtime", MODE_PRIVATE).edit()
+                    .putLong("recovery_requested_at", System.currentTimeMillis())
+                    .apply()
                 startBridgeKeepAlive()
-                if (notificationListenerAccessEnabled()) requestBridgeRebind()
+                if (notificationListenerAccessEnabled()) {
+                    requestBridgeRebind()
+                    android.os.Handler(mainLooper).postDelayed({ requestBridgeRebind() }, 1200L)
+                }
             }
             .show()
     }

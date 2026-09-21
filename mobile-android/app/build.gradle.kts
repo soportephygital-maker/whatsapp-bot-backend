@@ -10,8 +10,8 @@ android {
         applicationId = "com.phygital.bot"
         minSdk = 26
         targetSdk = 36
-        versionCode = 77
-        versionName = "7.7"
+        versionCode = 78
+        versionName = "7.8"
     }
 
     signingConfigs {

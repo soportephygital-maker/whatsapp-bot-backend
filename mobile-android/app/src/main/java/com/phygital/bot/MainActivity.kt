@@ -121,6 +121,8 @@ class MainActivity : Activity() {
                 @Suppress("DEPRECATION")
                 packageManager.getApplicationInfo("com.whatsapp.w4b", 0)
                 true
+            }.getOrDefault(false) || runCatching {
+                packageManager.getLaunchIntentForPackage("com.whatsapp.w4b") != null
             }.getOrDefault(false)
             val selectedPackage = if (businessInstalled) "com.whatsapp.w4b" else "com.whatsapp"
             prefs.edit()

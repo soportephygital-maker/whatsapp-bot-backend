@@ -110,10 +110,16 @@ object BridgeDiagnostics {
     }
 
     private fun packageInstalled(context: Context, pkg: String): Boolean {
-        return runCatching {
+        val direct = runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getApplicationInfo(pkg, 0)
             true
+        }.getOrDefault(false)
+        if (direct) return true
+
+        // Fallback for vendor ROMs that still restrict direct package queries.
+        return runCatching {
+            context.packageManager.getLaunchIntentForPackage(pkg) != null
         }.getOrDefault(false)
     }
 

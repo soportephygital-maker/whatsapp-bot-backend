@@ -7,6 +7,7 @@ on:
       - main
       - agent/backend-v2-hardening
       - agent/company-tree-files-escalation
+      - agent/local-whatsapp-bridge-v2
 
 jobs:
   test:

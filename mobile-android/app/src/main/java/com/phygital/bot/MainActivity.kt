@@ -275,12 +275,54 @@ class MainActivity : Activity() {
         }
         Thread {
             try {
-                val companies = JSONArray(request("GET", "/api/empresas/listar", null, auth))
+                // The bridge must be able to choose from every active company it
+                // can physically answer for, regardless of dashboard company scope.
+                val rows = JSONArray(request("GET", "/api/local-bridge/stores", null, auth))
+                val companies = companiesFromBridgeStores(rows)
                 runOnUiThread { buildBridgeSettingsDialog(companies) }
-            } catch (_: Exception) {
-                runOnUiThread { buildBridgeSettingsDialog(JSONArray()) }
+            } catch (bridgeError: Exception) {
+                try {
+                    // Compatibility fallback for older backend deployments.
+                    val companies = JSONArray(request("GET", "/api/empresas/listar", null, auth))
+                    runOnUiThread { buildBridgeSettingsDialog(companies) }
+                } catch (fallbackError: Exception) {
+                    BridgeDiagnostics.record(
+                        this,
+                        "COMPANY_LOAD_ERROR",
+                        "No se pudieron cargar empresas. bridge=" + (bridgeError.message ?: "sin detalle") +
+                            " | fallback=" + (fallbackError.message ?: "sin detalle"),
+                    )
+                    runOnUiThread { buildBridgeSettingsDialog(JSONArray()) }
+                }
             }
         }.start()
+    }
+
+    private fun companiesFromBridgeStores(rows: JSONArray): JSONArray {
+        val companies = linkedMapOf<Int, JSONObject>()
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            val companyId = row.optInt("company_id", 0)
+            val storeId = row.optInt("id", 0)
+            if (companyId <= 0 || storeId <= 0) continue
+
+            val company = companies.getOrPut(companyId) {
+                JSONObject()
+                    .put("id", companyId)
+                    .put("empresa_id", row.optString("company_key", ""))
+                    .put("nombre", row.optString("company_name", "Empresa $companyId"))
+                    .put("activa", true)
+                    .put("tiendas", JSONArray())
+            }
+            company.getJSONArray("tiendas").put(
+                JSONObject()
+                    .put("id", storeId)
+                    .put("nombre", row.optString("name", "Tienda $storeId"))
+            )
+        }
+        val result = JSONArray()
+        companies.values.sortedBy { it.optString("nombre", "").lowercase() }.forEach { result.put(it) }
+        return result
     }
 
     private fun updateButton(): Button = Button(this).apply {

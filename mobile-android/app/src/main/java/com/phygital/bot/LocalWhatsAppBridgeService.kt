@@ -100,12 +100,18 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             sbn.packageName,
         )
 
+        val selectedCompanyId = prefs.getInt("selected_company_id", 0)
+        val selectedCompanyName = prefs.getString("selected_company_name", "").orEmpty()
         val selectedStoreIds = prefs.getStringSet("selected_store_ids", emptySet())
             ?.mapNotNull { it.toIntOrNull() }
             ?.distinct()
             ?: emptyList()
+        if (selectedCompanyId <= 0) {
+            BridgeDiagnostics.record(this, "DISCARDED", "No hay empresa seleccionada en Configuración", sbn.packageName)
+            return
+        }
         if (selectedStoreIds.isEmpty()) {
-            BridgeDiagnostics.record(this, "DISCARDED", "No hay tienda seleccionada", sbn.packageName)
+            BridgeDiagnostics.record(this, "DISCARDED", "La empresa seleccionada no tiene tiendas habilitadas", sbn.packageName)
             return
         }
 
@@ -244,6 +250,8 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
                         .put("media_bytes", media?.bytes?.size ?: 0)
                         .put("image_permission", hasImageReadPermission())
                         .put("app_label", if (sbn.packageName == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp")
+                        .put("selected_company_id", selectedCompanyId)
+                        .put("selected_company_name", selectedCompanyName)
                     val payload = JSONObject()
                         .put("package_name", sbn.packageName)
                         .put("device_id", deviceId)

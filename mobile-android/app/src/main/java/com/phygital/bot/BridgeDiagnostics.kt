@@ -87,6 +87,8 @@ object BridgeDiagnostics {
         if (token.isNullOrBlank()) return
         val bridge = context.getSharedPreferences(BRIDGE_PREFS, Context.MODE_PRIVATE)
         val stores = bridge.getStringSet("selected_store_ids", emptySet()).orEmpty().sorted()
+        val selectedCompanyId = bridge.getInt("selected_company_id", 0)
+        val selectedCompanyName = bridge.getString("selected_company_name", "").orEmpty()
         val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "android-device"
         val payload = JSONObject()
             .put("event_time_ms", now)
@@ -102,6 +104,8 @@ object BridgeDiagnostics {
             .put("whatsapp_enabled", bridge.getBoolean("app_enabled_com_whatsapp", false))
             .put("whatsapp_business_enabled", bridge.getBoolean("app_enabled_com_whatsapp_w4b", false))
             .put("selected_whatsapp_package", bridge.getString("selected_whatsapp_package", "com.whatsapp.w4b"))
+            .put("selected_company_id", bridge.getInt("selected_company_id", 0))
+            .put("selected_company_name", bridge.getString("selected_company_name", ""))
             .put("selected_store_ids", JSONArray(stores))
         if (canReply == null) payload.put("can_reply", JSONObject.NULL) else payload.put("can_reply", canReply)
 
@@ -204,7 +208,10 @@ object BridgeDiagnostics {
             append("\nWhatsApp habilitado: ").append(if (waEnabled) "Sí" else "No")
             append("\nWhatsApp Business habilitado: ").append(if (wabEnabled) "Sí" else "No")
             append("\nModo de selección: UNA SOLA APP")
-            append("\nTiendas seleccionadas: ").append(if (stores.isEmpty()) "NINGUNA" else stores.joinToString(","))
+            append("\nEmpresa seleccionada: ").append(
+                if (selectedCompanyId > 0) selectedCompanyName.ifBlank { "ID $selectedCompanyId" } else "NINGUNA"
+            )
+            append("\nTiendas habilitadas de la empresa: ").append(if (stores.isEmpty()) "NINGUNA" else stores.joinToString(","))
 
             append("\n\n=== ÚLTIMO EVENTO ===")
             if (time <= 0L) {
@@ -246,7 +253,8 @@ object BridgeDiagnostics {
                 !listenerConnected -> append("\n• El permiso existe, pero el NotificationListener NO está conectado realmente. Usa 'Reiniciar escucha'.")
                 !tokenPresent -> append("\n• Falta sesión móvil válida.")
                 !batteryExempt -> append("\n• Android puede suspender el puente al bloquear la pantalla. Usa 'Permitir funcionamiento con pantalla bloqueada'.")
-                stores.isEmpty() -> append("\n• No hay tienda seleccionada.")
+                selectedCompanyId <= 0 -> append("\n• No hay empresa seleccionada. Abre Configuración y elige la empresa que atenderá este teléfono.")
+                stores.isEmpty() -> append("\n• La empresa seleccionada no tiene tiendas habilitadas.")
                 waEnabled == wabEnabled -> append("\n• Revisa la selección de aplicación: debe existir exactamente una app activa.")
                 time <= 0L -> append("\n• El acceso parece correcto, pero el listener no ha registrado eventos. Reinicia la escucha y manda un mensaje de prueba con WhatsApp cerrado o en segundo plano.")
                 else -> append("\n• Hay actividad del listener. Revisa el Estado y Detalle del último evento.")

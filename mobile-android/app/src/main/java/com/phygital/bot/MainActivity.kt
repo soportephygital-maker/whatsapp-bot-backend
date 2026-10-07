@@ -25,6 +25,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
@@ -383,7 +384,8 @@ class MainActivity : Activity() {
 
     private fun buildBridgeSettingsDialog(companies: JSONArray) {
         val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
-        val selected = prefs.getStringSet("selected_store_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val previouslySelectedStores = prefs.getStringSet("selected_store_ids", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val previouslySelectedCompanyId = prefs.getInt("selected_company_id", 0)
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -418,35 +420,97 @@ class MainActivity : Activity() {
         content.addView(appGroup)
 
         content.addView(TextView(this).apply {
-            text = "\nTiendas que atenderá este teléfono"
-            textSize = 16f
+            text = "\nEmpresa que atenderá este teléfono"
+            textSize = 17f
+        })
+        content.addView(TextView(this).apply {
+            text = "Selecciona una empresa. Al guardar, la app habilitará automáticamente las tiendas de esa empresa para que el puente pueda responder sus chats."
         })
 
-        val checks = mutableListOf<Pair<Int, CheckBox>>()
-        if (companies.length() == 0) {
-            content.addView(TextView(this).apply {
-                text = "Las empresas/tiendas no están disponibles en este momento. La selección de aplicación y los demás ajustes siguen disponibles."
-            })
+        val companyGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
         }
+        val companyByRadioId = mutableMapOf<Int, JSONObject>()
+        val storesByCompanyId = mutableMapOf<Int, MutableList<Int>>()
+        val companyNameById = mutableMapOf<Int, String>()
+        val activeCompanies = mutableListOf<JSONObject>()
+
         for (i in 0 until companies.length()) {
             val company = companies.optJSONObject(i) ?: continue
-            val companyName = company.optString("nombre", company.optString("name", "Empresa"))
-            content.addView(TextView(this).apply {
-                text = "\n$companyName"
-                textSize = 15f
-            })
+            if (!company.optBoolean("activa", true)) continue
+            val companyId = company.optInt("id", 0)
+            if (companyId <= 0) continue
+            activeCompanies.add(company)
+            val companyName = company.optString("nombre", company.optString("name", "Empresa $companyId"))
+            companyNameById[companyId] = companyName
+            val storeIds = mutableListOf<Int>()
             val stores = company.optJSONArray("tiendas") ?: JSONArray()
             for (j in 0 until stores.length()) {
                 val store = stores.optJSONObject(j) ?: continue
                 val storeId = store.optInt("id", 0)
-                if (storeId <= 0) continue
-                val storeName = store.optString("nombre", store.optString("name", "Tienda $storeId"))
-                val check = CheckBox(this).apply {
-                    text = storeName
-                    isChecked = selected.contains(storeId.toString())
+                if (storeId > 0) storeIds.add(storeId)
+            }
+            storesByCompanyId[companyId] = storeIds
+
+            val radio = RadioButton(this).apply {
+                text = if (storeIds.isEmpty()) "$companyName (sin tiendas configuradas)" else companyName
+                id = View.generateViewId()
+                isEnabled = storeIds.isNotEmpty()
+            }
+            companyByRadioId[radio.id] = company
+            companyGroup.addView(radio)
+        }
+
+        // Preserve the previous company if available. If this is the first time,
+        // infer it from selected stores; with a single active company select it automatically.
+        var initialCompanyId = previouslySelectedCompanyId
+        if (initialCompanyId <= 0 && previouslySelectedStores.isNotEmpty()) {
+            for ((companyId, storeIds) in storesByCompanyId) {
+                if (storeIds.any { previouslySelectedStores.contains(it.toString()) }) {
+                    initialCompanyId = companyId
+                    break
                 }
-                checks.add(storeId to check)
-                content.addView(check)
+            }
+        }
+        if (initialCompanyId <= 0 && activeCompanies.size == 1) {
+            initialCompanyId = activeCompanies.first().optInt("id", 0)
+        }
+        for ((radioId, company) in companyByRadioId) {
+            if (company.optInt("id", 0) == initialCompanyId) {
+                companyGroup.check(radioId)
+                break
+            }
+        }
+
+        if (activeCompanies.isEmpty()) {
+            content.addView(TextView(this).apply {
+                text = "No se pudieron cargar empresas activas. Verifica la sesión y vuelve a abrir Configuración."
+            })
+        } else {
+            content.addView(companyGroup)
+        }
+
+        val selectedCompanyStatus = TextView(this).apply {
+            val name = companyNameById[initialCompanyId]
+            text = if (name.isNullOrBlank()) {
+                "Empresa activa: NINGUNA"
+            } else {
+                val count = storesByCompanyId[initialCompanyId]?.size ?: 0
+                "Empresa activa: $name · $count tienda(s)"
+            }
+            setPadding(0, 8, 0, 4)
+        }
+        content.addView(selectedCompanyStatus)
+
+        companyGroup.setOnCheckedChangeListener { _, checkedId ->
+            val company = companyByRadioId[checkedId]
+            val companyId = company?.optInt("id", 0) ?: 0
+            val companyName = companyNameById[companyId].orEmpty()
+            val count = storesByCompanyId[companyId]?.size ?: 0
+            selectedCompanyStatus.text = if (companyId > 0) {
+                "Empresa activa: $companyName · $count tienda(s)"
+            } else {
+                "Empresa activa: NINGUNA"
             }
         }
 
@@ -466,24 +530,44 @@ class MainActivity : Activity() {
         })
 
         val scroll = ScrollView(this).apply { addView(content) }
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Configuración de Phygital Bot")
             .setView(scroll)
             .setNegativeButton("Cancelar", null)
-            .setPositiveButton("Guardar") { _, _ ->
-                val selectedIds = checks.filter { it.second.isChecked }.map { it.first.toString() }.toSet()
+            .setPositiveButton("Guardar", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val checkedCompanyId = companyByRadioId[companyGroup.checkedRadioButtonId]?.optInt("id", 0) ?: 0
+                if (activeCompanies.isNotEmpty() && checkedCompanyId <= 0) {
+                    Toast.makeText(this, "Selecciona la empresa que atenderá este teléfono.", Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+
+                val selectedStoreIds = storesByCompanyId[checkedCompanyId].orEmpty().map { it.toString() }.toSet()
+                if (checkedCompanyId > 0 && selectedStoreIds.isEmpty()) {
+                    Toast.makeText(this, "La empresa seleccionada no tiene tiendas configuradas.", Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+
+                val selectedCompanyName = companyNameById[checkedCompanyId].orEmpty()
                 val selectedApp = if (waRadio.isChecked) "com.whatsapp" else "com.whatsapp.w4b"
-                val edit = prefs.edit()
+                prefs.edit()
                     .putString("selected_whatsapp_package", selectedApp)
                     .putBoolean("app_enabled_com_whatsapp", selectedApp == "com.whatsapp")
                     .putBoolean("app_enabled_com_whatsapp_w4b", selectedApp == "com.whatsapp.w4b")
                     .putBoolean("package_gate_v3_single_app", true)
-                if (checks.isNotEmpty()) edit.putStringSet("selected_store_ids", selectedIds)
-                edit.apply()
+                    .putInt("selected_company_id", checkedCompanyId)
+                    .putString("selected_company_name", selectedCompanyName)
+                    .putStringSet("selected_store_ids", selectedStoreIds)
+                    .apply()
+
                 BridgeDiagnostics.record(
                     this@MainActivity,
-                    "APP_SELECTION_CHANGED",
-                    "Aplicación activa: " + if (selectedApp == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp",
+                    "BRIDGE_SELECTION_CHANGED",
+                    "App=" + if (selectedApp == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp" +
+                        " | Empresa=$selectedCompanyName | Tiendas=" + selectedStoreIds.joinToString(","),
                     selectedApp,
                 )
                 getSharedPreferences("phygital_bridge_runtime", MODE_PRIVATE).edit()
@@ -494,8 +578,16 @@ class MainActivity : Activity() {
                     requestBridgeRebind()
                     android.os.Handler(mainLooper).postDelayed({ requestBridgeRebind() }, 1200L)
                 }
+                Toast.makeText(
+                    this,
+                    "Puente activo para $selectedCompanyName en " +
+                        if (selectedApp == "com.whatsapp.w4b") "WhatsApp Business" else "WhatsApp",
+                    Toast.LENGTH_LONG,
+                ).show()
+                dialog.dismiss()
             }
-            .show()
+        }
+        dialog.show()
     }
 
     private fun startBridgeKeepAlive() {

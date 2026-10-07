@@ -185,6 +185,8 @@ object BridgeDiagnostics {
         val waEnabled = bridge.getBoolean("app_enabled_com_whatsapp", false)
         val wabEnabled = bridge.getBoolean("app_enabled_com_whatsapp_w4b", false)
         val stores = bridge.getStringSet("selected_store_ids", emptySet()).orEmpty().sorted()
+        val selectedCompanyId = bridge.getInt("selected_company_id", 0)
+        val selectedCompanyName = bridge.getString("selected_company_name", "").orEmpty()
         val tokenPresent = !session.getString("token", null).isNullOrBlank()
         val waInstalled = packageInstalled(context, "com.whatsapp")
         val wabInstalled = packageInstalled(context, "com.whatsapp.w4b")

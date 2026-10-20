@@ -16,7 +16,7 @@ from ..models import (
     SupportContact,
     User,
 )
-from ..schemas import CompanyCreate, CompanyIdentificationUpdate, CompanyUpdate, DecisionTreeUpdate
+from ..schemas import CompanyCreate, CompanyIdentificationUpdate, CompanyUpdate, DecisionTreeUpdate, StoreCreate, StoreUpdate
 from ..services.company_routing import base_decision_tree, identification_profile
 
 router = APIRouter(prefix='/api/empresas', tags=['empresas'])
@@ -91,14 +91,65 @@ def create_company(data: CompanyCreate, admin: User = Depends(require_admin), db
     db.add(company)
     db.flush()
     count = max(len(data.stores), len(data.whatsapp_numbers), len(data.phone_number_ids))
-    for i in range(count):
-        name = data.stores[i] if i < len(data.stores) else f'Tienda {i + 1}'
-        number = data.whatsapp_numbers[i] if i < len(data.whatsapp_numbers) else None
-        phone_number_id = data.phone_number_ids[i] if i < len(data.phone_number_ids) else None
-        db.add(Store(company_id=company.id, name=name.strip(), whatsapp_number=(number or '').strip() or None, whatsapp_phone_number_id=(phone_number_id or '').strip() or None))
+    if count == 0:
+        db.add(Store(company_id=company.id, name='Principal'))
+    else:
+        for i in range(count):
+            name = data.stores[i] if i < len(data.stores) else f'Tienda {i + 1}'
+            number = data.whatsapp_numbers[i] if i < len(data.whatsapp_numbers) else None
+            phone_number_id = data.phone_number_ids[i] if i < len(data.phone_number_ids) else None
+            db.add(Store(company_id=company.id, name=name.strip(), whatsapp_number=(number or '').strip() or None, whatsapp_phone_number_id=(phone_number_id or '').strip() or None))
     db.add(AuditLog(username=admin.username, action='crear_empresa', entity='company', entity_id=data.company_key, details={'template': 'base_v1'}))
     db.commit()
     return {'status': 'ok', 'empresa_id': company.company_key}
+
+
+@router.get('/{company_key}/tiendas')
+def list_stores(company_key: str, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    company = _company(company_key, db)
+    return [{'id': s.id, 'nombre': s.name} for s in sorted(company.stores, key=lambda row: (row.name or '').lower())]
+
+
+@router.post('/{company_key}/tiendas')
+def create_store(company_key: str, data: StoreCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    company = _company(company_key, db)
+    name = data.name.strip()
+    if db.query(Store).filter(Store.company_id == company.id, Store.name == name).first():
+        raise HTTPException(status_code=409, detail='Ya existe una tienda con ese nombre')
+    store = Store(company_id=company.id, name=name)
+    db.add(store)
+    db.flush()
+    db.add(AuditLog(username=admin.username, action='crear_tienda', entity='store', entity_id=str(store.id), details={'company': company_key, 'name': name}))
+    db.commit()
+    return {'status': 'ok', 'id': store.id, 'nombre': store.name}
+
+
+@router.patch('/{company_key}/tiendas/{store_id}')
+def update_store(company_key: str, store_id: int, data: StoreUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    company = _company(company_key, db)
+    store = db.query(Store).filter(Store.id == store_id, Store.company_id == company.id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail='Tienda no encontrada')
+    store.name = data.name.strip()
+    db.add(AuditLog(username=admin.username, action='actualizar_tienda', entity='store', entity_id=str(store.id), details={'company': company_key, 'name': store.name}))
+    db.commit()
+    return {'status': 'ok', 'id': store.id, 'nombre': store.name}
+
+
+@router.delete('/{company_key}/tiendas/{store_id}')
+def delete_store(company_key: str, store_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    company = _company(company_key, db)
+    store = db.query(Store).filter(Store.id == store_id, Store.company_id == company.id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail='Tienda no encontrada')
+    if db.query(Store).filter(Store.company_id == company.id).count() <= 1:
+        raise HTTPException(status_code=400, detail='La empresa debe conservar al menos una tienda')
+    db.query(ConversationChannel).filter(ConversationChannel.store_id == store.id).update({'store_id': None}, synchronize_session=False)
+    name = store.name
+    db.delete(store)
+    db.add(AuditLog(username=admin.username, action='eliminar_tienda', entity='store', entity_id=str(store_id), details={'company': company_key, 'name': name}))
+    db.commit()
+    return {'status': 'ok'}
 
 
 @router.patch('/{company_key}')
@@ -134,8 +185,6 @@ def delete_company(company_key: str, admin: User = Depends(require_admin), db: S
     db.query(CompanyFile).filter(CompanyFile.company_id == company_id).delete(synchronize_session=False)
     db.query(Store).filter(Store.company_id == company_id).delete(synchronize_session=False)
 
-    # App notifications do not have a foreign key, so remove only notifications
-    # that can be tied to this company's help requests/name.
     for notification in db.query(AppNotification).all():
         details = notification.details or {}
         if details.get('help_request_id') in help_ids or details.get('company') == company_name:

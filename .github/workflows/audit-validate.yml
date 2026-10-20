@@ -1,0 +1,139 @@
+name: Validar revision 79 y ejecutable
+on:
+  push:
+    branches: [agent/local-whatsapp-bridge-v2]
+    paths:
+      - .github/workflows/audit-validate.yml
+      - .github/apply_audit.py
+      - maintenance/revision_79/**
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENVIRONMENT: testing
+      DATABASE_URL: sqlite:///./audit-test.db
+      JWT_SECRET: audit-test-only-long-key-never-use-in-production
+      MAIL_WORKER_ENABLED: 'false'
+      WHATSAPP_SEND_ENABLED: 'false'
+      AI_PROVIDER: retrieval
+      AI_LEARNING_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Aplicar revision verificando integridad
+        run: python .github/apply_audit.py
+      - name: Instalar dependencias y herramientas
+        run: python -m pip install -r requirements.txt pytest pip-audit bandit playwright
+      - name: Probar backend y documentos
+        shell: bash
+        run: |
+          mkdir -p audit-results
+          set -o pipefail
+          python -m pytest -q --disable-warnings | tee audit-results/pytest.txt
+          python -m compileall -q app maintenance local_app.py
+          python -m maintenance.pdf_smoke audit-results
+          python -c "from app.routers.audit_dashboard import _js; from pathlib import Path; Path('audit-results/dashboard.js').write_text(_js(), encoding='utf-8')"
+          node --check audit-results/dashboard.js
+          python -m pip freeze > audit-results/dependencias.txt
+      - name: Verificar navegador y perfiles
+        run: |
+          python -m playwright install --with-deps chromium
+          python -m maintenance.browser_smoke
+      - name: Escanear dependencias y codigo
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p audit-results
+          set +e
+          python -m pip_audit -r requirements.txt -f json -o audit-results/dependencies.json
+          echo $? > audit-results/dependencies.exit
+          python -m bandit -r app -f json -o audit-results/bandit.json
+          echo $? > audit-results/bandit.exit
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: revision79-pruebas-linux
+          path: audit-results/
+          retention-days: 7
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      ENVIRONMENT: testing
+      MAIL_WORKER_ENABLED: 'false'
+      WHATSAPP_SEND_ENABLED: 'false'
+      AI_LEARNING_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Aplicar revision
+        run: python .github/apply_audit.py
+      - name: Instalar dependencias y compilador
+        run: python -m pip install -r requirements.txt pyinstaller==6.22.2
+      - name: Compilar ejecutable Windows
+        run: python -m PyInstaller --clean --noconfirm PhygitalBot.spec
+      - name: Verificar ejecutable y PDF sin archivos de fuentes
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force audit-results | Out-Null
+          & .\dist\PhygitalBot\PhygitalBot.exe --data-dir "$env:RUNNER_TEMP\phygital-native-test" --diagnostico 2>&1 | Tee-Object audit-results\ejecutable.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Fallo el diagnostico nativo' }
+          $fonts = Get-ChildItem dist\PhygitalBot -Recurse -File | Where-Object { $_.Extension -match '^\.(ttf|otf|woff2?|pfb|pfa|afm)$' }
+          if ($fonts) { throw 'El paquete no debe incluir archivos de fuentes' }
+          Get-FileHash dist\PhygitalBot\PhygitalBot.exe -Algorithm SHA256 | Format-List | Out-File audit-results\sha256.txt
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: PhygitalBot-Windows-revision79
+          path: dist/PhygitalBot/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: revision79-pruebas-windows
+          path: |
+            audit-results/
+            build/PhygitalBot/warn-PhygitalBot.txt
+          retention-days: 7
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python .github/apply_audit.py
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Instalar SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - name: Compilar APK de prueba sin claves de produccion
+        run: gradle -p mobile-android :app:assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: PhygitalBot-Android-0.6.23-prueba
+          path: mobile-android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7

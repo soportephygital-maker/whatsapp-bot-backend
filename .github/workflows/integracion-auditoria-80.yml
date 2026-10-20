@@ -1,0 +1,176 @@
+name: Integrar y validar correcciones de estabilidad 80
+
+on:
+  push:
+    branches: [agent/local-whatsapp-bridge-v2]
+    paths: [.github/workflows/integracion-auditoria-80.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integrar-auditoria-80
+  cancel-in-progress: false
+
+jobs:
+  validar:
+    if: github.ref == 'refs/heads/agent/local-whatsapp-bridge-v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ENVIRONMENT: testing
+      DATABASE_URL: sqlite:///./validacion80.db
+      JWT_SECRET: solo-pruebas-aisladas-no-usar-en-produccion-revision80
+      BOOTSTRAP_ADMIN_USERNAME: admin
+      BOOTSTRAP_ADMIN_PASSWORD: solo-pruebas-aisladas-no-productiva-80
+      MAIL_WORKER_ENABLED: 'false'
+      WHATSAPP_SEND_ENABLED: 'false'
+      AI_PROVIDER: retrieval
+      AI_LEARNING_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Preparar correcciones y manifiesto sin datos operativos
+        run: |
+          mkdir -p evidencia80
+          if [ ! -f app/routers/audit_dashboard.py ]; then python .github/apply_audit.py; fi
+          python - <<'PY'
+          import ast, hashlib, json, re, subprocess
+          from pathlib import Path
+          target = Path('app/routers/audit_dashboard.py')
+          if not target.is_file():
+              raise SystemExit('Falta el dashboard auditado; no se integrara una revision parcial.')
+          source = target.read_text(encoding='utf-8')
+          source = source.replace('2026.09.07-79', '2026.09.08-80')
+          target.write_text(source, encoding='utf-8')
+          ast.parse(source)
+          allow_roots = {'app','tests','maintenance','mobile-android','docs'}
+          allow_files = {'requirements.txt','requirements-dev.txt','local_app.py','PhygitalBot.spec','README.md','.env.example','.gitignore','.python-version','Dockerfile','docker-compose.yml','compose.yml','INICIAR_WINDOWS.bat','INICIAR_LINUX.sh','GUIA_EJECUCION.html'}
+          tracked = subprocess.check_output(['git','ls-files','-z']).decode().split('\0')
+          others = subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z']).decode().split('\0')
+          selected = []
+          denied_ext = {'.db','.sqlite','.sqlite3','.ttf','.otf','.woff','.woff2','.pfb','.pfa','.afm','.pem','.key','.jks','.keystore','.apk','.exe'}
+          for name in sorted(set(tracked+others)):
+              if not name: continue
+              p = Path(name)
+              if not (p.parts[0] in allow_roots or name in allow_files): continue
+              if p.parts[:2] == ('maintenance','revision_79'): continue
+              if any(x in {'__pycache__','.venv','build','.gradle','dist','node_modules'} for x in p.parts): continue
+              if p.suffix.lower() in denied_ext or p.name == '.env': continue
+              if p.is_file(): selected.append(name)
+          for name in selected:
+              subprocess.run(['git','add','--',name],check=True)
+          subprocess.run(['git','diff','--cached','--binary','--output=evidencia80/correcciones.patch'],check=True)
+          patch = Path('evidencia80/correcciones.patch').read_bytes()
+          Path('evidencia80/integridad.json').write_text(json.dumps({'base_commit':subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(),'patch_sha256':hashlib.sha256(patch).hexdigest(),'ui':'2026.09.08-80','files':selected},indent=2),encoding='utf-8')
+          PY
+      - name: Instalar herramientas de prueba
+        run: python -m pip install -r requirements.txt pytest pip-audit bandit playwright
+      - name: Probar backend y contratos
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q --junitxml=evidencia80/pruebas.xml 2>&1 | tee evidencia80/pruebas.txt
+          python -m compileall -q app tests maintenance local_app.py
+          python -m maintenance.pdf_smoke evidencia80
+          python -c "from app.routers.audit_dashboard import _js; from pathlib import Path; Path('evidencia80/dashboard.js').write_text(_js(),encoding='utf-8')"
+          node --check evidencia80/dashboard.js
+      - name: Probar navegador y conservar borradores
+        run: |
+          python -m playwright install --with-deps chromium
+          python -m maintenance.browser_smoke
+      - name: Detectar vulnerabilidades conocidas
+        run: python -m pip_audit -r requirements.txt -f json -o evidencia80/dependencias.json
+      - name: Detectar hallazgos medios y altos
+        run: python -m bandit -r app -ll -f json -o evidencia80/seguridad.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: revision80-validacion-integracion
+          path: |
+            evidencia80/
+            audit-results/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: revision80-parche-validado
+          path: |
+            evidencia80/correcciones.patch
+            evidencia80/integridad.json
+          retention-days: 7
+
+  integrar:
+    needs: validar
+    if: github.ref == 'refs/heads/agent/local-whatsapp-bridge-v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      ENVIRONMENT: testing
+      DATABASE_URL: sqlite:///./integracion80.db
+      JWT_SECRET: solo-pruebas-aisladas-no-usar-en-produccion-revision80
+      BOOTSTRAP_ADMIN_USERNAME: admin
+      BOOTSTRAP_ADMIN_PASSWORD: solo-pruebas-aisladas-no-productiva-80
+      MAIL_WORKER_ENABLED: 'false'
+      WHATSAPP_SEND_ENABLED: 'false'
+      AI_PROVIDER: retrieval
+      AI_LEARNING_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/local-whatsapp-bridge-v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: revision80-parche-validado
+          path: parche-validado
+      - name: Verificar base y aplicar exactamente lo probado
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          base=Path('parche-validado')
+          manifest=json.loads((base/'integridad.json').read_text())
+          head=subprocess.check_output(['git','rev-parse','HEAD']).decode().strip()
+          if head != manifest['base_commit'] or head != os.environ['EXPECTED_COMMIT']:
+              raise SystemExit('La rama cambio durante las pruebas. No se sobrescribira trabajo posterior.')
+          patch=base/'correcciones.patch'
+          if hashlib.sha256(patch.read_bytes()).hexdigest() != manifest['patch_sha256']:
+              raise SystemExit('Integridad del parche no valida.')
+          if patch.stat().st_size:
+              subprocess.run(['git','apply','--check',str(patch)],check=True)
+              subprocess.run(['git','apply','--index',str(patch)],check=True)
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Repetir pruebas sobre los archivos que se van a confirmar
+        run: |
+          python -m pip install -r requirements.txt pytest
+          python -m pytest -q
+          python -m maintenance.pdf_smoke
+      - name: Confirmar correcciones en la rama activa sin forzar historial
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if ! git diff --cached --quiet; then
+            git commit -m 'Integrar revision auditada 80 validada en el codigo ejecutable'
+            git push origin HEAD:refs/heads/agent/local-whatsapp-bridge-v2
+          fi
+          mkdir -p entrega80
+          git rev-parse HEAD > entrega80/COMMIT.txt
+          git archive --format=zip --prefix=PhygitalBot/ HEAD -o entrega80/PhygitalBot_Repositorio_80.zip
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: revision80-repositorio-integrado
+          path: entrega80/
+          retention-days: 14

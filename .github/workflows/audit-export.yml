@@ -1,0 +1,64 @@
+name: Auditoria y exportacion
+on:
+  push:
+    branches: [agent/local-whatsapp-bridge-v2]
+    paths: [.github/workflows/audit-export.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exportar codigo versionado
+        run: |
+          mkdir -p audit-output
+          git archive --format=zip --prefix=phygital-source/ HEAD -o audit-output/source.zip
+          git rev-parse HEAD > audit-output/COMMIT.txt
+          git ls-tree -r HEAD > audit-output/TREE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auditoria-codigo
+          path: audit-output/
+          retention-days: 7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar herramientas de diagnostico
+        run: python -m pip install -r requirements.txt pytest httpx pip-audit bandit
+      - name: Pruebas y analisis estatico
+        env:
+          ENVIRONMENT: testing
+          DATABASE_URL: sqlite:///./audit-test.db
+          JWT_SECRET: audit-only-not-a-production-secret-do-not-reuse
+          SMTP_HOST: ''
+          WHATSAPP_SEND_ENABLED: 'false'
+          AI_LEARNING_ENABLED: 'false'
+        run: |
+          set +e
+          python -m pytest -q > audit-output/pytest.txt 2>&1
+          echo $? > audit-output/pytest.exit
+          python -m compileall -q app tests > audit-output/compile.txt 2>&1
+          echo $? > audit-output/compile.exit
+          python -m pip_audit -r requirements.txt -f json -o audit-output/dependencies.json
+          echo $? > audit-output/dependencies.exit
+          python -m bandit -r app -f json -o audit-output/bandit.json
+          echo $? > audit-output/bandit.exit
+          python -m pip download -r requirements.txt pytest httpx --dest audit-wheels > audit-output/wheels.txt 2>&1
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: auditoria-diagnosticos
+          path: audit-output/
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: auditoria-dependencias-linux
+          path: audit-wheels/
+          retention-days: 3

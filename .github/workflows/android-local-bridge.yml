@@ -1,0 +1,13 @@
+name: Android Local Bridge APK (legacy manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  note:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Legacy workflow kept for manual recovery only. Active publisher is android-local-bridge-v2.yml."

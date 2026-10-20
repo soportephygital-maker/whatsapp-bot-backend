@@ -325,6 +325,70 @@ class MainActivity : Activity() {
         return result
     }
 
+    private fun showCompanyPicker() {
+        val auth = token ?: return
+        Thread {
+            try {
+                val rows = JSONArray(request("GET", "/api/local-bridge/stores", null, auth))
+                val companies = companiesFromBridgeStores(rows)
+                runOnUiThread {
+                    val prefs = getSharedPreferences(bridgePrefsName, MODE_PRIVATE)
+                    val items = mutableListOf<JSONObject>()
+                    for (i in 0 until companies.length()) {
+                        val company = companies.optJSONObject(i) ?: continue
+                        if ((company.optJSONArray("tiendas")?.length() ?: 0) > 0) items.add(company)
+                    }
+                    if (items.isEmpty()) {
+                        AlertDialog.Builder(this).setTitle("Empresas").setMessage("No hay empresas activas con tiendas.").setPositiveButton("Aceptar", null).show()
+                        return@runOnUiThread
+                    }
+                    val oldIds = prefs.getStringSet("selected_company_ids", emptySet()).orEmpty()
+                    val oldId = prefs.getInt("selected_company_id", 0)
+                    val chosen = BooleanArray(items.size) { i ->
+                        val id = items[i].optInt("id", 0).toString()
+                        if (oldIds.isNotEmpty()) oldIds.contains(id) else id == oldId.toString()
+                    }
+                    val names = items.map { it.optString("nombre", "Empresa") }.toTypedArray()
+                    AlertDialog.Builder(this)
+                        .setTitle("Empresas que responderá el bot")
+                        .setMultiChoiceItems(names, chosen) { _, which, checked -> chosen[which] = checked }
+                        .setNegativeButton("Cancelar", null)
+                        .setPositiveButton("Guardar") { _, _ ->
+                            val selected = items.filterIndexed { i, _ -> chosen[i] }
+                            if (selected.isEmpty()) {
+                                Toast.makeText(this, "Selecciona al menos una empresa", Toast.LENGTH_LONG).show()
+                            } else {
+                                val ids = selected.map { it.optInt("id", 0).toString() }.toSet()
+                                val stores = mutableSetOf<String>()
+                                selected.forEach { company ->
+                                    val arr = company.optJSONArray("tiendas") ?: JSONArray()
+                                    for (j in 0 until arr.length()) {
+                                        val id = arr.optJSONObject(j)?.optInt("id", 0) ?: 0
+                                        if (id > 0) stores.add(id.toString())
+                                    }
+                                }
+                                prefs.edit().putStringSet("selected_company_ids", ids)
+                                    .putInt("selected_company_id", selected.first().optInt("id", 0))
+                                    .putString("selected_company_name", selected.joinToString(" y ") { it.optString("nombre") })
+                                    .putStringSet("selected_store_ids", stores).apply()
+                                BridgeDiagnostics.record(this, "COMPANIES_SELECTED", "Empresas=" + ids.joinToString(",") + " Tiendas=" + stores.size)
+                                startBridgeKeepAlive()
+                                if (notificationListenerAccessEnabled()) requestBridgeRebind()
+                                Toast.makeText(this, "Empresas activadas: " + selected.size, Toast.LENGTH_LONG).show()
+                            }
+                        }.show()
+                }
+            } catch (e: Exception) {
+                BridgeDiagnostics.record(this, "COMPANY_LOAD_ERROR", e.message ?: "Error")
+                runOnUiThread {
+                    AlertDialog.Builder(this).setTitle("Error al cargar empresas")
+                        .setMessage(e.message ?: "Verifica tu sesión")
+                        .setPositiveButton("Aceptar", null).show()
+                }
+            }
+        }.start()
+    }
+
     private fun updateButton(): Button = Button(this).apply {
         text = "Buscar actualizaciones"
         setOnClickListener { checkForUpdate(true) }
@@ -560,6 +624,10 @@ class MainActivity : Activity() {
             text = "\nConfiguraciones"
             textSize = 16f
         })
+        content.addView(Button(this).apply {
+            text = "Seleccionar empresa o ambas"
+            setOnClickListener { showCompanyPicker() }
+        })
         content.addView(notificationAccessButton())
         content.addView(batteryOptimizationButton())
         content.addView(restartListenerButton())
@@ -600,6 +668,7 @@ class MainActivity : Activity() {
                     .putBoolean("app_enabled_com_whatsapp", selectedApp == "com.whatsapp")
                     .putBoolean("app_enabled_com_whatsapp_w4b", selectedApp == "com.whatsapp.w4b")
                     .putBoolean("package_gate_v3_single_app", true)
+                    .putStringSet("selected_company_ids", if (checkedCompanyId > 0) setOf(checkedCompanyId.toString()) else emptySet())
                     .putInt("selected_company_id", checkedCompanyId)
                     .putString("selected_company_name", selectedCompanyName)
                     .putStringSet("selected_store_ids", selectedStoreIds)

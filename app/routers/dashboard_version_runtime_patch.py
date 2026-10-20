@@ -1,6 +1,6 @@
 from . import dashboard_email_milestone_patch as target
 
-UI_VERSION = '2026.10.07-166'
+UI_VERSION = '2026.10.07-167'
 _original_html = target._html
 
 

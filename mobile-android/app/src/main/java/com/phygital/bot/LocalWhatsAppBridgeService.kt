@@ -106,7 +106,8 @@ class LocalWhatsAppBridgeService : NotificationListenerService() {
             ?.mapNotNull { it.toIntOrNull() }
             ?.distinct()
             ?: emptyList()
-        if (selectedCompanyId <= 0) {
+        val selectedCompanyIds = prefs.getStringSet("selected_company_ids", emptySet()).orEmpty()
+        if (selectedCompanyId <= 0 && selectedCompanyIds.isEmpty()) {
             BridgeDiagnostics.record(this, "DISCARDED", "No hay empresa seleccionada en Configuración", sbn.packageName)
             return
         }

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from ..auth import require_operator
 from ..database import get_db
 from ..models import Message, User
-from . import image_evidence_patch, local_bridge
+from . import global_entry_sequence_patch, image_evidence_patch, local_bridge
 
 router = APIRouter(prefix='/api/local-bridge', tags=['local-bridge-image-finish'])
 
@@ -89,6 +89,16 @@ def image_evidence_finish_inbound(
     db: Session = Depends(get_db),
 ):
     _, conversation, _, _, _ = image_evidence_patch._active_context(db, data)
+
+    # Manual mode has priority over every automatic flow, including image
+    # evidence. Delegate to the normal intake so the inbound message is recorded
+    # while the persistent conversation pause suppresses every bot response.
+    if conversation and conversation.status == 'bot_paused':
+        return global_entry_sequence_patch.global_entry_sequence_inbound(
+            data=data,
+            operator=operator,
+            db=db,
+        )
 
     # New image evidence flow always owns its replies. Never let the legacy
     # decision tree consume 1/2, cerrar, finalizar or listo while a photo prompt

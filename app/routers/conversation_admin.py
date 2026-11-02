@@ -1,16 +1,65 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from ..auth import require_admin
+from ..auth import require_case_closer
 from ..database import get_db
-from ..models import AppNotification, AuditLog, Conversation, ConversationChannel, HelpRequest, Message, User
+from ..models import AppNotification, AuditLog, Company, Conversation, ConversationChannel, HelpRequest, Message, User
+from ..services import ai_learning
 
 router = APIRouter(prefix='/api', tags=['conversation-admin'])
+
+
+@router.post('/conversaciones/{conversation_id}/cerrar')
+def close_conversation(
+    conversation_id: int,
+    resultado: str = Query(default='resolved'),
+    admin: User = Depends(require_case_closer),
+    db: Session = Depends(get_db),
+):
+    if resultado not in ('resolved', 'ignored'):
+        raise HTTPException(status_code=422, detail='Resultado inválido')
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail='Conversación no encontrada')
+
+    company = db.get(Company, conversation.company_id) if conversation.company_id else None
+    tree = company.decision_tree or {} if company else {}
+    previous_status = conversation.status
+    conversation.status = 'open'
+    conversation.state = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
+
+    help_rows = db.query(HelpRequest).filter(
+        HelpRequest.conversation_id == conversation_id,
+        HelpRequest.status.in_(['new', 'reviewing']),
+    ).all()
+    for row in help_rows:
+        row.status = resultado
+
+    db.add(AuditLog(
+        username=admin.username,
+        action='cerrar_conversacion',
+        entity='conversation',
+        entity_id=str(conversation_id),
+        details={
+            'status_before': previous_status,
+            'status_after': 'open',
+            'resultado': resultado,
+            'help_requests_closed': [row.id for row in help_rows],
+        },
+    ))
+    db.commit()
+    return {
+        'status': 'ok',
+        'conversation_id': conversation_id,
+        'resultado': resultado,
+        'help_requests_closed': len(help_rows),
+        'chatbot_resumed': True,
+    }
 
 
 @router.delete('/conversaciones/{conversation_id}/olvidar')
 def forget_conversation(
     conversation_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_case_closer),
     db: Session = Depends(get_db),
 ):
     conversation = db.get(Conversation, conversation_id)
@@ -20,8 +69,21 @@ def forget_conversation(
     help_rows = db.query(HelpRequest).filter(HelpRequest.conversation_id == conversation_id).all()
     help_ids = {row.id for row in help_rows}
 
-    # Remove app notifications tied to these test help requests so they do not
-    # continue appearing after an administrator explicitly forgets the case.
+    # Preserve a compact AI memory before the visible conversation/messages are
+    # deleted. This memory has no conversation FK, so deleting the chat does not
+    # erase what the learning system observed. It remains pending until approved.
+    try:
+        with db.begin_nested():
+            ai_learning.archive_conversation(db, conversation)
+            db.flush()
+    except Exception as exc:
+        db.add(AuditLog(
+            username=admin.username,
+            action='ai_archive_before_forget_error',
+            entity='maintenance',
+            details={'conversation_id': conversation_id, 'error': str(exc)[:1000]},
+        ))
+
     for notification in db.query(AppNotification).all():
         details = notification.details or {}
         if details.get('help_request_id') in help_ids:

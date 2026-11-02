@@ -1,0 +1,143 @@
+name: Revalidacion integral de estabilidad
+
+on:
+  push:
+    branches: [agent/local-whatsapp-bridge-v2]
+    paths:
+      - .github/workflows/revision80-regression.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revalidacion-estabilidad-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  regresion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ENVIRONMENT: testing
+      DATABASE_URL: sqlite:///./revalidacion.db
+      JWT_SECRET: exclusivamente-pruebas-no-utilizar-en-produccion-2026
+      MAIL_WORKER_ENABLED: 'false'
+      WHATSAPP_SEND_ENABLED: 'false'
+      AI_PROVIDER: retrieval
+      AI_LEARNING_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Preparar directorio de evidencia
+        run: |
+          mkdir -p revalidacion
+          git rev-parse HEAD > revalidacion/commit.txt
+      - name: Aplicar correcciones auditadas en entorno aislado
+        run: |
+          if [ -f app/routers/audit_dashboard.py ]; then
+            echo 'La revision auditada ya esta integrada.'
+          else
+            python .github/apply_audit.py
+          fi
+          git diff --stat > revalidacion/cambios-aplicados.txt
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt pytest pip-audit bandit playwright
+      - name: Repetir pruebas de regresion
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q --junitxml=revalidacion/pytest.xml 2>&1 | tee revalidacion/pytest.txt
+      - name: Verificar Python JavaScript y documentos
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m compileall -q app maintenance local_app.py
+          python -m maintenance.pdf_smoke revalidacion
+          python -c "from app.routers.audit_dashboard import _js; from pathlib import Path; Path('revalidacion/dashboard.js').write_text(_js(), encoding='utf-8')"
+          node --check revalidacion/dashboard.js
+      - name: Repetir prueba de navegador y perfiles
+        run: |
+          python -m playwright install --with-deps chromium
+          python -m maintenance.browser_smoke
+      - name: Comprobar vulnerabilidades conocidas
+        run: python -m pip_audit -r requirements.txt -f json -o revalidacion/dependencias.json
+      - name: Comprobar hallazgos de seguridad medios y altos
+        run: python -m bandit -r app -ll -f json -o revalidacion/seguridad.json
+      - name: Guardar versiones instaladas
+        if: always()
+        run: python -m pip freeze > revalidacion/entorno.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidencia-revalidacion-estabilidad
+          path: |
+            revalidacion/
+            audit-results/
+          retention-days: 14
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: phygital_test
+          POSTGRES_USER: phygital_test
+          POSTGRES_PASSWORD: solo-pruebas-aisladas
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U phygital_test -d phygital_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      ENVIRONMENT: testing
+      DATABASE_URL: postgresql+psycopg://phygital_test:solo-pruebas-aisladas@localhost:5432/phygital_test
+      JWT_SECRET: exclusivamente-pruebas-no-utilizar-en-produccion-2026
+      BOOTSTRAP_ADMIN_USERNAME: admin
+      BOOTSTRAP_ADMIN_PASSWORD: solo-pruebas-locales-contrasena-no-productiva
+      MAIL_WORKER_ENABLED: 'false'
+      WHATSAPP_SEND_ENABLED: 'false'
+      AI_PROVIDER: retrieval
+      AI_LEARNING_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Preparar revision
+        run: |
+          mkdir -p revalidacion
+          if [ ! -f app/routers/audit_dashboard.py ]; then python .github/apply_audit.py; fi
+          python -m pip install -r requirements.txt pytest
+      - name: Comprobar arranque y conexion real a PostgreSQL
+        shell: bash
+        run: |
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee revalidacion/postgres.txt
+          from fastapi.testclient import TestClient
+          from sqlalchemy import text
+          from app.main import app
+          from app.database import engine
+          assert engine.dialect.name == 'postgresql'
+          with TestClient(app) as client:
+              response = client.get('/health/ready')
+              assert response.status_code == 200, response.text
+              with engine.connect() as conn:
+                  assert conn.scalar(text('SELECT 1')) == 1
+              response = client.get('/dashboard')
+              assert response.status_code == 200
+          print('PostgreSQL: arranque, salud, conexion y dashboard correctos.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidencia-revalidacion-postgres
+          path: revalidacion/
+          retention-days: 14

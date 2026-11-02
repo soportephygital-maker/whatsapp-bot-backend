@@ -264,7 +264,7 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
     conversation = db.query(Conversation).filter(
         Conversation.wa_user_id == local_user_id,
         Conversation.company_id == company.id,
-        Conversation.status.in_(['open', 'help_pending', 'human_active']),
+        Conversation.status.in_(['open', 'help_pending', 'human_active', 'bot_paused']),
     ).order_by(Conversation.id.desc()).first()
     if not conversation:
         conversation = Conversation(company_id=company.id, wa_user_id=local_user_id, state=_root_state(company.decision_tree or {}))
@@ -289,6 +289,34 @@ def local_inbound(data: LocalInbound, operator: User = Depends(require_operator)
         db.add(AuditLog(username=operator.username, action='authorized_support_bot_skipped', entity='conversation', entity_id=str(conversation.id), details={'from': data.sender, 'transport': 'android_notification'}))
         db.commit()
         return {'status': 'known_support_skipped', 'should_reply': False, 'conversation_id': conversation.id}
+
+    # Persistent manual mode. Incoming WhatsApp messages are still recorded, but
+    # no automatic tree/image response is generated until an operator explicitly
+    # enables the bot for this conversation from the dashboard.
+    if conversation.status == 'bot_paused':
+        inbound_payload['chatbot_paused'] = True
+        inbound_payload['chatbot_pause_reason'] = 'manual_conversation_mode'
+        inbound_message.raw_payload = dict(inbound_payload)
+        db.add(AuditLog(
+            username=operator.username,
+            action='chatbot_skipped_manual_conversation_mode',
+            entity='conversation',
+            entity_id=str(conversation.id),
+            details={'sender': data.sender, 'store': store.name, 'company': company.company_key},
+        ))
+        db.commit()
+        return {
+            'status': 'chatbot_manual_paused',
+            'conversation_id': conversation.id,
+            'company_key': company.company_key,
+            'company_name': company.name,
+            'store_name': store.name,
+            'should_reply': False,
+            'reply_text': '',
+            'outbound_message_id': None,
+            'chatbot_paused': True,
+            'bot_enabled': False,
+        }
 
     tree = company.decision_tree or {}
     root_state = _root_state(tree)

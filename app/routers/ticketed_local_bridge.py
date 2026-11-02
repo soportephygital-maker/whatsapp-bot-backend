@@ -296,7 +296,7 @@ def _company_is_selected(data: local_bridge.LocalInbound, company: Company, db: 
 def _active_conversation(db: Session, local_user_id: str) -> Conversation | None:
     return db.query(Conversation).filter(
         Conversation.wa_user_id == local_user_id,
-        Conversation.status.in_(['open', 'help_pending', 'human_active']),
+        Conversation.status.in_(['open', 'help_pending', 'human_active', 'bot_paused']),
     ).order_by(Conversation.updated_at.desc(), Conversation.id.desc()).first()
 
 
@@ -653,7 +653,7 @@ def ticketed_local_inbound(
         except Exception:
             pass
 
-    if result.get('status') == 'human_support_paused' or conversation.status in ('help_pending', 'human_active'):
+    if result.get('status') in {'human_support_paused', 'chatbot_manual_paused'} or conversation.status in ('help_pending', 'human_active', 'bot_paused'):
         result['should_reply'] = False
         result['reply_text'] = ''
         return result

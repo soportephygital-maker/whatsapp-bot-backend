@@ -14,7 +14,7 @@ from . import dashboard_image_gallery_patch, image_evidence_listo_patch, image_e
 router = APIRouter(tags=['dashboard-ui-email-milestone'])
 router.include_router(image_evidence_listo_patch.router)
 router.include_router(image_evidence_patch.router)
-UI_VERSION = '2026.09.04-108'
+UI_VERSION = '2026.09.04-109'
 DIAGNOSTICS_BASE_URL = 'https://whatsapp-bot-backend-142e.onrender.com'
 
 
@@ -281,6 +281,36 @@ document.addEventListener('DOMContentLoaded',()=>{const b=$('navDiagnostics');if
 // 10 seconds reset filters, collapsed details and scroll position while the admin
 // was investigating an error.
 window.__phygitalDiagnosticsAutoRefreshDisabled=true;
+
+async function installConversationBotToggle109(conversationId){
+  if(!operate())return;
+  const root=document.getElementById('content');if(!root)return;
+  let rows=[];try{rows=await api('/api/conversaciones')}catch(_){return}
+  const conv=(rows||[]).find(x=>Number(x.id)===Number(conversationId));if(!conv)return;
+  const old=document.getElementById('conversationBotMode109');if(old)old.remove();
+  const enabled=conv.bot_enabled!==false;
+  const box=document.createElement('div');box.id='conversationBotMode109';box.className='card';
+  box.style.margin='12px 0';
+  box.innerHTML=`<div class="section-title"><div><b>🤖 Respuestas automáticas</b><div class="muted">${enabled?'El bot puede responder en esta conversación.':'Modo manual: el bot no responderá a este chat hasta que lo actives.'}</div></div><button id="toggleConversationBot109" style="width:auto">${enabled?'⏸️ Pausar bot':'▶️ Activar bot'}</button></div>`;
+  const chatBox=document.getElementById('chatBox');
+  if(chatBox)chatBox.insertAdjacentElement('beforebegin',box);else root.prepend(box);
+  const btn=box.querySelector('#toggleConversationBot109');
+  btn.onclick=async()=>{
+    btn.disabled=true;
+    try{
+      await api('/api/conversaciones/'+conversationId+'/bot',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!enabled})});
+      await openChat(conversationId);
+    }catch(e){err(e.message);btn.disabled=false}
+  };
+}
+const _openChat109=typeof openChat==='function'?openChat:null;
+if(_openChat109){
+  openChat=async function(id){
+    const out=await _openChat109(id);
+    setTimeout(()=>installConversationBotToggle109(id),40);
+    return out;
+  };
+}
 '''
     marker='\n})();'
     if marker in js:

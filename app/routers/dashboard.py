@@ -1,5 +1,6 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from ..auth import get_current_user, require_admin, require_case_closer, require_operator, require_primary_admin
@@ -13,6 +14,10 @@ from ..services.whatsapp import send_text_message
 router = APIRouter(prefix='/api', tags=['dashboard'])
 OWNER_ALIAS_KEY = 'owner_display_alias'
 DEFAULT_OWNER_ALIAS = 'Zoe Ortiz'
+
+
+class ConversationBotMode(BaseModel):
+    enabled: bool
 
 
 def _hidden_admin_username() -> str:
@@ -51,7 +56,7 @@ def conversations(company_id: int | None = Query(default=None), _: User = Depend
     rows = query.order_by(Conversation.updated_at.desc()).limit(200).all()
     support_phones = {c.phone for c in db.query(Contact).filter(Contact.is_active.is_(True)).all()}
     companies = {c.id: c.name for c in db.query(Company).all()}
-    return [{'id': c.id, 'company_id': c.company_id, 'company_name': companies.get(c.company_id, 'Sin empresa'), 'wa_user_id': c.wa_user_id, 'authorized_support_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in support_phones, 'known_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in support_phones, 'state': c.state, 'status': c.status, 'updated_at': c.updated_at} for c in rows]
+    return [{'id': c.id, 'company_id': c.company_id, 'company_name': companies.get(c.company_id, 'Sin empresa'), 'wa_user_id': c.wa_user_id, 'authorized_support_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in support_phones, 'known_contact': ''.join(ch for ch in c.wa_user_id if ch.isdigit()) in support_phones, 'state': c.state, 'status': c.status, 'bot_enabled': c.status != 'bot_paused', 'bot_mode': 'automatico' if c.status != 'bot_paused' else 'manual', 'updated_at': c.updated_at} for c in rows]
 
 
 @router.get('/conversaciones/{conversation_id}/mensajes')
@@ -91,7 +96,10 @@ def conversation_messages(conversation_id: int, user: User = Depends(get_current
 
 
 def _activate_human_mode(db: Session, conversation: Conversation, user: User, company: Company, sender_id: str | None):
-    conversation.status = 'human_active'
+    # A manual operator reply takes ownership of this conversation until an
+    # operator explicitly enables the bot again. This is intentionally
+    # persistent across refreshes/restarts and applies to every company.
+    conversation.status = 'bot_paused'
     pending = db.query(HelpRequest).filter(HelpRequest.conversation_id == conversation.id, HelpRequest.status.in_(['new', 'reviewing'])).all()
     for request in pending:
         request.status = 'reviewing'
@@ -106,6 +114,50 @@ def _latest_android_context(db: Session, conversation_id: int) -> dict:
         if payload.get('provider') == 'android_notification':
             return payload
     return {}
+
+
+@router.patch('/conversaciones/{conversation_id}/bot')
+def set_conversation_bot_mode(
+    conversation_id: int,
+    data: ConversationBotMode,
+    user: User = Depends(require_operator),
+    db: Session = Depends(get_db),
+):
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail='Conversación no encontrada')
+    company = db.get(Company, conversation.company_id) if conversation.company_id else None
+    previous = conversation.status
+    if data.enabled:
+        conversation.status = 'open'
+        if company and conversation.state in {'humano', 'nodo_raiz', ''}:
+            tree = company.decision_tree or {}
+            conversation.state = str(tree.get('nodo_raiz') or tree.get('root') or 'inicio')
+        action = 'chatbot_enabled_for_conversation'
+    else:
+        conversation.status = 'bot_paused'
+        action = 'chatbot_paused_for_conversation'
+    db.add(AuditLog(
+        username=user.username,
+        action=action,
+        entity='conversation',
+        entity_id=str(conversation.id),
+        details={
+            'status_before': previous,
+            'status_after': conversation.status,
+            'bot_enabled': bool(data.enabled),
+            'company': company.company_key if company else None,
+            'to': conversation.wa_user_id,
+        },
+    ))
+    db.commit()
+    return {
+        'status': 'ok',
+        'conversation_id': conversation.id,
+        'bot_enabled': bool(data.enabled),
+        'bot_mode': 'automatico' if data.enabled else 'manual',
+        'conversation_status': conversation.status,
+    }
 
 
 @router.post('/conversaciones/{conversation_id}/responder')
@@ -172,14 +224,14 @@ def update_help_request(request_id: int, data: HelpRequestStatus, user: User = D
     conversation = db.get(Conversation, row.conversation_id) if row.conversation_id else None
     db.add(AuditLog(username=user.username, action='actualizar_solicitud_ayuda', entity='help_request', entity_id=str(row.id), details={'status_before': previous, 'status_after': row.status, 'wa_user_id': row.wa_user_id}))
     if data.status in ('resolved', 'ignored') and previous not in ('resolved', 'ignored'):
-        if conversation:
+        if conversation and conversation.status != 'bot_paused':
             tree = company.decision_tree or {} if company else {}; conversation.status = 'open'; conversation.state = tree.get('nodo_raiz') or tree.get('root') or 'inicio'
             db.add(AuditLog(username=user.username, action='chatbot_resumed', entity='conversation', entity_id=str(conversation.id), details={'help_request_id': row.id, 'status': data.status}))
         success = data.status == 'resolved'; store_name = store.name if store else 'Tienda sin identificar'; company_name = company.name if company else 'Empresa sin identificar'; outcome = 'atendido con éxito' if success else 'cerrado sin atención exitosa'
         for audience in ('admin', 'reader'):
             emit_notification(db, audience=audience, event_type='help_request_closed', title=f'Caso cerrado - {store_name}', body=f'Solicitud #{row.id} de {company_name}: {outcome}.', event_key=f'help:{row.id}:{audience}:closed:{data.status}', details={'help_request_id': row.id, 'company': company_name, 'store': store_name, 'success': success, 'status': data.status})
     db.commit()
-    return {'status': 'ok', 'id': row.id, 'request_status': row.status, 'chatbot_resumed': data.status in ('resolved', 'ignored')}
+    return {'status': 'ok', 'id': row.id, 'request_status': row.status, 'chatbot_resumed': data.status in ('resolved', 'ignored') and bool(conversation and conversation.status != 'bot_paused')}
 
 
 @router.post('/support/escalations/run')
